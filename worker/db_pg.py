@@ -123,11 +123,12 @@ def replace_cards_glue(rows, now_iso):
     cid = _cabinet_id()
     with get_connection() as conn:
         conn.execute("DELETE FROM tenant.wb_cards_glue WHERE cabinet_id = %s", (cid,))
-        conn.executemany(
-            "INSERT INTO tenant.wb_cards_glue (cabinet_id, nm_id, imt_id, imt_nm_count, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            [(cid, r["nm_id"], r["imt_id"], r.get("imt_nm_count"), now_iso) for r in rows],
-        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO tenant.wb_cards_glue (cabinet_id, nm_id, imt_id, imt_nm_count, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [(cid, r["nm_id"], r["imt_id"], r.get("imt_nm_count"), now_iso) for r in rows],
+            )
 
 
 # =====================================================================
@@ -366,7 +367,8 @@ def upsert_stock_many(rows):
            f"ON CONFLICT (cabinet_id, nm_id, date, warehouse) DO UPDATE SET {upd}")
     batch = [[cid] + [r.get(c) for c in _STOCK_COLS] + [now] for r in rows]
     with get_connection() as conn:
-        conn.executemany(sql, batch)
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
     return len(rows)
 
 
