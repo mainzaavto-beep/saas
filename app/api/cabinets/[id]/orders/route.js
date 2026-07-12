@@ -106,6 +106,7 @@ function agg(items) {
 // articles для фото/бренда/имени.
 
 async function collectWB(limit, shopName) {
+  const db = new DatabaseSync("wb", { readOnly: true });
   const rows = await db.prepare(
     `SELECT oc.srid          AS number,
             oc.nm_id        AS nm,
