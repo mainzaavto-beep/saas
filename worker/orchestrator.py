@@ -47,6 +47,7 @@ WB_COLLECTORS = [
     "wb_finance",
     "wb_order_costs",
     "wb_metrics",
+    "wb_ads",
     "wb_prices",
     "wb_stocks",
 ]
