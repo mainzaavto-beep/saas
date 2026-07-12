@@ -104,30 +104,26 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // totals. После пересчёта adSpend пересчитываем и profit (старая сумма
     // рекламы занижала прибыль на величину потерянной рекламы).
     if (from && to) {
+      // ⚠️ Грабля SAAS (та же что с logistics): отдельный prepare().get() для
+      // агрегата после предыдущих запросов в транзакции возвращает 0 (баг
+      // эмулятора DatabaseSync поверх node-postgres). Решение: считать через
+      // subquery в одном запросе. fullAd = Σ ad_spend из daily_metrics за период.
       let fullAd = 0;
       try {
-        fullAd += await new DatabaseSync("wb", {readOnly:true}).prepare(
-          `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
-           WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
-        ).get(from, toEnd).s || 0;
+        const wbad = await new DatabaseSync("wb", {readOnly:true}).prepare(
+          `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+                   WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+        ).get(from, toEnd);
+        fullAd += (wbad && wbad.s) || 0;
       } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
-      try {
-        fullAd += await new DatabaseSync("ozon", {readOnly:true}).prepare(
-          `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
-           WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
-        ).get(from, toEnd).s || 0;
-      } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
-      if (platform === "wb") {
-        // Только WB: переоткрыли ozon-БД выше для all — для wb отдельно.
-        fullAd = await new DatabaseSync("wb", {readOnly:true}).prepare(
-          `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
-           WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
-        ).get(from, toEnd).s || 0;
-      } else if (platform === "ozon") {
-        fullAd = await new DatabaseSync("ozon", {readOnly:true}).prepare(
-          `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
-           WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
-        ).get(from, toEnd).s || 0;
+      if (platform !== "wb") {
+        try {
+          const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
+            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+          ).get(from, toEnd);
+          fullAd += (ozad && ozad.s) || 0;
+        } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
       }
       const adDelta = round2(fullAd - (totals.adSpend || 0));
       totals.adSpend = round2(fullAd);
