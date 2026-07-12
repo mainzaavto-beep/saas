@@ -110,13 +110,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
            WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
         ).get(from, toEnd).s || 0;
-      } catch {}
+      } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
       try {
         fullAd += await new DatabaseSync("ozon", {readOnly:true}).prepare(
           `SELECT COALESCE(SUM(ad_spend),0) AS s FROM daily_metrics
            WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL`
         ).get(from, toEnd).s || 0;
-      } catch {}
+      } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
       if (platform === "wb") {
         // Только WB: переоткрыли ozon-БД выше для all — для wb отдельно.
         fullAd = await new DatabaseSync("wb", {readOnly:true}).prepare(
@@ -145,16 +145,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // от выручки, а не логистики → пересчёта tax/margin по логистике не требуется.
       if (platform !== "ozon") {
         try {
-          const fullLog = await new DatabaseSync("wb", {readOnly:true}).prepare(
-            `SELECT COALESCE(SUM(delivery_rub),0) AS s FROM finance_report
-             WHERE supplier_oper_name='Логистика' AND nm_id IS NOT NULL AND nm_id != 0
-               AND rr_dt >= ? AND rr_dt <= ?`
-          ).get(from, toEnd).s || 0;
+          // ⚠️ Грабля SAAS: отдельный prepare().get() для этого агрегата после
+          // предыдущих запросов в транзакции возвращает 0 (баг эмулятора
+          // DatabaseSync поверх pg). Решение: считать через subquery в одном
+          // запросе — так работает корректно. logsum = Σ delivery_rub операция
+          // 'Логистика', все nm>0 за период.
+          const dbg = await new DatabaseSync("wb", {readOnly:true}).prepare(
+            `SELECT (SELECT COALESCE(SUM(delivery_rub),0) FROM finance_report
+                     WHERE supplier_oper_name='Логистика' AND nm_id IS NOT NULL AND nm_id != 0
+                       AND rr_dt >= ? AND rr_dt <= ?) AS logsum`
+          ).get(from, toEnd);
+          const fullLog = dbg.logsum || 0;
           const logDelta = round2(fullLog - (totals.logistics || 0));
           totals.logistics = round2(fullLog);
-          // Логистика ↑ → прибыль ↓ на ту же дельту.
           totals.profit = round2((totals.profit || 0) - logDelta);
-        } catch {}
+        } catch (e) { console.error('[products-summary] logistics пересчёт упал:', e.message); }
       }
       if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
     }
