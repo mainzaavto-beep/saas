@@ -1,18 +1,5 @@
 /* cabinet.css — стили для страниц кабинета */
-.nav-link {
-  display: block;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-radius: 8px;
-  margin-bottom: 4px;
-  font-size: 14px;
-  transition: all 0.15s;
-}
-.nav-link:hover {
-  background: var(--panel2);
-  text-decoration: none;
-  color: var(--text);
-}
+/* (навигация перенесена наверх — см. .topbar в globals.css) */
 
 /* KPI карточки (общий паттерн) */
 .kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }

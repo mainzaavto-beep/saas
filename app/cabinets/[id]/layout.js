@@ -1,21 +1,22 @@
-// app/cabinets/[id]/layout.js — навигация со всеми экранами.
+// app/cabinets/[id]/layout.js — верхняя горизонтальная навигация + проверка доступа.
 import { getSession } from "@/lib/session.js";
 import { query } from "@/lib/db.js";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import Link from "next/link";
 import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
 
 const MENU = [
-  { href: "", label: "📊 Главная" },
-  { href: "/summary", label: "📦 Сводка по товарам" },
-  { href: "/orders", label: "🛒 Заказы" },
-  { href: "/unit", label: "📐 Юнит-экономика" },
-  { href: "/pnl", label: "💰 Сводка по прибыли" },
-  { href: "/items", label: "🏷️ Товары (себест.)" },
-  { href: "/reviews", label: "⭐ Отзывы" },
-  { href: "/briefing", label: "📋 Брифинг" },
+  { href: "", label: "Главная", icon: "📊" },
+  { href: "/summary", label: "Сводка по товарам", icon: "📦" },
+  { href: "/orders", label: "Заказы", icon: "🛒" },
+  { href: "/unit", label: "Юнит-экономика", icon: "📐" },
+  { href: "/pnl", label: "Сводка по прибыли", icon: "💰" },
+  { href: "/items", label: "Товары (себест.)", icon: "🏷️" },
+  { href: "/reviews", label: "Отзывы", icon: "⭐" },
+  { href: "/briefing", label: "Брифинг", icon: "📋" },
 ];
 
 export default async function CabinetLayout({ children, params }) {
@@ -35,24 +36,46 @@ export default async function CabinetLayout({ children, params }) {
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
 
+  // Текущий путь — для подсветки активного пункта меню.
+  const h = await headers();
+  const pathname = h.get("x-invoke-path") || h.get("referer") || "";
+  // x-invoke-path отдаёт путь без basePath; fallback на referer при отсутствии.
+  const current = pathname.replace(basePath, "") || "";
+
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">📊 MP Analytics</div>
-        <div style={{ fontSize: 12, color: "#8a99b8", marginBottom: 16, padding: "0 12px" }}>
-          {cab.display_name}
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="topbar-brand">
+            <span className="brand-mark">📊</span>
+            <span className="brand-text">MP Analytics</span>
+            <span className="brand-cab">{cab.display_name}</span>
+          </div>
+          <nav className="topnav">
+            {MENU.map((item) => {
+              const itemPath = item.href; // "" для главной, "/summary" и т.д.
+              const active = itemPath === "" ? current === "" : current === itemPath;
+              return (
+                <Link
+                  key={item.href || "home"}
+                  href={basePath + item.href}
+                  className={"topnav-link" + (active ? " active" : "")}
+                  title={item.label}
+                >
+                  <span className="topnav-icon">{item.icon}</span>
+                  <span className="topnav-label">{item.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
+          <div className="topbar-actions">
+            <Link href="/" className="topbar-action" title="Все кабинеты">← Кабинеты</Link>
+            <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
+              <button type="submit" className="topbar-action" title="Выйти">Выйти</button>
+            </form>
+          </div>
         </div>
-        {MENU.map((item) => (
-          <Link key={item.href} href={basePath + item.href} className="nav-link">
-            {item.label}
-          </Link>
-        ))}
-        <hr style={{ border: "none", borderTop: "1px solid #243049", margin: "16px 0" }} />
-        <Link href="/" className="nav-link">← Все кабинеты</Link>
-        <form action="/api/auth/logout" method="post" style={{ marginTop: 12 }}>
-          <button type="submit" className="btn secondary" style={{ padding: "8px", fontSize: 13 }}>Выйти</button>
-        </form>
-      </aside>
+      </header>
       <main className="main">{children}</main>
     </div>
   );

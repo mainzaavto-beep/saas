@@ -1,7 +1,30 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { C, GLOW, ALERT } from "@/lib/theme";
+
+// Цветовая палитра SAAS (тёмно-синяя). Согласована с globals.css.
+// Внутренние компоненты (Kpi/Th/Td/ProductCell/...) обращаются к C.*,
+// поэтому держим объект C здесь — не тянем старую палитру из lib/theme.
+const C = {
+  bg: "#0b1220",
+  surface: "#131c2e",
+  surfaceAlt: "#1a2540",
+  ink: "#e8edf7",
+  muted: "#8a99b8",
+  faint: "#6b7a8f",
+  line: "#243049",
+  accent: "#4f8cff",
+  pos: "#4ade80",
+  neg: "#ff6b6b",
+  pink: "#f97316", // для Ozon-бейджа (в эталоне был розовый, тут оранжевый как в globals)
+};
+const ALERT = {
+  info: {
+    background: "rgba(79, 140, 255, 0.10)",
+    border: "1px solid rgba(79, 140, 255, 0.35)",
+    color: "#4f8cff",
+  },
+};
 
 // =====================================================================
 //  /cabinets/[id]/summary — Сводка по товарам (SaaS, WB+Ozon).
@@ -586,7 +609,7 @@ function Kpi({ label, value, color }) {
   return (
     <div style={{
       padding: "12px 16px", borderRadius: 10, background: C.surface,
-      border: `1px solid ${C.line}`, minWidth: 130, boxShadow: GLOW,
+      border: `1px solid ${C.line}`, minWidth: 130,
     }}>
       <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
