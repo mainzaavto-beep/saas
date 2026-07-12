@@ -1,7 +1,10 @@
 """
 SaaS-сборщик ОСТАТКОВ по складам WB → tenant.wb_daily_stock.
 
-supplier/stocks (dateFrom=2020-01-01 → все записи). Снимок «сейчас» по складам.
+supplier/stocks (dateFrom=сегодня-7 → снимок «сейчас» по складам).
+⚠️ Раньше был dateFrom=2020-01-01 — WB отдаёт огромный JSON (все склады за всю
+историю), запрос вис >30 мин. Снимок всё равно «на сейчас», дата влияет только
+на размер ответа. Сужено до последней недели (2026-07-12, gotcha #140).
 Пишется на дату = сегодня (append-only; WB исторические остатки не отдаёт).
 Токен из env WB_TOKEN. Идемпотентно по (cabinet_id, nm_id, date, warehouse).
 """
@@ -9,7 +12,7 @@ import os
 import sys
 import time
 import requests
-from datetime import date
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db_pg
@@ -25,7 +28,7 @@ def _fetch():
     for attempt in range(5):
         try:
             r = requests.get(STOCKS_URL, headers=headers,
-                             params={"dateFrom": "2020-01-01"}, timeout=120)
+            params={"dateFrom": (date.today() - timedelta(days=7)).strftime("%Y-%m-%d")}, timeout=120)
         except requests.RequestException as e:
             if attempt == 4:
                 raise
