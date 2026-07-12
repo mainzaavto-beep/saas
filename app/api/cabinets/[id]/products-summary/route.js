@@ -8,8 +8,6 @@ import {
   ozOrderCostsByProduct, ozAdSpend, calcOperatingProfit as ozCalcProfit,
 } from "@/lib/ozonMetrics.js";
 
-const WB_SHOP = "ИП Матвеев";
-const OZ_SHOP = "Мяумолл озон";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -65,8 +63,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const toEnd = to ? to + "T23:59:59" : "";
 
     let items = [];
-    if (platform !== "ozon") items = items.concat(collectWB(from, toEnd));
-    if (platform !== "wb")   items = items.concat(collectOzon(from, toEnd));
+    if (platform !== "ozon") items = items.concat(collectWB(from, toEnd, cabinet.shop_names?.wb));
+    if (platform !== "wb")   items = items.concat(collectOzon(from, toEnd, cabinet.shop_names?.ozon));
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
@@ -161,7 +159,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       period: { from, to, days },
       totals,
       items,
-      shops: { wb: WB_SHOP, ozon: OZ_SHOP },
+      shops: { wb: cabinet.shop_names?.wb, ozon: cabinet.shop_names?.ozon },
       methodology: "ОПЕРАТИВНЫЙ срез: штуки/выручка из ежедневных продаж (sales), расходы — по средним ставкам из order_costs. Возможно небольшое расхождение (≈5-10%) с финальным недельным финотчётом WB (там в «Сводке по прибыли»).",
     });
   } catch (e) {
@@ -204,7 +202,7 @@ function aggTotals(items) {
 }
 
 // ---------- WB ----------
-async function collectWB(from, toEnd) {
+async function collectWB(from, toEnd, shopName) {
   const db = new DatabaseSync("wb", {readOnly:true});
   // Дней в периоде — для среднедневных показателей.
   const days = Math.max(1, Math.round((new Date(toEnd.slice(0, 10)) - new Date(from)) / 86400000) + 1);
@@ -371,7 +369,7 @@ async function collectWB(from, toEnd) {
     return {
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
-      cat: r.cat || "", im_url: r.im_url || null, platform: "wb", shop: WB_SHOP,
+      cat: r.cat || "", im_url: r.im_url || null, platform: "wb", shop: shopName,
       ordered, cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
       orderRub: round2(orderRub), salesRub: round2(salesRub),
@@ -386,7 +384,8 @@ async function collectWB(from, toEnd) {
 }
 
 // ---------- Ozon ----------
-async function collectOzon(db, from, toEnd) {
+async function collectOzon(from, toEnd, shopName) {
+  const db = new DatabaseSync("ozon", {readOnly:true});
   const days = Math.max(1, Math.round((new Date(toEnd.slice(0, 10)) - new Date(from)) / 86400000) + 1);
   const rows = await db.prepare(
     `SELECT
@@ -568,7 +567,7 @@ async function collectOzon(db, from, toEnd) {
     return {
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
-      cat: "", im_url: r.im_url || null, platform: "ozon", shop: OZ_SHOP,
+      cat: "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
       orderRub: round2(o.orderRub), salesRub: round2(salesRub),

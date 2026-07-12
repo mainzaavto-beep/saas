@@ -36,9 +36,6 @@ export const dynamic = "force-dynamic";
 //    name, brand, im_url — из articles/products (для композитной колонки «Товар»)
 // =====================================================================
 
-const WB_SHOP = process.env.WB_SHOP_NAME || "ИП Матвеев";
-const OZ_SHOP = process.env.OZ_SHOP_NAME || "Мяумолл озон";
-
 
 
 
@@ -53,8 +50,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const to = url.searchParams.get("to") || "";
 
     let items = [];
-    if (platform !== "ozon") items = items.concat(collectWB(limit));
-    if (platform !== "wb")   items = items.concat(collectOzon(limit));
+    if (platform !== "ozon") items = items.concat(collectWB(limit, cabinet.shop_names?.wb));
+    if (platform !== "wb")   items = items.concat(collectOzon(limit, cabinet.shop_names?.ozon));
 
     // Фильтрация (после объединения — единые имена полей)
     if (status !== "all") items = items.filter((i) => i.statusGroup === status);
@@ -81,7 +78,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       count: items.length,
       totals,
       items,
-      shops: { wb: WB_SHOP, ozon: OZ_SHOP },
+      shops: { wb: cabinet.shop_names?.wb, ozon: cabinet.shop_names?.ozon },
     });
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
@@ -108,7 +105,7 @@ function agg(items) {
 // WB: order_costs — основа (там все компоненты). JOIN orders для склада/статуса/региона,
 // articles для фото/бренда/имени.
 
-async function collectWB(limit) {
+async function collectWB(limit, shopName) {
   const rows = await db.prepare(
     `SELECT oc.srid          AS number,
             oc.nm_id        AS nm,
@@ -175,7 +172,7 @@ async function collectWB(limit) {
   const mapped = rows.map((r) => ({
     ...r,
     platform: "wb",
-    shop: WB_SHOP,
+    shop: shopName,
     statusGroup: wbStatusGroup(r),
     statusLabel: wbStatusLabel(r),
   }));
@@ -186,7 +183,7 @@ async function collectWB(limit) {
     mapped.push({
       ...r,
       platform: "wb",
-      shop: WB_SHOP,
+      shop: shopName,
       statusGroup: cancelled ? "cancelled" : "delivering",
       statusLabel: cancelled ? "Отменён" : "Доставляется",
     });
@@ -210,7 +207,8 @@ function wbStatusLabel(r) {
 
 // ---------- Ozon ----------
 // Ozon: order_costs тоже основа. JOIN orders (статус/склад/регион) + products (фото/бренд/имя).
-async function collectOzon(db, limit) {
+async function collectOzon(limit, shopName) {
+  const db = new DatabaseSync("ozon", {readOnly:true});
   const rows = await db.prepare(
     `SELECT oc.posting_number AS number,
             oc.product_id     AS nm,
@@ -275,7 +273,7 @@ async function collectOzon(db, limit) {
   const mapped = rows.map((r) => ({
     ...r,
     platform: "ozon",
-    shop: OZ_SHOP,
+    shop: shopName,
     statusGroup: ozonStatusGroup(r),
     statusLabel: ozonStatusLabel(r),
   }));
@@ -285,7 +283,7 @@ async function collectOzon(db, limit) {
     if (r.is_cancel === 1 || status === "cancelled") { group = "cancelled"; label = "Отменён"; }
     else if (status === "awaiting_packaging") { group = "delivering"; label = "Ожидает упаковки"; }
     else if (status === "awaiting_deliver") { group = "delivering"; label = "Ожидает отгрузки"; }
-    mapped.push({ ...r, platform: "ozon", shop: OZ_SHOP, statusGroup: group, statusLabel: label });
+    mapped.push({ ...r, platform: "ozon", shop: shopName, statusGroup: group, statusLabel: label });
   }
   return mapped;
 }
