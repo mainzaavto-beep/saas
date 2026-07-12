@@ -68,8 +68,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const toEnd = to ? to + "T23:59:59" : "";
 
     let items = [];
-    if (platform !== "ozon") items = items.concat(collectWB(from, toEnd, cabinet.shop_names?.wb));
-    if (platform !== "wb")   items = items.concat(collectOzon(from, toEnd, cabinet.shop_names?.ozon));
+    if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb));
+    if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon));
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
