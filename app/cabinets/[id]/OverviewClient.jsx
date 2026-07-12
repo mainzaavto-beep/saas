@@ -38,6 +38,7 @@ const GRANS = [
   { id: "week", label: "Неделя" },
   { id: "month", label: "Месяц" },
   { id: "year", label: "Год" },
+  { id: "custom", label: "Интервал" },
 ];
 
 // Маркетплейсы.
@@ -102,17 +103,29 @@ export default function OverviewClient({ cabinetId }) {
   const [userPicked, setUserPicked] = useState(false);
   const [serverPeriod, setServerPeriod] = useState(null); // {from,to} из ответа
   const [mp, setMp] = useState("all");
+  // Произвольный интервал (гранулярность "custom"). Дефолт — последние 30 дней.
+  const [customFrom, setCustomFrom] = useState(() => ymd(new Date(Date.now() - 29 * 86400000)));
+  const [customTo, setCustomTo] = useState(() => ymd(new Date()));
 
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
-  const period = useMemo(() => computePeriod(gran, anchor), [gran, anchor]);
+  const period = useMemo(() => {
+    if (gran === "custom") {
+      const f = customFrom || ymd(new Date(Date.now() - 29 * 86400000));
+      const t = customTo || ymd(new Date());
+      return { from: f, to: t, label: `${f} — ${t}` };
+    }
+    return computePeriod(gran, anchor);
+  }, [gran, anchor, customFrom, customTo]);
 
   useEffect(() => {
     setData(null);
     setError(null);
     const q = new URLSearchParams({ mp });
-    if (userPicked) {
+    // Для custom — всегда шлём выбранный интервал; для пресетов — только если
+    // пользователь сам выбирал период (иначе сервер отдаёт дефолт 30 дней от MAX).
+    if (gran === "custom" || userPicked) {
       q.set("from", period.from);
       q.set("to", period.to);
     }
@@ -121,7 +134,7 @@ export default function OverviewClient({ cabinetId }) {
       .then((d) => {
         if (d.error) { setError(d.error); return; }
         setData(d);
-        if (!userPicked && d.period) {
+        if (gran !== "custom" && !userPicked && d.period) {
           // Серверный дефолт (30 дней от MAX(order_dt)). Подгоним якорь под
           // конец диапазона, чтобы кнопки ‹/› шли оттуда, не от «сегодня».
           setAnchor(d.period.to);
@@ -129,7 +142,7 @@ export default function OverviewClient({ cabinetId }) {
         }
       })
       .catch((e) => setError(String(e)));
-  }, [cabinetId, period.from, period.to, mp, userPicked]);
+  }, [cabinetId, period.from, period.to, mp, userPicked, gran]);
 
   const goPrev = () => { setUserPicked(true); setAnchor((a) => shiftPeriod(gran, a, -1)); };
   const goNext = () => { setUserPicked(true); setAnchor((a) => shiftPeriod(gran, a, +1)); };
@@ -173,15 +186,33 @@ export default function OverviewClient({ cabinetId }) {
           ))}
         </div>
 
-        {/* Навигация периода */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <NavBtn onClick={goPrev} title="Предыдущий">‹</NavBtn>
-          <span style={{ minWidth: 180, textAlign: "center", fontSize: 14, fontWeight: 600, color: C.ink }}>
-            {userPicked ? period.label : (serverPeriod ? `${serverPeriod.from} — ${serverPeriod.to}` : "…")}
-          </span>
-          <NavBtn onClick={goNext} title="Следующий">›</NavBtn>
-          <NavBtn onClick={goYesterday} title="Вчера">Вчера</NavBtn>
-        </div>
+        {/* Навигация периода (для пресетов — кнопки, для custom — date-инпуты) */}
+        {gran === "custom" ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="date" value={customFrom}
+              max={customTo || undefined}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              style={{ ...dateInputStyle, color: C.ink }}
+            />
+            <span style={{ color: C.faint, fontSize: 13 }}>—</span>
+            <input
+              type="date" value={customTo}
+              min={customFrom || undefined}
+              onChange={(e) => setCustomTo(e.target.value)}
+              style={{ ...dateInputStyle, color: C.ink }}
+            />
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <NavBtn onClick={goPrev} title="Предыдущий">‹</NavBtn>
+            <span style={{ minWidth: 180, textAlign: "center", fontSize: 14, fontWeight: 600, color: C.ink }}>
+              {userPicked ? period.label : (serverPeriod ? `${serverPeriod.from} — ${serverPeriod.to}` : "…")}
+            </span>
+            <NavBtn onClick={goNext} title="Следующий">›</NavBtn>
+            <NavBtn onClick={goYesterday} title="Вчера">Вчера</NavBtn>
+          </div>
+        )}
 
         {/* Маркетплейс */}
         <div style={{ display: "flex", gap: 4, background: C.surfaceAlt, borderRadius: 10, padding: 3, marginLeft: "auto" }}>
@@ -359,6 +390,10 @@ function QuickLink({ href, label }) {
 const h2 = { margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink };
 const th = (i) => ({ textAlign: i === 0 ? "left" : "right", padding: "0 8px 8px", fontSize: 11, color: C.muted, textTransform: "uppercase" });
 const linkStyle = { color: C.accent, textDecoration: "none", fontSize: 13, fontWeight: 600, marginLeft: "auto" };
+const dateInputStyle = {
+  padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.line}`,
+  background: C.surfaceAlt, fontSize: 13, fontFamily: "inherit", colorScheme: "dark",
+};
 
 function Centered({ children }) {
   return <div style={{ minHeight: "50vh", display: "grid", placeItems: "center", color: C.muted, fontFamily: FONT, padding: 20, textAlign: "center" }}>{children}</div>;
