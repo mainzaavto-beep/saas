@@ -1,0 +1,306 @@
+import { DatabaseSync } from "@/lib/db.js";
+import { withCabinet } from "@/lib/withCabinet.js";
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// =====================================================================
+//  /api/orders — журнал заказов «как в Mpassistant» (24 колонки).
+//
+//  Источник (после №23/№24): order_costs в каждой БД уже содержит ВСЕ
+//  компоненты + profit по каждому заказу. Мы JOIN'им её с orders (склад/
+//  регион/статус) и articles/products (фото/бренд/имя), унифицируем WB+Ozon
+//  в единый формат и отдаём одной лентой.
+//
+//  Поля ответа (соответствие колонкам export_order.csv):
+//    number        = srid(WB) | posting_number(Ozon)      — «Номер заказа»
+//    sa            = supplier_article(WB) | offer_id(Ozon) — «Артикул продавца»
+//    nm            = nm_id(WB) | product_id(Ozon)         — «Артикул МП»
+//    size          = tech_size(WB) | size(Ozon)
+//    status        = нормализованный статус
+//    order_dt, sale_dt, cancel_dt, return_dt
+//    qty           = «Количество, шт.»
+//    cost          = «Себестоимость, руб.» (order_costs.cost)
+//    order_total   = «Стоимость заказа, руб.» (cost_value_retail — цена со
+//                    всеми скидками, что заплатил покупатель)
+//    sale_total    = «Сумма продажи, руб.» (cost_value_pay — что получит
+//                    продавец; 0 для недоставленных)
+//    commission, acquiring, logistics, loyalty, profit
+//    self_buyout   = «Самовыкуп»
+//    posting_id    = «Номер поставки» (g_number WB | posting_number Ozon)
+//    platform      = 'wb' | 'ozon'                          — «Маркетплейс»
+//    shop          = имя магазина (константа по МП)
+//    warehouse     = «Склад отправки»
+//    destination   = «Куда (доставка)»
+//    name, brand, im_url — из articles/products (для композитной колонки «Товар»)
+// =====================================================================
+
+const WB_SHOP = process.env.WB_SHOP_NAME || "ИП Матвеев";
+const OZ_SHOP = process.env.OZ_SHOP_NAME || "Мяумолл озон";
+
+
+
+
+export const GET = withCabinet(async (req, { cabinet }) => {
+  try {
+    const url = new URL(req.url);
+    const limit = Math.min(parseInt(url.searchParams.get("limit") || "500", 10), 2000);
+    const platform = url.searchParams.get("platform") || "all"; // all|wb|ozon
+    const status = url.searchParams.get("status") || "all";     // all|delivered|cancelled|delivering|return
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const from = url.searchParams.get("from") || "";            // YYYY-MM-DD
+    const to = url.searchParams.get("to") || "";
+
+    let items = [];
+    if (platform !== "ozon") items = items.concat(collectWB(limit));
+    if (platform !== "wb")   items = items.concat(collectOzon(limit));
+
+    // Фильтрация (после объединения — единые имена полей)
+    if (status !== "all") items = items.filter((i) => i.statusGroup === status);
+    if (q) {
+      items = items.filter((i) =>
+        String(i.sa || "").toLowerCase().includes(q) ||
+        String(i.nm || "").includes(q) ||
+        String(i.name || "").toLowerCase().includes(q) ||
+        String(i.number || "").toLowerCase().includes(q) ||
+        String(i.brand || "").toLowerCase().includes(q)
+      );
+    }
+    if (from) items = items.filter((i) => (i.order_dt || "") >= from);
+    if (to)   items = items.filter((i) => (i.order_dt || "") <= to + "T23:59:59");
+
+    // Сортировка: новые сверху (по дате заказа)
+    items.sort((a, b) => (b.order_dt || "").localeCompare(a.order_dt || ""));
+    items = items.slice(0, limit);
+
+    // Тоталы по выборке (для строки «Итого»)
+    const totals = agg(items);
+
+    return NextResponse.json({
+      count: items.length,
+      totals,
+      items,
+      shops: { wb: WB_SHOP, ozon: OZ_SHOP },
+    });
+  } catch (e) {
+    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+  }
+});
+
+function agg(items) {
+  const t = { qty: 0, cost: 0, orderTotal: 0, saleTotal: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, profit: 0 };
+  for (const i of items) {
+    t.qty += i.qty || 0;
+    t.cost += i.cost || 0;
+    t.orderTotal += i.order_total || 0;
+    t.saleTotal += i.sale_total || 0;
+    t.commission += i.commission || 0;
+    t.acquiring += i.acquiring || 0;
+    t.logistics += i.logistics || 0;
+    t.loyalty += i.loyalty || 0;
+    t.profit += i.profit || 0;
+  }
+  return t;
+}
+
+// ---------- WB ----------
+// WB: order_costs — основа (там все компоненты). JOIN orders для склада/статуса/региона,
+// articles для фото/бренда/имени.
+
+async function collectWB(limit) {
+  const rows = await db.prepare(
+    `SELECT oc.srid          AS number,
+            oc.nm_id        AS nm,
+            oc.sa_name      AS sa,
+            o.tech_size     AS size,
+            o.warehouse_name AS warehouse,
+            o.region_name   AS destination,
+            o.brand         AS brand,
+            o.subject       AS subject,
+            a.name          AS name,
+            a.im_url        AS im_url,
+            oc.order_dt, oc.sale_dt, o.cancel_dt, oc.return_dt,
+            oc.is_return, oc.self_buyout,
+            oc.qty, oc.cost, oc.cost_value_retail AS order_total,
+            oc.cost_value_pay AS sale_total,
+            oc.commission, oc.acquiring, oc.logistics, oc.loyalty, oc.profit,
+            o.g_number      AS posting_id,
+            oc.updated_at
+     FROM order_costs oc
+     LEFT JOIN orders o   ON o.srid = oc.srid
+     LEFT JOIN articles a ON a.nm_id = oc.nm_id
+     ORDER BY oc.order_dt DESC
+     LIMIT ?`
+  ).all(limit);
+
+  // PENDING-заказы: есть в orders, но ЕЩЁ НЕ дошли до order_costs (заказаны, но не
+  // выкуплены/обработаны). order_costs наполняется из финансового report-detail, который
+  // появляется только по факту продажи/логистики → свежие «в пути» заказы здесь отсутствуют.
+  // Добираем их из orders. Финансовые поля = 0 (нет продажи), себестоимость — из cogs,
+  // стоимость заказа = price_with_disc (цена со скидкой, что заплатил покупатель).
+  const pending = await db.prepare(
+    `SELECT o.srid          AS number,
+            o.nm_id        AS nm,
+            o.supplier_article AS sa,
+            o.tech_size     AS size,
+            o.warehouse_name AS warehouse,
+            o.region_name   AS destination,
+            o.brand         AS brand,
+            o.subject       AS subject,
+            a.name          AS name,
+            a.im_url        AS im_url,
+            o.order_dt,
+            NULL            AS sale_dt,
+            o.cancel_dt,
+            NULL            AS return_dt,
+            0               AS is_return,
+            0               AS self_buyout,
+            1               AS qty,
+            COALESCE(cg.cost, 0) AS cost,
+            o.price_with_disc AS order_total,
+            0               AS sale_total,
+            0               AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
+            -COALESCE(cg.cost, 0) AS profit,
+            o.g_number      AS posting_id,
+            o.updated_at,
+            o.is_cancel
+     FROM orders o
+     LEFT JOIN articles a ON a.nm_id = o.nm_id
+     LEFT JOIN cogs cg    ON cg.nm_id = o.nm_id
+     WHERE NOT EXISTS (SELECT 1 FROM order_costs oc WHERE oc.srid = o.srid)
+     ORDER BY o.order_dt DESC`
+  ).all();
+
+  const mapped = rows.map((r) => ({
+    ...r,
+    platform: "wb",
+    shop: WB_SHOP,
+    statusGroup: wbStatusGroup(r),
+    statusLabel: wbStatusLabel(r),
+  }));
+  // pending-строки идут тем же форматом, но статус = delivering/cancelled по is_cancel.
+  for (const r of pending) {
+    const cancelled = (r.is_cancel === 1) ||
+      (r.cancel_dt && r.cancel_dt !== "0001-01-01T00:00:00");
+    mapped.push({
+      ...r,
+      platform: "wb",
+      shop: WB_SHOP,
+      statusGroup: cancelled ? "cancelled" : "delivering",
+      statusLabel: cancelled ? "Отменён" : "Доставляется",
+    });
+  }
+  return mapped;
+}
+
+// WB: статусов нет — выводим из is_cancel/is_return + наличия дат.
+function wbStatusGroup(r) {
+  if (r.is_return === 1) return "return";
+  if (r.cancel_dt && r.cancel_dt !== "0001-01-01T00:00:00" && !r.sale_dt) return "cancelled";
+  if (r.sale_dt) return "delivered";
+  return "delivering";
+}
+function wbStatusLabel(r) {
+  if (r.is_return === 1) return "Возврат";
+  if (r.cancel_dt && r.cancel_dt !== "0001-01-01T00:00:00" && !r.sale_dt) return "Отменён";
+  if (r.sale_dt) return "Доставлен";
+  return "Доставляется";
+}
+
+// ---------- Ozon ----------
+// Ozon: order_costs тоже основа. JOIN orders (статус/склад/регион) + products (фото/бренд/имя).
+async function collectOzon(db, limit) {
+  const rows = await db.prepare(
+    `SELECT oc.posting_number AS number,
+            oc.product_id     AS nm,
+            p.offer_id        AS sa,
+            oc.size           AS size,
+            o.warehouse       AS warehouse,
+            o.region          AS destination,
+            p.name            AS name,
+            p.brand           AS brand,
+            p.category        AS subject,
+            p.im_url          AS im_url,
+            oc.order_dt, oc.sale_dt, oc.return_dt, o.cancel_dt,
+            oc.is_return, oc.self_buyout,
+            oc.qty, oc.cost, oc.cost_value_retail AS order_total,
+            oc.commission, oc.acquiring, oc.logistics, oc.loyalty, oc.profit,
+            oc.posting_number AS posting_id,
+            oc.updated_at
+     FROM order_costs oc
+     LEFT JOIN orders o   ON o.posting_number = oc.posting_number
+     LEFT JOIN products p ON p.product_id = oc.product_id
+     ORDER BY oc.order_dt DESC
+     LIMIT ?`
+  ).all(limit);
+
+  // PENDING-заказы Ozon: orders есть, order_costs ещё нет (свежие/в пути/отменённые-рано).
+  // order_costs наполняется из finance/transaction-list с лагом → недавние delivering
+  // здесь отсутствуют. Добираем из orders; sale_total/финансы = 0, стоимость = total.
+  const pending = await db.prepare(
+    `SELECT o.posting_number AS number,
+            o.product_id     AS nm,
+            p.offer_id       AS sa,
+            o.size           AS size,
+            o.warehouse      AS warehouse,
+            o.region         AS destination,
+            p.name           AS name,
+            p.brand          AS brand,
+            p.category       AS subject,
+            p.im_url         AS im_url,
+            o.order_dt,
+            NULL             AS sale_dt,
+            NULL             AS return_dt,
+            o.cancel_dt,
+            0                AS is_return,
+            0                AS self_buyout,
+            o.qty,
+            COALESCE(cg.cost, 0) AS cost,
+            o.total          AS order_total,
+            0                AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
+            -COALESCE(cg.cost, 0) * o.qty AS profit,
+            o.posting_number AS posting_id,
+            o.updated_at,
+            o.status,
+            o.is_cancel
+     FROM orders o
+     LEFT JOIN products p ON p.product_id = o.product_id
+     LEFT JOIN cogs cg    ON cg.product_id = o.product_id
+     WHERE NOT EXISTS (SELECT 1 FROM order_costs oc
+                       WHERE oc.posting_number = o.posting_number AND oc.product_id = o.product_id)
+     ORDER BY o.order_dt DESC`
+  ).all();
+
+  const mapped = rows.map((r) => ({
+    ...r,
+    platform: "ozon",
+    shop: OZ_SHOP,
+    statusGroup: ozonStatusGroup(r),
+    statusLabel: ozonStatusLabel(r),
+  }));
+  for (const r of pending) {
+    const { status } = r;
+    let group = "delivering", label = "Доставляется";
+    if (r.is_cancel === 1 || status === "cancelled") { group = "cancelled"; label = "Отменён"; }
+    else if (status === "awaiting_packaging") { group = "delivering"; label = "Ожидает упаковки"; }
+    else if (status === "awaiting_deliver") { group = "delivering"; label = "Ожидает отгрузки"; }
+    mapped.push({ ...r, platform: "ozon", shop: OZ_SHOP, statusGroup: group, statusLabel: label });
+  }
+  return mapped;
+}
+
+function ozonStatusGroup(r) {
+  if (r.is_return === 1) return "return";
+  if (r.sale_dt) return "delivered";
+  // Ozon: есть явный статус в orders.status, но в order_costs его нет —
+  // используем эвристику по датам
+  if (r.cancel_dt) return "cancelled";
+  return "delivering";
+}
+function ozonStatusLabel(r) {
+  if (r.is_return === 1) return "Возврат";
+  if (r.sale_dt) return "Доставлен";
+  if (r.cancel_dt) return "Отменён";
+  return "Доставляется";
+}

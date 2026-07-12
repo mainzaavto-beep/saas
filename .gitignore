@@ -1,0 +1,24 @@
+# зависимости
+node_modules/
+
+# сборка Next.js
+.next/
+out/
+
+# секреты (правило: креды НИКОГДА в git)
+.env.local
+.env*.local
+.env
+
+# системное / IDE
+.DS_Store
+*.log
+npm-debug.log*
+.vscode/
+.idea/
+
+# временные файлы
+*.tmp
+*.bak
+__pycache__/
+*.pyc

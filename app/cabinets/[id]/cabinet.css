@@ -1,0 +1,106 @@
+/* cabinet.css — стили для страниц кабинета */
+.nav-link {
+  display: block;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+.nav-link:hover {
+  background: var(--panel2);
+  text-decoration: none;
+  color: var(--text);
+}
+
+/* KPI карточки (общий паттерн) */
+.kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+.kpi-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+.kpi-card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.kpi-card .value { font-size: 26px; font-weight: 700; }
+.kpi-card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* Секции */
+.section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.section h3 { margin: 0 0 16px; font-size: 16px; }
+
+/* Таблицы */
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th {
+  text-align: left;
+  padding: 8px 6px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid rgba(36, 48, 73, 0.5);
+}
+.table tr:hover td { background: rgba(79, 140, 255, 0.05); }
+
+/* МП-бейджи */
+.mp-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.mp-wb { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
+.mp-ozon { background: rgba(249, 115, 22, 0.15); color: #f97316; }
+
+/* Цвета прибыли */
+.positive { color: #4ade80; }
+.negative { color: #f87171; }
+
+/* Фильтры */
+.filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filters select, .filters input {
+  padding: 8px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+.btn-small {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-small.active { background: var(--accent); border-color: var(--accent); }
+
+/* Фото товара */
+.thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  object-fit: cover;
+  vertical-align: middle;
+  margin-right: 8px;
+}
