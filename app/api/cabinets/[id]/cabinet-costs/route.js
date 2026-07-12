@@ -115,6 +115,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           d.setDate(d.getDate() - 29);
           from = d.toISOString().slice(0, 10);
         }
+      } else {
+        // Fallback: нет данных — последние 30 дней от сегодня.
+        if (!to) to = new Date().toISOString().slice(0, 10);
+        if (!from) from = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
       }
     }
     const toEnd = to ? to + "T23:59:59" : "";

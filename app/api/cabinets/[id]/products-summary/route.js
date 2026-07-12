@@ -46,6 +46,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const toQ = url.searchParams.get("to") || "";
 
     // Дефолтный период: последние 30 дней от MAX(order_dt) по обеим БД.
+    // Если MAX пустой (нет данных / RLS ничего не видит) — fallback на сегодня.
     let from = fromQ, to = toQ;
     if (!from || !to) {
       let maxDt = "";
@@ -58,6 +59,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           d.setDate(d.getDate() - 29);
           from = d.toISOString().slice(0, 10);
         }
+      } else {
+        // Fallback: нет данных — последние 30 дней от сегодня (не пустая строка!).
+        if (!to) to = new Date().toISOString().slice(0, 10);
+        if (!from) from = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
       }
     }
     const toEnd = to ? to + "T23:59:59" : "";
