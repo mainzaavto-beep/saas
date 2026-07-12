@@ -284,6 +284,17 @@ def upsert_metric_30m(nm_id, date, ts, **fields):
 _AD_COLS = {"views", "clicks", "atbs", "orders", "spend"}
 
 
+def cleanup_metrics_30m(days=60):
+    """Удалить 30-минутные снапшоты старше `days` дней. Возвращает кол-во удалённых."""
+    cid = _cabinet_id()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM tenant.wb_metrics_30m WHERE cabinet_id=%s AND date < %s",
+            (cid, (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")),
+        )
+        return cur.rowcount if hasattr(cur, "rowcount") else 0
+
+
 def upsert_ad(nm_id, date, model, **fields):
     cols = [c for c in _AD_COLS if c in fields]
     if not cols:

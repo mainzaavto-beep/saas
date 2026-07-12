@@ -18,11 +18,13 @@ DAYS_TO="${3:-0}"
 # Списки сборщиков по группам.
 MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_order_costs,ozon_metrics,ozon_efficiency"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
+METRICS30M_COLLECTORS="wb_metrics_30m"
 
 case "$MODE" in
-  main)   COLLECTORS="$MAIN_COLLECTORS";   DAYS_FROM="${DAYS_FROM:-2}" ;;
-  stocks) COLLECTORS="$STOCKS_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
-  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks)" >&2; exit 1 ;;
+  main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;
+  stocks)     COLLECTORS="$STOCKS_COLLECTORS";     DAYS_FROM="${DAYS_FROM:-0}" ;;
+  metrics30m) COLLECTORS="$METRICS30M_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
+  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m)" >&2; exit 1 ;;
 esac
 
 # Диапазон дат: FROM = сегодня − DAYS_FROM, TO = сегодня − DAYS_TO.
