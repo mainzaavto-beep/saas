@@ -50,8 +50,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const to = url.searchParams.get("to") || "";
 
     let items = [];
-    if (platform !== "ozon") items = items.concat(collectWB(limit, cabinet.shop_names?.wb));
-    if (platform !== "wb")   items = items.concat(collectOzon(limit, cabinet.shop_names?.ozon));
+    if (platform !== "ozon") items = items.concat(await collectWB(limit, cabinet.shop_names?.wb));
+    if (platform !== "wb")   items = items.concat(await collectOzon(limit, cabinet.shop_names?.ozon));
 
     // Фильтрация (после объединения — единые имена полей)
     if (status !== "all") items = items.filter((i) => i.statusGroup === status);
