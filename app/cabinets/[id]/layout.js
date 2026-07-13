@@ -23,6 +23,7 @@ const MENU = [
   { href: "/move", label: "Перемещения", icon: "🚚" },
   { href: "/abc", label: "ABC анализ", icon: "🔤" },
   { href: "/stocks", label: "Склады", icon: "🏢" },
+  { href: "/alerts", label: "Оповещения", icon: "🔔" },
   { href: "/reviews", label: "Отзывы", icon: "⭐" },
   { href: "/briefing", label: "Брифинг", icon: "📋" },
 ];
