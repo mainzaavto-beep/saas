@@ -8,25 +8,50 @@ import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
 
+// Навигация с группами (как в эталоне data-presenter/Nav.jsx).
+// Группа = { label, icon, items: [{href, label}] } — рендерится как dropdown.
+// Пункт = { href, label, icon } — плоский.
 const MENU = [
   { href: "", label: "Главная", icon: "📊" },
-  { href: "/summary", label: "Сводка по товарам", icon: "📦" },
-  { href: "/orders", label: "Заказы", icon: "🛒" },
-  { href: "/geo", label: "География", icon: "🗺️" },
-  { href: "/timing", label: "Время заказов", icon: "⏰" },
-  { href: "/unit", label: "Юнит-экономика", icon: "📐" },
-  { href: "/pnl", label: "Сводка по прибыли", icon: "💰" },
-  { href: "/fin-dds", label: "ДДС", icon: "💸" },
-  { href: "/fin-balance", label: "Баланс", icon: "🏦" },
-  { href: "/fin-plan", label: "План продаж", icon: "🎯" },
-  { href: "/fin-purchases", label: "Закупки", icon: "🛍️" },
-  { href: "/fin-purchase-plan", label: "План закупок", icon: "📋" },
-  { href: "/fin-calendar", label: "Платежи", icon: "📅" },
-  { href: "/items", label: "Товары (себест.)", icon: "🏷️" },
-  { href: "/mp-stock", label: "Остатки на МП", icon: "📦" },
-  { href: "/alerts", label: "Оповещения", icon: "🔔" },
-  { href: "/reviews", label: "Отзывы", icon: "⭐" },
   { href: "/briefing", label: "Брифинг", icon: "📋" },
+  {
+    label: "Сводка по товарам", icon: "📦", groupBase: "/summary",
+    items: [
+      { href: "/summary", label: "По товарам" },
+      { href: "/orders", label: "Заказы" },
+      { href: "/geo", label: "География" },
+      { href: "/timing", label: "Заказы по времени" },
+      { href: "/abc", label: "ABC анализ" },
+      { href: "/stocks", label: "Склады и индексы" },
+    ],
+  },
+  { href: "/pnl", label: "Сводка по прибыли", icon: "💰" },
+  { href: "/reviews", label: "Отзывы", icon: "⭐" },
+  {
+    label: "Товары", icon: "🏷️", groupBase: "/items",
+    items: [
+      { href: "/catalog", label: "Справочник товаров" },
+      { href: "/items", label: "Себестоимость" },
+      { href: "/mp-stock", label: "Остатки на МП" },
+      { href: "/ff-stock", label: "Остатки склад/ФФ" },
+      { href: "/move", label: "Перемещение" },
+    ],
+  },
+  {
+    label: "Финансы", icon: "📐", groupBase: "/unit",
+    items: [
+      { href: "/unit", label: "Юнит-экономика" },
+      { href: "/fin-plan", label: "План продаж" },
+      { href: "/fin-manual", label: "Сопутств. расходы" },
+      { href: "/fin-purchases", label: "Закупки" },
+      { href: "/fin-balance", label: "Баланс" },
+      { href: "/fin-self-buyouts", label: "Самовыкупы" },
+      { href: "/fin-dds", label: "ДДС" },
+      { href: "/fin-calendar", label: "План платежей" },
+      { href: "/fin-purchase-plan", label: "План закупок" },
+    ],
+  },
+  { href: "/alerts", label: "Оповещения", icon: "🔔" },
 ];
 
 export default async function CabinetLayout({ children, params }) {
@@ -61,10 +86,37 @@ export default async function CabinetLayout({ children, params }) {
             <span className="brand-text">MP Analytics</span>
             <span className="brand-cab">{cab.display_name}</span>
           </div>
-          <nav className="topnav">
+          <nav className="topnav" id="topnav-groups">
             {MENU.map((item) => {
-              const itemPath = item.href; // "" для главной, "/summary" и т.д.
-              const active = itemPath === "" ? current === "" : current === itemPath;
+              // Группа с подменю (dropdown по hover)
+              if (item.items) {
+                const groupActive = item.items.some((sub) => current === sub.href);
+                return (
+                  <div key={item.label} className="topnav-group">
+                    <button
+                      className={"topnav-link" + (groupActive ? " active" : "")}
+                      title={item.label}
+                    >
+                      <span className="topnav-icon">{item.icon}</span>
+                      <span className="topnav-label">{item.label}</span>
+                      <span style={{ fontSize: 9, opacity: 0.6 }}>▼</span>
+                    </button>
+                    <div className="topnav-dropdown">
+                      {item.items.map((sub) => (
+                        <Link
+                          key={sub.href}
+                          href={basePath + sub.href}
+                          className={"topnav-sublink" + (current === sub.href ? " active" : "")}
+                        >
+                          {sub.label}
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              // Плоский пункт
+              const active = item.href === "" ? current === "" : current === item.href;
               return (
                 <Link
                   key={item.href || "home"}
