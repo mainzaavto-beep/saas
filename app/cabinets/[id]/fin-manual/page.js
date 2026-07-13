@@ -1,9 +1,5 @@
+import OpexPage from './OpexPage';
 export const dynamic = 'force-dynamic';
-export default function Page() {
-  return (
-    <div style={{ padding: 40, textAlign: 'center', color: '#8a99b8', fontFamily: 'system-ui' }}>
-      <h2 style={{ color: '#e8edf7' }}>Сопутствующие расходы</h2>
-      <p style={{ fontSize: 13, color: '#6b7a8f' }}>Перенос в процессе. Миграция БД готова.</p>
-    </div>
-  );
+export default async function Page({ params }) {
+  return <OpexPage cabinetId={Number(params.id)} />;
 }
