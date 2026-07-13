@@ -12,9 +12,13 @@ const MENU = [
   { href: "", label: "Главная", icon: "📊" },
   { href: "/summary", label: "Сводка по товарам", icon: "📦" },
   { href: "/orders", label: "Заказы", icon: "🛒" },
+  { href: "/geo", label: "География", icon: "🗺️" },
+  { href: "/timing", label: "Время заказов", icon: "⏰" },
   { href: "/unit", label: "Юнит-экономика", icon: "📐" },
   { href: "/pnl", label: "Сводка по прибыли", icon: "💰" },
   { href: "/items", label: "Товары (себест.)", icon: "🏷️" },
+  { href: "/abc", label: "ABC анализ", icon: "🔤" },
+  { href: "/stocks", label: "Склады", icon: "🏢" },
   { href: "/reviews", label: "Отзывы", icon: "⭐" },
   { href: "/briefing", label: "Брифинг", icon: "📋" },
 ];
