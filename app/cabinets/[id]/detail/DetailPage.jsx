@@ -584,7 +584,7 @@ function Detail({ data, platform }) {
             <MiniKpi label="Продажи" value={num(t.sales)} />
             <MiniKpi label="Выручка ₽" value={money(t.revenue)} />
             <MiniKpi label="Прибыль ₽" value={money(t.profit)} color={(t.profit || 0) >= 0 ? C.pos : C.neg} />
-            <MiniKpi label="СПП %" value={t.spp != null ? pct(pctFromRate(t.spp)) : "—"} />
+            <MiniKpi label="СПП %" value={t.spp != null ? pct(t.spp) : "—"} />
             <MiniKpi label="Рейтинг ★" value={data.product?.rating_nm != null ? r2(data.product.rating_nm) : "—"} />
             <MiniKpi label="Оценок (артикул)" value={data.product?.rating_nm_count != null ? num(data.product.rating_nm_count) : "—"} />
             <MiniKpi label="Оценок (склейка)" value={data.product?.rating_imt_count != null ? num(data.product.rating_imt_count) : "—"} />
@@ -1313,7 +1313,7 @@ function fmtCell(v, kind) {
   if (v == null) return <span style={{ color: C.faint }}>·</span>;
   if (kind === "int" || kind === "price") return num(v);
   if (kind === "money") return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v);
-  if (kind === "spp") return pct(pctFromRate(v));
+  if (kind === "spp") return pct(v);  // spp уже в % (38, не 0.38)
   if (kind === "pct_raw") return pct(v);  // значение уже в % (boost Ozon = 15..75)
   if (kind === "rating") return r2(v);
   return v;
