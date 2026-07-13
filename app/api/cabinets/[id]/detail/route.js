@@ -201,7 +201,7 @@ async function collectWB(nm, from, to, toEnd, shopName) {
   try {
     const saleRows = await db.prepare(
       `SELECT warehouse_name, region_name, okrug_name FROM sales WHERE sale_id LIKE 'S%' AND sale_dt >= ? AND sale_dt <= ? AND nm_id = ? AND warehouse_name IS NOT NULL`
-    ).all(from + " 00:00:00", toEnd, nm);
+    ).all(from + "T00:00:00", toEnd, nm);
     wbSales = buildSalesByLoc(saleRows, wbRegionOf);
   } catch {}
 
