@@ -12,7 +12,7 @@ import os
 import sys
 import time
 import requests
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db_pg
@@ -59,15 +59,27 @@ def _fetch_funnel(date_str):
     return result
 
 
-def collect(target_date=None):
-    """Собрать метрики за target_date (по умолчанию вчера)."""
+def collect(target_date=None, end_date=None):
+    """Собрать метрики. Если end_date задан — перебрать диапазон дней."""
+    if target_date and end_date:
+        cur = datetime.strptime(target_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        total = 0
+        while cur <= end:
+            total += _collect_one(cur.strftime("%Y-%m-%d"))
+            cur += timedelta(days=1)
+        return total
     ds = target_date or (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return _collect_one(ds)
+
+
+def _collect_one(ds):
+    """Собрать метрики за один день."""
     print(f"[wb_metrics] воронка за {ds}", flush=True)
     db_pg.init()
     known = set(db_pg.active_nm_ids())
     funnel = _fetch_funnel(ds)
 
-    # orders по nm_id из tenant.wb_orders (count заказов в этот день).
     order_counts = {}
     rows = db_pg.query(
         "SELECT nm_id, count(*) AS c FROM tenant.wb_orders "
@@ -76,7 +88,6 @@ def collect(target_date=None):
     for r in rows:
         order_counts[r["nm_id"]] = r["c"]
 
-    # Объединяем: все nm из known + funnel (воронка может覆盖 не всё).
     all_nm = known | set(funnel.keys()) | set(order_counts.keys())
     written = 0
     for nm in all_nm:
@@ -91,7 +102,7 @@ def collect(target_date=None):
             orders=order_counts.get(nm),
         )
         written += 1
-    print(f"[wb_metrics] записано {written} метрик → tenant.wb_daily_metrics", flush=True)
+    print(f"[wb_metrics] записано {written} метрик за {ds}", flush=True)
     return written
 
 
@@ -99,4 +110,4 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     os.environ["NO_PROXY"] = "*"
     args = sys.argv[1:]
-    collect(args[0] if args else None)
+    collect(args[0] if args else None, args[1] if len(args) > 1 else None)
