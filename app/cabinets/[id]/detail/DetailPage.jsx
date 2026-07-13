@@ -1312,7 +1312,8 @@ function renderConvRow(row, days, t, expandConv, setExpandConv) {
 
 function fmtCell(v, kind) {
   if (v == null) return <span style={{ color: C.faint }}>·</span>;
-  if (kind === "int" || kind === "price") return num(v);
+  if (kind === "int") return num(v);
+  if (kind === "price") return Math.round(v);
   if (kind === "money") return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v);
   if (kind === "spp") return pct(v);  // spp уже в % (38, не 0.38)
   if (kind === "pct_raw") return pct(v);  // значение уже в % (boost Ozon = 15..75)
