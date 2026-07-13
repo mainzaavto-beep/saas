@@ -203,6 +203,7 @@ const WB_MATRIX_ROWS = [
   { key: "cart",        label: "Корзины",          sheet: "R6", kind: "int", group: "cart" },
   { key: "price",       label: "Цена до СПП",      sheet: "R8", kind: "price" },
   { key: "spp",         label: "СПП %",            sheet: "R10", kind: "spp" },
+  { key: "price_with_spp", label: "Цена с СПП",   sheet: "R9", kind: "price" },
   { adGroup: true }, // общая кликабельная строка «Реклама ₽» → AD_MODELS
   { ratingGroup: true }, // раскрывающийся «Рейтинг и оценки» → nm/imt × рейтинг+кол-во
 ];
