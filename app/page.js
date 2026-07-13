@@ -1,98 +1,105 @@
-// app/page.js — защищённая главная (stub дашборда). Серверный компонент.
-// Читает сессию, показывает кабинеты юзера + RLS-демо (видит только свой товар).
+// app/page.js — визитная страница сервиса (landing).
+// Если уже залогинен — редирект на список кабинетов.
 import { getSession } from '@/lib/session.js';
-import { query, withTenant } from '@/lib/db.js';
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 
-export default async function HomePage() {
+export default async function LandingPage() {
   const session = await getSession();
-  if (!session?.user_id) redirect('/login');
-
-  // Список кабинетов юзера (без-тенантно, auth.*).
-  const cabinets = await query(
-    `SELECT c.cabinet_id, c.display_name, c.marketplaces, c.status
-     FROM auth.cabinets c
-     JOIN auth.memberships m ON m.cabinet_id = c.cabinet_id
-     WHERE m.user_id = $1 AND c.status <> 'deleted'
-     ORDER BY c.cabinet_id`,
-    [session.user_id]
-  );
-
-  // RLS-демо: под активным кабинетом видим только его товары.
-  let demoRows = [];
-  if (session.active_cabinet_id) {
-    demoRows = await withTenant(session.active_cabinet_id, async (q) => {
-      const { rows } = await q('SELECT cabinet_id, nm_id, name FROM tenant.wb_articles ORDER BY nm_id LIMIT 20');
-      return rows;
-    });
-  }
+  if (session?.user_id) redirect('/cabinets');
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">📊 MP Analytics</div>
-        <a href="/" className="active">Главная</a>
-        <a href="/onboarding">+ Кабинет</a>
-        <div style={{ marginTop: 24, fontSize: 12, color: 'var(--muted)' }}>
-          {session.email}
+    <div style={{
+      minHeight: '100vh', background: '#0b1220', color: '#e8edf7',
+      fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+      display: 'flex', flexDirection: 'column',
+    }}>
+      {/* Шапка */}
+      <header style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '16px 32px', borderBottom: '1px solid #243049',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 24 }}>📊</span>
+          <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.3 }}>MP Analytics</span>
         </div>
-        <form action="/api/auth/logout" method="post" style={{ marginTop: 12 }}>
-          <button type="submit" className="btn secondary" style={{ padding: '8px' }}>Выйти</button>
-        </form>
-      </aside>
-      <main className="main">
-        <h2>Привет, {session.name || session.email} 👋</h2>
-        <p style={{ color: 'var(--muted)', marginTop: 0 }}>
-          Выберите кабинет, чтобы увидеть аналитику, или подключите новый.
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Link href="/login" style={{
+            padding: '8px 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
+            color: '#8a99b8', textDecoration: 'none',
+          }}>Войти</Link>
+          <Link href="/register" style={{
+            padding: '8px 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
+            background: '#4f8cff', color: '#fff', textDecoration: 'none',
+          }}>Начать бесплатно</Link>
+        </div>
+      </header>
+
+      {/* Hero */}
+      <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', textAlign: 'center', padding: '40px 24px',
+      }}>
+        <div style={{
+          fontSize: 13, letterSpacing: 3, textTransform: 'uppercase',
+          color: '#4f8cff', fontWeight: 700, marginBottom: 16,
+        }}>Сервис оцифровки продаж на маркетплейсах</div>
+        <h1 style={{
+          fontSize: 42, fontWeight: 800, margin: '0 0 16px', lineHeight: 1.2,
+          maxWidth: 720,
+        }}>
+          Полная аналитика Wildberries и Ozon<br />в одном дашборде
+        </h1>
+        <p style={{
+          fontSize: 18, color: '#8a99b8', maxWidth: 580, margin: '0 0 32px',
+          lineHeight: 1.5,
+        }}>
+          Выручка, прибыль, рекламные кампании, остатки, юнит-экономика и
+          финансовое планирование — всё в реальном времени, автоматически.
         </p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+          <Link href="/register" style={{
+            padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 700,
+            background: '#4f8cff', color: '#fff', textDecoration: 'none',
+          }}>Попробовать бесплатно →</Link>
+          <Link href="/login" style={{
+            padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 600,
+            border: '1px solid #243049', color: '#8a99b8', textDecoration: 'none',
+          }}>Войти в кабинет</Link>
+        </div>
+      </div>
 
-        <h3 style={{ marginTop: 24 }}>Ваши кабинеты</h3>
-        {cabinets.length === 0 ? (
-          <div className="placeholder">
-            Кабинетов пока нет. <a href="/onboarding">Подключить первый →</a>
+      {/* Возможности */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+        gap: 16, maxWidth: 1100, margin: '0 auto', padding: '0 24px 60px', width: '100%',
+      }}>
+        {[
+          { icon: '📦', title: 'Сводка по товарам', desc: '27 метрик по каждому товару: заказы, продажи, выручка, прибыль, ДРР, оборачиваемость' },
+          { icon: '🔍', title: 'Детальная аналитика', desc: 'Клики, корзины, конверсии воронки, позиции по ключам, продажи по складам и регионам' },
+          { icon: '📐', title: 'Юнит-экономика', desc: 'What-if калькулятор: меняйте цену, СПП, комиссию — прибыль пересчитается мгновенно' },
+          { icon: '💰', title: 'Финансы и ДДС', desc: 'Движение денежных средств, баланс актив/пассив, план продаж, закупки, календарь платежей' },
+          { icon: '📈', title: 'Автосбор данных', desc: 'Данные с WB и Ozon собираются автоматически: заказы, финансы, реклама, остатки' },
+          { icon: '🔒', title: 'Безопасность', desc: 'Мультитенантность с изоляцией данных (PostgreSQL RLS), шифрование API-ключей' },
+        ].map((f) => (
+          <div key={f.title} style={{
+            background: '#131c2e', border: '1px solid #243049', borderRadius: 12,
+            padding: '20px',
+          }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>{f.icon}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{f.title}</div>
+            <div style={{ fontSize: 14, color: '#8a99b8', lineHeight: 1.5 }}>{f.desc}</div>
           </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12, marginTop: 12 }}>
-            {cabinets.map((c) => (
-              <a key={c.cabinet_id} href={`/cabinets/${c.cabinet_id}`} style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12, padding: 16, textDecoration: 'none', color: 'var(--text)', display: 'block' }}>
-                <strong>{c.display_name || `Кабинет #${c.cabinet_id}`}</strong>
-                <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 4 }}>
-                  {(c.marketplaces || []).join(' + ').toUpperCase()} · {c.status}
-                </div>
-                {c.cabinet_id === session.active_cabinet_id && (
-                  <span style={{ color: 'var(--accent2)', fontSize: 12 }}>● активный</span>
-                )}
-              </a>
-            ))}
-          </div>
-        )}
+        ))}
+      </div>
 
-        {session.active_cabinet_id && (
-          <>
-            <h3 style={{ marginTop: 28 }}>🔒 Изоляция данных (RLS-демо)</h3>
-            <p style={{ color: 'var(--muted)', marginTop: 0, fontSize: 14 }}>
-              Запрос к <code>tenant.wb_articles</code> под кабинетом #{session.active_cabinet_id}.
-              Видны только товары ЭТОГО кабинета:
-            </p>
-            <div className="placeholder" style={{ textAlign: 'left' }}>
-              {demoRows.length === 0 ? (
-                <span style={{ color: 'var(--muted)' }}>Товаров пока нет (сбор = Этап 3).</span>
-              ) : (
-                <table style={{ width: '100%', color: 'var(--text)' }}>
-                  <tbody>
-                    {demoRows.map((r) => (
-                      <tr key={r.nm_id}>
-                        <td style={{ padding: '6px 12px', color: 'var(--muted)' }}>cabinet #{r.cabinet_id} · nm {r.nm_id}</td>
-                        <td style={{ padding: '6px 12px' }}>{r.name}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </>
-        )}
-      </main>
+      {/* Футер */}
+      <footer style={{
+        padding: '20px 32px', borderTop: '1px solid #243049',
+        textAlign: 'center', color: '#6b7a8f', fontSize: 13,
+      }}>
+        © 2026 MP Analytics · Сервис оцифровки продаж на маркетплейсах
+      </footer>
     </div>
   );
 }
