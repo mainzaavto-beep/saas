@@ -151,9 +151,31 @@ async function collectWB(nm, from, to, toEnd, shopName) {
   };
 
   // 2) daily_metrics — дневные метрики.
+  //    price/spp в daily_metrics пустые → обогащаем из wb_orders (последние по дате).
+  //    Берём AVG(spp) и MAX(total_price), MAX(discount_percent), MAX(price_with_disc)
+  //    по дням — WB отдаёт их в каждом заказе, они стабильны в пределах дня.
   const metricRows = await db.prepare(
-    `SELECT date, orders, clicks, cart, price, spp, rating, ad_spend FROM daily_metrics WHERE nm_id = ? AND date >= ? AND date <= ? ORDER BY date`
-  ).all(nm, from, to);
+    `SELECT m.date, m.orders, m.clicks, m.cart, m.rating, m.ad_spend,
+            o.total_price AS price_seller, o.discount_percent, o.price_with_disc, o.spp
+     FROM daily_metrics m
+     LEFT JOIN (
+       SELECT substr(order_dt,1,10) AS d,
+              MAX(total_price) AS total_price,
+              MAX(discount_percent) AS discount_percent,
+              MAX(price_with_disc) AS price_with_disc,
+              ROUND(AVG(spp)) AS spp
+       FROM orders WHERE nm_id = ? AND is_cancel = 0
+         AND spp IS NOT NULL
+       GROUP BY substr(order_dt,1,10)
+     ) o ON o.d = m.date::text
+     WHERE m.nm_id = ? AND m.date::text >= ? AND m.date::text <= ?
+     ORDER BY m.date`
+  ).all(nm, nm, from, to);
+
+  // 2а) wb_prices — цена продавца (если daily_metrics не покрыла все дни).
+  const priceRow = await db.prepare(
+    `SELECT price_seller, discount, spp_auto FROM wb_prices WHERE nm_id = ?`
+  ).get(nm) || {};
 
   // 2б) feedback_history (может быть пуста — graceful).
   const fbHistNm = new Map();
@@ -282,7 +304,15 @@ async function collectWB(nm, from, to, toEnd, shopName) {
       logistics: fd ? fd.logistics : null,
       acquiring: fd ? fd.acquiring : null,
       profit: dayProfit,
-      price: m.price ?? null, spp: m.spp ?? null, rating: m.rating ?? null,
+      // Цены из orders (price_seller=total_price, price_with_disc=цена со скидкой,
+      // spp=% СПП). price_with_spp = price_with_disc × (1 - spp/100).
+      price: m.price_seller ?? priceRow.price_seller ?? null,
+      discount: m.discount_percent ?? priceRow.discount ?? null,
+      spp: m.spp ?? null,
+      price_with_disc: m.price_with_disc ?? null,
+      price_with_spp: (m.price_with_disc != null && m.spp != null)
+        ? Math.round(m.price_with_disc * (1 - m.spp / 100) * 100) / 100 : null,
+      rating: m.rating ?? null,
       rating_nm: fbHistNm.has(date) ? fbHistNm.get(date).rating : null,
       rating_nm_count: fbHistNm.has(date) ? fbHistNm.get(date).count : null,
       rating_imt: fbHistImt.has(date) ? fbHistImt.get(date).rating : null,
@@ -305,6 +335,11 @@ async function collectWB(nm, from, to, toEnd, shopName) {
   totals.price = lastSnap.price != null ? Math.round(lastSnap.price) : null;
   totals.spp = lastSnap.spp != null ? Math.round(lastSnap.spp * 100) / 100 : null;
   totals.rating = lastSnap.rating != null ? Math.round(lastSnap.rating * 100) / 100 : null;
+  // price_with_spp + discount в totals (последний снимок).
+  const lastDay = days.length > 0 ? days[days.length - 1] : {};
+  totals.discount = lastDay.discount ?? null;
+  totals.price_with_disc = lastDay.price_with_disc ?? null;
+  totals.price_with_spp = lastDay.price_with_spp ?? null;
   for (const k of SUM_KEYS) if (k.endsWith("spend")) totals[k] = Math.round(totals[k] * 100) / 100;
 
   const sold = totals.sales || 0;
