@@ -52,6 +52,8 @@ const MENU = [
     ],
   },
   { href: "/alerts", label: "Оповещения", icon: "🔔" },
+  { href: "/settings", label: "Настройки", icon: "⚙️" },
+  { href: "/team", label: "Команда", icon: "👥" },
 ];
 
 export default async function CabinetLayout({ children, params }) {
@@ -131,6 +133,7 @@ export default async function CabinetLayout({ children, params }) {
             })}
           </nav>
           <div className="topbar-actions">
+            <Link href="/settings" className="topbar-action" title="Профиль">👤 Профиль</Link>
             <Link href="/" className="topbar-action" title="Все кабинеты">← Кабинеты</Link>
             <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
               <button type="submit" className="topbar-action" title="Выйти">Выйти</button>
