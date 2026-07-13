@@ -417,15 +417,17 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
   } catch { product.boost = null; product.active_actions = 0; }
 
   // daily_metrics — обогащаем orders из ozon_orders (как WB берёт из wb_orders).
+  // Соинвест = products.price - AVG(orders.total) — скидка, покрываемая Ozon.
   const metricRows = await db.prepare(
     `SELECT m.date, m.clicks, m.cart, m.rating, m.price AS dm_price,
             m.ad_spend, m.ad_views, m.ad_clicks, m.ad_orders,
-            o.orders, o.orders_sum
+            o.orders, o.orders_sum, o.buyer_price
      FROM daily_metrics m
      LEFT JOIN (
        SELECT substr(order_dt,1,10) AS d,
               COUNT(*) AS orders,
-              SUM(total) AS orders_sum
+              SUM(total) AS orders_sum,
+              AVG(total) AS buyer_price
        FROM orders WHERE product_id = ? AND is_cancel = 0
        GROUP BY substr(order_dt,1,10)
      ) o ON o.d = m.date::text
@@ -522,12 +524,21 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
     const fb = fbHistNm.get(date);
     const ratingNm = fb ? fb.rating : null;
     if (ratingNm != null) lastRating = ratingNm;
+    // Соинвест = цена продавца - цена покупателя (Ozon покрывает разницу).
+    const myPrice = p.price ?? null;
+    const buyerPrice = m.buyer_price ?? null;
+    const coInvestRub = (myPrice != null && buyerPrice != null) ? Math.round((myPrice - buyerPrice) * 100) / 100 : null;
+    const coInvestPct = (myPrice != null && buyerPrice != null && myPrice > 0) ? Math.round((myPrice - buyerPrice) / myPrice * 1000) / 10 : null;
     const day = {
       date, weekday: weekdayOf(date),
       orders: m.orders ?? null,
       orders_sum: m.orders_sum ?? orderSumByDay.get(date) ?? null,
       clicks: m.clicks ?? null, cart: m.cart ?? null,
-      price, boost: product.boost,
+      price: myPrice,
+      buyer_price: buyerPrice != null ? Math.round(buyerPrice * 100) / 100 : null,
+      co_invest_rub: coInvestRub,
+      co_invest_pct: coInvestPct,
+      boost: product.boost,
       sold: soldByDay.has(date) ? soldByDay.get(date) : null,
       rating: m.rating ?? null, rating_nm: ratingNm, rating_nm_count: fb ? fb.count : null,
       rating_imt: null, rating_imt_count: null,
@@ -551,6 +562,11 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
   totals.price = p.price != null ? Math.round(p.price) : null;
   totals.old_price = p.old_price != null ? Math.round(p.old_price) : null;
   totals.boost = product.boost;
+  // Соинвест в totals — последний день с данными.
+  const lastOzDay = [...days].reverse().find((d) => d.co_invest_rub != null) || {};
+  totals.buyer_price = lastOzDay.buyer_price ?? null;
+  totals.co_invest_rub = lastOzDay.co_invest_rub ?? null;
+  totals.co_invest_pct = lastOzDay.co_invest_pct ?? null;
   totals.rating = lastRating != null ? Math.round(lastRating * 100) / 100 : null;
   totals.rating_nm = product.rating_nm;
   totals.rating_nm_count = product.rating_nm_count;
