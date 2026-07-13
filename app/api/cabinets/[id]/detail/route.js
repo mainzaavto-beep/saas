@@ -416,10 +416,22 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
     product.active_actions = boostRow.active_actions ?? 0;
   } catch { product.boost = null; product.active_actions = 0; }
 
-  // daily_metrics.
+  // daily_metrics — обогащаем orders из ozon_orders (как WB берёт из wb_orders).
   const metricRows = await db.prepare(
-    `SELECT date, orders, clicks, cart, rating, price, ad_spend, ad_views, ad_clicks, ad_orders FROM daily_metrics WHERE product_id = ? AND date >= ? AND date <= ? ORDER BY date`
-  ).all(nm, from, to);
+    `SELECT m.date, m.clicks, m.cart, m.rating, m.price AS dm_price,
+            m.ad_spend, m.ad_views, m.ad_clicks, m.ad_orders,
+            o.orders, o.orders_sum
+     FROM daily_metrics m
+     LEFT JOIN (
+       SELECT substr(order_dt,1,10) AS d,
+              COUNT(*) AS orders,
+              SUM(total) AS orders_sum
+       FROM orders WHERE product_id = ? AND is_cancel = 0
+       GROUP BY substr(order_dt,1,10)
+     ) o ON o.d = m.date::text
+     WHERE m.product_id = ? AND m.date::text >= ? AND m.date::text <= ?
+     ORDER BY m.date`
+  ).all(nm, nm, from, to);
 
   // Рейтинг (может быть пуст — graceful).
   try {
@@ -512,7 +524,9 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
     if (ratingNm != null) lastRating = ratingNm;
     const day = {
       date, weekday: weekdayOf(date),
-      orders: m.orders ?? null, clicks: m.clicks ?? null, cart: m.cart ?? null,
+      orders: m.orders ?? null,
+      orders_sum: m.orders_sum ?? orderSumByDay.get(date) ?? null,
+      clicks: m.clicks ?? null, cart: m.cart ?? null,
       price, boost: product.boost,
       sold: soldByDay.has(date) ? soldByDay.get(date) : null,
       rating: m.rating ?? null, rating_nm: ratingNm, rating_nm_count: fb ? fb.count : null,
