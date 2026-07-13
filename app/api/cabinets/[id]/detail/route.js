@@ -304,12 +304,15 @@ async function collectWB(nm, from, to, toEnd, shopName) {
       logistics: fd ? fd.logistics : null,
       acquiring: fd ? fd.acquiring : null,
       profit: dayProfit,
-      // Цены из orders (price_seller=total_price, price_with_disc=цена со скидкой,
-      // spp=% СПП). price_with_spp = price_with_disc × (1 - spp/100).
-      price: m.price_seller ?? priceRow.price_seller ?? null,
-      discount: m.discount_percent ?? priceRow.discount ?? null,
+      // Цены WB (из orders):
+      // price_before_discount = total_price (цена продавца до скидки — справочно)
+      // price = price_with_disc = ЦЕНА ДО СПП (цена со скидкой продавца)
+      // spp = % СПП (скидка площадки)
+      // price_with_spp = price × (1 - spp/100) — цена для покупателя
+      price_before_discount: m.price_seller ?? null,
+      discount: m.discount_percent ?? null,
+      price: m.price_with_disc ?? null,
       spp: m.spp ?? null,
-      price_with_disc: m.price_with_disc ?? null,
       price_with_spp: (m.price_with_disc != null && m.spp != null)
         ? Math.round(m.price_with_disc * (1 - m.spp / 100) * 100) / 100 : null,
       rating: m.rating ?? null,
@@ -335,10 +338,10 @@ async function collectWB(nm, from, to, toEnd, shopName) {
   totals.price = lastSnap.price != null ? Math.round(lastSnap.price) : null;
   totals.spp = lastSnap.spp != null ? Math.round(lastSnap.spp * 100) / 100 : null;
   totals.rating = lastSnap.rating != null ? Math.round(lastSnap.rating * 100) / 100 : null;
-  // price_with_spp + discount в totals (последний снимок).
+  // Цены (последний снимок): price=до СПП, spp=%, price_with_spp=для покупателя.
   const lastDay = days.length > 0 ? days[days.length - 1] : {};
   totals.discount = lastDay.discount ?? null;
-  totals.price_with_disc = lastDay.price_with_disc ?? null;
+  totals.price_before_discount = lastDay.price_before_discount ?? null;
   totals.price_with_spp = lastDay.price_with_spp ?? null;
   for (const k of SUM_KEYS) if (k.endsWith("spend")) totals[k] = Math.round(totals[k] * 100) / 100;
 
