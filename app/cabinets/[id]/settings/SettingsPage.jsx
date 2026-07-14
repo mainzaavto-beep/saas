@@ -64,16 +64,11 @@ export default function SettingsPage({ cabinetId }) {
         {shops.length === 0 ? (
           <p style={{ color: C.muted, fontSize: 14 }}>Магазинов нет. Добавьте через онбординг.</p>
         ) : (
-          <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "grid", gap: 12 }}>
             {shops.map((s) => (
-              <div key={s.shop_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: C.surfaceAlt, borderRadius: 8 }}>
-                <div>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>{s.shop_name || `Магазин #${s.shop_id}`}</span>
-                  <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: s.mp_code === "wb" ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)", color: s.mp_code === "wb" ? C.accent : "#f97316" }}>{s.mp_code.toUpperCase()}</span>
-                  {s.legal_name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{s.legal_name}</span>}
-                  {s.has_creds && <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span>}
-                </div>
-              </div>
+              <ShopRow key={s.shop_id} shop={s} cabinetId={cabinetId} onSaved={() => {
+                fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
+              }} />
             ))}
           </div>
         )}
@@ -90,6 +85,104 @@ export default function SettingsPage({ cabinetId }) {
           <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Компонент магазина с раскрытием формы ключей.
+function ShopRow({ shop, cabinetId, onSaved }) {
+  const [expanded, setExpanded] = useState(false);
+  const [creds, setCreds] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  // Конфиг полей по МП.
+  const FIELDS = {
+    wb: [
+      { key: "token", label: "WB Token (доступ «Статистика»)", type: "password" },
+    ],
+    ozon: [
+      { key: "client_id", label: "Client-Id", type: "text" },
+      { key: "api_key", label: "Api-Key", type: "password" },
+      { key: "perf_client_id", label: "Performance Client-Id (реклама, опц.)", type: "text" },
+      { key: "perf_client_secret", label: "Performance Client-Secret (опц.)", type: "password" },
+    ],
+  };
+  const fields = FIELDS[shop.mp_code] || [];
+
+  const saveCreds = async () => {
+    setSaving(true); setMsg(null);
+    // Собрать только заполненные поля.
+    const filled = {};
+    for (const f of fields) {
+      if (creds[f.key]) filled[f.key] = creds[f.key];
+    }
+    if (Object.keys(filled).length === 0) { setMsg("❌ Заполните хотя бы одно поле"); setSaving(false); return; }
+
+    const r = await fetch(`/api/cabinets/${cabinetId}/shops`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shop_id: shop.shop_id, api_creds: { [shop.mp_code]: filled } }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      setMsg("✅ Ключи сохранены");
+      setCreds({});
+      setExpanded(false);
+      onSaved();
+    } else {
+      setMsg(`❌ ${d.error || "Ошибка"}`);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden" }}>
+      {/* Шапка магазина (клик → раскрыть) */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", cursor: "pointer" }}
+      >
+        <div>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{shop.shop_name || `Магазин #${shop.shop_id}`}</span>
+          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700,
+            background: shop.mp_code === "wb" ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)",
+            color: shop.mp_code === "wb" ? C.accent : "#f97316" }}>{shop.mp_code.toUpperCase()}</span>
+          {shop.legal_name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{shop.legal_name}</span>}
+          {shop.has_creds
+            ? <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span>
+            : <span style={{ marginLeft: 8, fontSize: 11, color: C.neg }}>⚠ Нет ключей</span>}
+        </div>
+        <span style={{ fontSize: 12, color: C.muted }}>{expanded ? "▴ свернуть" : "▾ ключи"}</span>
+      </div>
+
+      {/* Форма ключей (раскрывается) */}
+      {expanded && (
+        <div style={{ padding: "0 14px 14px", borderTop: `1px solid ${C.line}` }}>
+          <p style={{ fontSize: 12, color: C.faint, margin: "10px 0 8px" }}>
+            Введите API-ключи. Они шифруются и хранятся безопасно. Сбор данных начнётся автоматически.
+          </p>
+          <div style={{ display: "grid", gap: 10 }}>
+            {fields.map((f) => (
+              <label key={f.key} style={{ fontSize: 12, color: C.muted }}>{f.label}
+                <input
+                  type={f.type}
+                  value={creds[f.key] || ""}
+                  onChange={e => setCreds({ ...creds, [f.key]: e.target.value })}
+                  placeholder={shop.has_creds ? "•••••••• (введите новый для замены)" : "Введите ключ"}
+                  style={{ ...inputStyle, width: "100%", marginTop: 4 }}
+                />
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
+            <button onClick={saveCreds} disabled={saving} style={{
+              padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
+              border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
+            }}>{saving ? "Сохранение…" : "Сохранить ключи"}</button>
+            {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

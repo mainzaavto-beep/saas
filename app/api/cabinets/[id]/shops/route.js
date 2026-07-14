@@ -55,3 +55,30 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   await query(`DELETE FROM auth.shops WHERE shop_id = $1 AND cabinet_id = $2`, [Number(shopId), cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
 });
+
+// PUT — обновить API-ключи магазина (шифрование через pgcrypto).
+export const PUT = withCabinet(async (req, { cabinet }) => {
+  const b = await req.json();
+  if (!b.shop_id) return NextResponse.json({ error: "shop_id required" }, { status: 400 });
+  if (!b.api_creds) return NextResponse.json({ error: "api_creds required" }, { status: 400 });
+
+  const encKey = process.env.SAAS_CRED_MASTER_KEY;
+  if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
+
+  // Шифровать полные креды.
+  const encRows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
+  const apiCredsEnc = encRows[0]?.enc;
+
+  // Метаданные (не секретные флаги).
+  const apiMeta = {};
+  for (const [mp, creds] of Object.entries(b.api_creds)) {
+    apiMeta[mp] = {};
+    for (const k of Object.keys(creds)) apiMeta[mp][`has_${k}`] = true;
+  }
+
+  await query(
+    `UPDATE auth.shops SET api_creds = $1, api_creds_enc = $2 WHERE shop_id = $3 AND cabinet_id = $4`,
+    [JSON.stringify(apiMeta), apiCredsEnc, Number(b.shop_id), cabinet.cabinet_id]
+  );
+  return NextResponse.json({ ok: true });
+});
