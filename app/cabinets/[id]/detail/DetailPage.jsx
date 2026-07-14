@@ -1034,7 +1034,10 @@ function KeyPositionsBlock({ days, keywords }) {
     <>
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: C.muted }}>Позиции по ключам</div>
       {(keywords.length === 0) ? (
-        <EmptyBlock text="Нет данных о позициях по ключам за период (история накапливается ежедневно)" />
+        <div style={{ padding: "18px 14px", border: `1px solid ${C.line}`, borderRadius: 10, background: C.surface, marginBottom: 18, color: C.muted, fontSize: 13, textAlign: "center" }}>
+          🔑 Требуется подписка MPStats или подключение прокси для сбора позиций по поисковым запросам.<br/>
+          <span style={{ fontSize: 12, color: C.faint }}>Сборщик готов (wb_keywords.py), ждёт API-ключ MPStats или residential-прокси.</span>
+        </div>
       ) : (
         <>
           <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
