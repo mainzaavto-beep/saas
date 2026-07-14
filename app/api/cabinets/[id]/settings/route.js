@@ -1,4 +1,5 @@
-// /api/cabinets/[id]/settings — настройки проекта (название, налоги, внешние ключи).
+// /api/cabinets/[id]/settings — настройки проекта (название, внешние ключи).
+// Налоги теперь настраиваются на каждый магазин (auth.shops.tax_mode) — см. /shops.
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { query } from "@/lib/db.js";
@@ -13,7 +14,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({
     cabinet_id: cabinet.cabinet_id,
     display_name: cabinet.display_name,
-    tax_mode: cabinet.tax_mode || { usn_pct: 6, vat: false },
     marketplaces: cabinet.marketplaces || [],
     status: cabinet.status,
     mpstats_token: ext.has_mpstats ? "••••••••" : "", // маска, не отдаём ключ
@@ -26,7 +26,6 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   const vals = [];
   let i = 0;
   if (b.display_name !== undefined) { sets.push(`display_name = $${++i}`); vals.push(b.display_name); }
-  if (b.tax_mode !== undefined) { sets.push(`tax_mode = $${++i}`); vals.push(JSON.stringify(b.tax_mode)); }
   // MPStats — шифруем если передан (не маска).
   if (b.mpstats_token !== undefined && b.mpstats_token !== "" && !b.mpstats_token.startsWith("•")) {
     const encKey = process.env.SAAS_CRED_MASTER_KEY;

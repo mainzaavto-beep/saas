@@ -52,7 +52,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       to = `${period}-${String(lastDay).padStart(2, "0")}`;
     }
 
-    const facets = collectFacets(mp);
+    const facets = await collectFacets(mp);
 
     // ── Режим m30: 30-минутная воронка WB (отдельная ветка, раньше return). ──
     if (granularity === "m30") {
@@ -83,18 +83,18 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     let range = { from: null, to: null };
 
     if (mp !== "ozon") {
-      const wb = collectCell("wb", { from, to, q, nm, brand, group });
+      const wb = await collectCell("wb", { from, to, q, nm, brand, group });
       mergeGrid(heatmap, byWeekday, byHour, wb.cells);
       total += wb.total;
-      for (const m of wb.months) months.add(m);
+      for (const m of (wb.months || [])) months.add(m);
       if (wb.range.from && (!range.from || wb.range.from < range.from)) range.from = wb.range.from;
       if (wb.range.to && (!range.to || wb.range.to > range.to)) range.to = wb.range.to;
     }
     if (mp !== "wb") {
-      const oz = collectCell("ozon", { from, to, q, nm, brand, group });
+      const oz = await collectCell("ozon", { from, to, q, nm, brand, group });
       mergeGrid(heatmap, byWeekday, byHour, oz.cells);
       total += oz.total;
-      for (const m of oz.months) months.add(m);
+      for (const m of (oz.months || [])) months.add(m);
       if (oz.range.from && (!range.from || oz.range.from < range.from)) range.from = oz.range.from;
       if (oz.range.to && (!range.to || oz.range.to > range.to)) range.to = oz.range.to;
     }
@@ -209,9 +209,9 @@ async function collectMetric30m({ from, to, q, nm, brand, group, metric }) {
 
   // Покрытие (для фасетов периода).
   const rng = await db.prepare("SELECT MIN(ts) a, MAX(ts) b FROM wb_metrics_30m").get();
-  const months = await db.prepare(
+  const months = (await db.prepare(
     "SELECT DISTINCT substr(ts,1,7) m FROM wb_metrics_30m ORDER BY m"
-  ).all().map((r) => r.m).filter(Boolean);
+  ).all()).map((r) => r.m).filter(Boolean);
 
   const note = deltaCount === 0
     ? "Нет 30-минутных данных за период. Сборщик wb_metrics_30m.py копит историю с момента старта задачи (раз в 30 мин)."
@@ -227,7 +227,7 @@ async function collectMetric30m({ from, to, q, nm, brand, group, metric }) {
 
 // Сбор ячеек сетки из одной БД. Возвращает [{w,h,c}] в схеме Пн=0..Вс=6.
 async function collectCell(which, { from, to, q, nm, brand, group }) {
-  const db = which === "wb" ? wbDb() : ozonDb();
+  const db = new DatabaseSync(which, { readOnly: true });
   const oNm = which === "wb" ? "o.nm_id" : "o.product_id";
   const oBrand = which === "wb" ? "o.brand" : "p.brand";
   const oGroup = which === "wb" ? "o.subject" : "p.category";
@@ -238,10 +238,12 @@ async function collectCell(which, { from, to, q, nm, brand, group }) {
 
   // Часовой пояс: WB orders.order_dt — локальное МСК, Ozon — UTC (суффикс 'Z').
   // Для Ozon конвертируем в МСК (+3 часа), иначе часы/дни недели сдвинуты на 3ч назад.
-  // dtExpr — выражение даты-времени в МСК, используемое и для фильтра периода, и для сетки.
+  // dtExpr — ТЕКСТОВОЕ выражение даты-времени в МСК (приводим к ::text, чтобы
+  // substr/::date ниже работали единообразно для WB и Ozon).
+  // ⚠️ PG: SQLite-функция datetime() не существует — используем ::timestamp + interval + ::text.
   const dtExpr = which === "wb"
     ? "o.order_dt"
-    : "datetime(o.order_dt, '+3 hours')";   // UTC → MSK
+    : "(o.order_dt::timestamp + interval '3 hours')::text";   // UTC → MSK
 
   const conds = ["o.order_dt <> ''", "length(o.order_dt) >= 13"];
   const params = [];
@@ -281,9 +283,9 @@ async function collectCell(which, { from, to, q, nm, brand, group }) {
   const range = await db.prepare(
     `SELECT MIN(substr(order_dt,1,10)) a, MAX(substr(order_dt,1,10)) b FROM orders WHERE order_dt <> ''`
   ).get();
-  const months = await db.prepare(
+  const months = (await db.prepare(
     `SELECT DISTINCT substr(order_dt,1,7) m FROM orders WHERE order_dt <> '' ORDER BY m`
-  ).all().map((r) => r.m).filter(Boolean);
+  ).all()).map((r) => r.m).filter(Boolean);
 
   return { cells, total, range: { from: range?.a || null, to: range?.b || null }, months };
 }

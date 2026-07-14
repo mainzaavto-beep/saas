@@ -48,7 +48,7 @@ const pct = (v, digits = 1) => {
   return (x * 100).toFixed(digits) + "%"; // доля → проценты
 };
 
-export default function PlanPage() {
+export default function PlanPage({ cabinetId }) {
   const today = new Date().toISOString().slice(0, 7); // YYYY-MM
   const [period, setPeriod] = useState(today);
   const [platform, setPlatform] = useState("WB");
@@ -60,8 +60,8 @@ export default function PlanPage() {
   // Запрос план-факта (для month и qy) или purchase.
   const api = useMemo(() => {
     const p = new URLSearchParams({ period, platform });
-    if (tab === "purchase") return "/api/cabinets/${cabinetId}/plan/purchase?" + p.toString() + "&coverage=45";
-    return "/api/cabinets/${cabinetId}/plan/fact?" + p.toString();
+    if (tab === "purchase") return `/api/cabinets/${cabinetId}/plan/purchase?` + p.toString() + "&coverage=45";
+    return `/api/cabinets/${cabinetId}/plan/fact?` + p.toString();
   }, [period, platform, tab]);
 
   useEffect(() => {
@@ -209,7 +209,7 @@ function MonthPlan({ data, setData, platform, period, savingKey, setSavingKey })
   // Удаление (архив).
   const remove = async (row) => {
     if (!confirm(`Удалить строку "${row.sku_label}"?`)) return;
-    await fetch(`/api/plan?id=${row.id}`, { method: "DELETE" });
+    await fetch(`/api/cabinets/${cabinetId}/plan?id=${row.id}`, { method: "DELETE" });
     setData((prev) => prev ? { ...prev, items: prev.items.filter((it) => it.id !== row.id) } : prev);
   };
 
@@ -624,7 +624,7 @@ function KpiTargetsEditor({ period, platform }) {
       body.drr_target = targets.drr_target;
     }
     body[field] = val;
-    await fetch("/api/cabinets/${cabinetId}/plan/targets", {
+    await fetch(`/api/cabinets/${cabinetId}/plan/targets`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

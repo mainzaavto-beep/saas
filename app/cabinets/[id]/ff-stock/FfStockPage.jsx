@@ -34,7 +34,7 @@ const num = (v) =>
   v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v);
 const today = () => new Date().toISOString().slice(0, 10);
 
-export default function FfStockPage() {
+export default function FfStockPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);

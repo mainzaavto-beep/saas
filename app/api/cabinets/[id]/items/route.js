@@ -33,13 +33,19 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const gMem = await membersMap();
   const gStat = await statusMap();
 
-  // --- WB: articles + cogs ---
+  // --- WB: articles + cost_overrides (base_cost) ---
   const wbItems = [];
   if (mpQ !== "ozon" && mps.includes("wb")) {
     const db = new DatabaseSync("wb", { readOnly: true });
     let sql = `SELECT a.nm_id, a.name, a.brand, a.subject, a.im_url,
-                      c.cost AS base_cost
-                 FROM articles a LEFT JOIN cogs c ON c.nm_id = a.nm_id`;
+                      co.cost AS base_cost
+                 FROM articles a
+                 LEFT JOIN LATERAL (
+                   SELECT cost FROM tenant.cost_overrides
+                   WHERE nm_id = a.nm_id AND platform = 'wb'
+                     AND effective_from <= current_date
+                   ORDER BY effective_from DESC LIMIT 1
+                 ) co ON true`;
     const where = [];
     if (brandQ) where.push(`a.brand = '${sq(brandQ)}'`);
     if (categoryQ) where.push(`a.subject = '${sq(categoryQ)}'`);
@@ -76,13 +82,19 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     }
   }
 
-  // --- Ozon: products + cogs ---
+  // --- Ozon: products + cost_overrides (base_cost) ---
   const ozItems = [];
   if (mpQ !== "wb" && mps.includes("ozon")) {
     const db = new DatabaseSync("ozon", { readOnly: true });
     let sql = `SELECT p.product_id, p.name, p.brand, p.category, p.im_url, p.visibility,
-                      c.cost AS base_cost
-                 FROM products p LEFT JOIN cogs c ON c.product_id = p.product_id`;
+                      co.cost AS base_cost
+                 FROM products p
+                 LEFT JOIN LATERAL (
+                   SELECT cost FROM tenant.cost_overrides
+                   WHERE product_id = p.product_id AND platform = 'ozon'
+                     AND effective_from <= current_date
+                   ORDER BY effective_from DESC LIMIT 1
+                 ) co ON true`;
     const where = [];
     if (brandQ) where.push(`p.brand = '${sq(brandQ)}'`);
     if (categoryQ) where.push(`p.category = '${sq(categoryQ)}'`);

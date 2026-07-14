@@ -7,11 +7,12 @@ import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
-  WAREHOUSE_REGION, USN_RATE,
+  WAREHOUSE_REGION,
   wbOrdersByDay, wbOrderRubByDay, wbSoldByDay, wbStockByDay,
   wbFinancePeriod, wbFinanceByDay, wbUnitCost,
 } from "@/lib/wbMetrics.js";
 import { ozOrderCostsAggregate } from "@/lib/ozonMetrics.js";
+import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,10 +105,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     }
     const toEnd = to + "T23:59:59";
     const shopName = platform === "ozon" ? (cabinet.shop_names?.ozon || null) : (cabinet.shop_names?.wb || null);
+    const taxMode = normalizeTaxMode(platform === "ozon" ? cabinet.shopTax?.ozon : cabinet.shopTax?.wb);
 
     const result = platform === "ozon"
-      ? await collectOzon(nm, from, to, toEnd, shopName)
-      : await collectWB(nm, from, to, toEnd, shopName);
+      ? await collectOzon(nm, from, to, toEnd, shopName, taxMode)
+      : await collectWB(nm, from, to, toEnd, shopName, taxMode);
 
     if (!result.product) {
       return NextResponse.json({ error: `товар ${nm} не найден` }, { status: 404 });
@@ -121,7 +123,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 // =====================================================================
 //  WB
 // =====================================================================
-async function collectWB(nm, from, to, toEnd, shopName) {
+async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   const db = new DatabaseSync("wb", { readOnly: true });
 
   // 1) Идентификация (articles + orders для sa/barcode/cat).
@@ -281,7 +283,7 @@ async function collectWB(nm, from, to, toEnd, shopName) {
     const dayCost = (fd && daySold != null) ? Math.round(((unitCost ?? 0) * daySold) * 100) / 100 : null;
     const dayAdSp = Math.round(((e.spend || 0) + (ru.spend || 0) + (cl.spend || 0)) * 100) / 100;
     const dayProfit = (fd && dayRevenue != null)
-      ? Math.round((dayRevenue - (fd.commission || 0) - (fd.acquiring || 0) - (fd.logistics || 0) - (fd.loyalty || 0) - (dayCost || 0) - dayAdSp - Math.round(dayRevenue * USN_RATE * 100) / 100) * 100) / 100
+      ? Math.round((dayRevenue - (fd.commission || 0) - (fd.acquiring || 0) - (fd.logistics || 0) - (fd.loyalty || 0) - (dayCost || 0) - dayAdSp - calcUsnTax(taxMode, dayRevenue)) * 100) / 100
       : null;
     const ordersTotal = ordersCountByDate.has(date) ? ordersCountByDate.get(date) : null;
     const clicksTotal = m.clicks ?? null;
@@ -349,7 +351,9 @@ async function collectWB(nm, from, to, toEnd, shopName) {
   const salesRub = fin.salesRub;
   const costRub = Math.round(((unitCost ?? 0) * sold) * 100) / 100;
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
-  const tax = Math.round(salesRub * USN_RATE * 100) / 100;
+  // Налог: для УСН Доходы−Расходы нужны расходы за период.
+  const wbExpenses = (fin.commission || 0) + (fin.acquiring || 0) + (fin.logistics || 0) + costRub + adSp;
+  const tax = calcUsnTax(taxMode, salesRub, wbExpenses);
   totals.revenue = salesRub; totals.cost = costRub;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
   totals.acquiring = fin.acquiring; totals.loyalty = 0;
@@ -395,7 +399,7 @@ async function collectWB(nm, from, to, toEnd, shopName) {
 // =====================================================================
 //  Ozon
 // =====================================================================
-async function collectOzon(nm, from, to, toEnd, shopName) {
+async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   const db = new DatabaseSync("ozon", { readOnly: true });
 
   const p = await db.prepare(
@@ -522,7 +526,7 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
     const rev = revenueByDay.has(date) ? revenueByDay.get(date) : null;
     const grossDay = profitByDay.has(date) ? profitByDay.get(date) : null;
     const adDay = m.ad_spend ?? 0;
-    const taxDay = rev != null ? Math.round(rev * USN_RATE * 100) / 100 : 0;
+    const taxDay = rev != null ? calcUsnTax(taxMode, rev) : 0;
     const profit = grossDay != null ? Math.round((grossDay - adDay - taxDay) * 100) / 100 : null;
     const fb = fbHistNm.get(date);
     const ratingNm = fb ? fb.rating : null;
@@ -576,7 +580,11 @@ async function collectOzon(nm, from, to, toEnd, shopName) {
   for (const k of ["ad_spend", "ad_views", "ad_clicks", "ad_orders", "orders_sum"]) {
     totals[k] = Math.round(totals[k] * 100) / 100;
   }
-  totals.tax = Math.round((totals.revenue || 0) * USN_RATE * 100) / 100;
+  // Налог: для УСН Доходы−Расходы расходы = (выручка − profitGross) + реклама.
+  // profitGross = выручка − комиссия − логистика − себестоимость (уже вычтены).
+  const ozRevenue = totals.revenue || 0;
+  const ozExpenses = Math.max(0, ozRevenue - (totals.profitGross || 0)) + (totals.ad_spend || 0);
+  totals.tax = calcUsnTax(taxMode, ozRevenue, ozExpenses);
   totals.profit = Math.round(((totals.profitGross || 0) - (totals.ad_spend || 0) - totals.tax) * 100) / 100;
 
   return {

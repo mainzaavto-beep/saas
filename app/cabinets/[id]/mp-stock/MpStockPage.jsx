@@ -25,7 +25,7 @@ const moneyC = (v) =>
 const num = (v) =>
   v == null ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v);
 
-export default function MpStockPage() {
+export default function MpStockPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [q, setQ] = useState("");

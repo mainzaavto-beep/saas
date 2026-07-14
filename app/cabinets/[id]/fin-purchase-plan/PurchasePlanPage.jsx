@@ -29,7 +29,7 @@ const fmtK = (v) => {
   return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v) + " ₽";
 };
 
-export default function PurchasePlanPage() {
+export default function PurchasePlanPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);

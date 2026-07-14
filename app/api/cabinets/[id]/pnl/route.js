@@ -5,17 +5,16 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const TAX_INCOME_RATE = 0.06;
 
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 // Расчёт P&L за произвольный диапазон [from, to] (YYYY-MM-DD).
 // Возвращает { total, wb, ozon } с теми же полями, что раньше.
-async function computePnl(from, to, mps) {
+async function computePnl(from, to, mps, wbTax, ozonTax) {
   const te = to + "T23:59:59";
   const fromTs = from + " 00:00:00";
   let wb = null, ozon = null;
@@ -38,9 +37,14 @@ async function computePnl(from, to, mps) {
     ).get(fromTs, te);
 
     const costRow = await db.prepare(
-      `SELECT COALESCE(SUM(s.quantity * CASE WHEN c.cost > 0 THEN c.cost ELSE 0 END), 0) AS v
+      `SELECT COALESCE(SUM(s.quantity * COALESCE(co.cost, 0)), 0) AS v
        FROM finance_report s
-       LEFT JOIN cogs c ON c.nm_id = s.nm_id
+       LEFT JOIN LATERAL (
+         SELECT cost FROM tenant.cost_overrides
+         WHERE nm_id = s.nm_id AND platform = 'wb'
+           AND effective_from <= substr(s.rr_dt,1,10)::date
+         ORDER BY effective_from DESC LIMIT 1
+       ) co ON true
        WHERE s.supplier_oper_name = 'Продажа' AND s.nm_id > 0
          AND s.rr_dt >= ? AND s.rr_dt <= ?`
     ).get(fromTs, te);
@@ -49,21 +53,26 @@ async function computePnl(from, to, mps) {
     const returns = Number(f.returns) || 0;
     const netSales = sales - Math.abs(returns);
     const costRub = Number(costRow.v) || 0;
-    const commission = netSales - (Number(f.forPaySales) - Math.abs(Number(f.forPayReturns))) - costRub;
-    const tax = netSales * TAX_INCOME_RATE;
+    const commission = Math.max(0, netSales - (Number(f.forPaySales) - Math.abs(Number(f.forPayReturns))) - costRub);
+    const logistics = Number(f.logistics) || 0;
+    const acquiring = Number(f.acquiring) || 0;
+    const storage = Number(f.storage) || 0;
+    // Налог: для УСН Доходы−Расходы расходы = себест + комиссия + логистика + эквайринг + хранение.
+    const wbExpenses = costRub + commission + logistics + acquiring + storage;
+    const tax = calcUsnTax(wbTax, netSales, wbExpenses);
 
     wb = {
       sales,
       returns: Math.abs(returns),
       netSales,
       cost: costRub,
-      commission: Math.max(0, commission),
-      logistics: Number(f.logistics) || 0,
-      acquiring: Number(f.acquiring) || 0,
-      storage: Number(f.storage) || 0,
+      commission,
+      logistics,
+      acquiring,
+      storage,
       tax,
-      grossProfit: netSales - costRub - Math.max(0, commission) - (Number(f.logistics) || 0) - (Number(f.acquiring) || 0),
-      netProfit: netSales - costRub - Math.max(0, commission) - (Number(f.logistics) || 0) - (Number(f.acquiring) || 0) - (Number(f.storage) || 0) - tax,
+      grossProfit: netSales - costRub - commission - logistics - acquiring,
+      netProfit: netSales - costRub - commission - logistics - acquiring - storage - tax,
       qtySold: Number(f.qtySold) || 0,
       forPay: (Number(f.forPaySales) || 0) - Math.abs(Number(f.forPayReturns) || 0),
     };
@@ -88,19 +97,24 @@ async function computePnl(from, to, mps) {
 
     const sales = Number(f.sales) || 0;
     const costRub = Number(f.cost) || 0;
-    const tax = sales * TAX_INCOME_RATE;
+    const commission = Number(f.commission) || 0;
+    const logistics = Number(f.logistics) || 0;
+    const acquiring = Number(f.acquiring) || 0;
+    // Налог: для УСН Доходы−Расходы расходы = себест + комиссия + логистика + эквайринг.
+    const ozExpenses = costRub + commission + logistics + acquiring;
+    const tax = calcUsnTax(ozonTax, sales, ozExpenses);
 
     ozon = {
       sales,
       returns: 0,
       netSales: sales,
       cost: costRub,
-      commission: Number(f.commission) || 0,
-      logistics: Number(f.logistics) || 0,
-      acquiring: Number(f.acquiring) || 0,
+      commission,
+      logistics,
+      acquiring,
       storage: 0,
       tax,
-      grossProfit: sales - costRub - (Number(f.commission) || 0) - (Number(f.logistics) || 0) - (Number(f.acquiring) || 0),
+      grossProfit: sales - costRub - commission - logistics - acquiring,
       netProfit: Number(f.profit) || 0,
       qtySold: Number(f.qtySold) || 0,
       forPay: 0,
@@ -160,6 +174,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const mps = cabinet.marketplaces || ["wb", "ozon"];
 
+  // Налоговый режим на каждый МП (per shop / per legal entity).
+  const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+  const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
+
   // Параметры периода. Приоритет: from/to (диапазон), иначе period (один месяц).
   const breakdown = url.searchParams.get("breakdown") || "none"; // none|week|month
   let from = url.searchParams.get("from") || "";
@@ -174,7 +192,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   }
 
   // Общий итог диапазона.
-  const { total, wb, ozon } = await computePnl(from, to, mps);
+  const { total, wb, ozon } = await computePnl(from, to, mps, wbTax, ozonTax);
 
   // Разбивка на отрезки (если запросили).
   let segments = null;
@@ -182,7 +200,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const ranges = splitRange(from, to, breakdown);
     segments = [];
     for (const r of ranges) {
-      const res = await computePnl(r.from, r.to, mps);
+      const res = await computePnl(r.from, r.to, mps, wbTax, ozonTax);
       segments.push({ label: r.label, from: r.from, to: r.to, total: res.total });
     }
   }

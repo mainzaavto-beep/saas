@@ -57,14 +57,16 @@ const INPUT_FIELDS = [
   "order_dt", "ship_dt", "delivery_dt", "supplier_name", "supplier", "pay_status",
 ];
 
-export default function PurchasesPage() {
+export default function PurchasesPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [supplier, setSupplier] = useState("");
+  const [vendor, setVendor] = useState("");
   const [status, setStatus] = useState("");
+  const [category, setCategory] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -80,27 +82,34 @@ export default function PurchasesPage() {
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     if (supplier) p.set("supplier", supplier);
+    if (vendor) p.set("vendor", vendor);
     if (status) p.set("status", status);
+    if (category) p.set("category", category);
     if (q.trim()) p.set("q", q.trim());
-    return "/api/purchases?" + p.toString();
-  }, [from, to, supplier, status, q]);
+    return `/api/cabinets/${cabinetId}/purchases?` + p.toString();
+  }, [cabinetId, from, to, supplier, vendor, status, category, q]);
 
   const reload = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetch(api).then((r) => r.json())
-      .then((d) => (d.error ? setError(d.error) : setData(d)))
+    fetch(api).then(async (r) => {
+      if (!r.ok) { setError(`Сервер: HTTP ${r.status}`); return; }
+      try { return await r.json(); } catch { setError("Сервер вернул не JSON"); return null; }
+    })
+      .then((d) => { if (d && !d.error) setData(d); else if (d && d.error) setError(d.error); })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [api]);
 
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => { setPage(1); setExpanded(null); }, [from, to, supplier, status, q, pageSize]);
+  useEffect(() => { setPage(1); setExpanded(null); }, [from, to, supplier, vendor, status, category, q, pageSize]);
 
   if (error && !data) return <Centered>⚠️ Ошибка: {error}</Centered>;
   if (!data) return <Centered>Загрузка…</Centered>;
 
-  const { items, totals, facets } = data;
+  const items = data.items || [];
+  const totals = data.totals || { parties: 0, qty: 0, costTotal: 0, avgCost: 0, logisticsRubTotal: 0, hasNm: 0 };
+  const facets = data.facets || { suppliers: [], vendors: [], statuses: [], categories: [] };
   const totalPages = pageSize === 0 ? 1 : Math.ceil(items.length / pageSize);
   const safePage = Math.min(page, totalPages || 1);
   const slice = pageSize === 0 ? items : items.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -151,7 +160,7 @@ export default function PurchasesPage() {
     if (!confirm("Выгрузить закупки в Google Sheets? (backup в таблицу 1g1MUL)")) return;
     setBackup({ busy: true });
     try {
-      const r = await fetch("/api/cabinets/${cabinetId}/purchases?action=backup", { method: "POST" });
+      const r = await fetch(`/api/cabinets/${cabinetId}/purchases?action=backup`, { method: "POST" });
       const d = await r.json();
       if (!r.ok || d.error) {
         setBackup({ ok: false, error: d.error || d.log || "backup провалился" });
@@ -189,6 +198,14 @@ export default function PurchasesPage() {
             ))}
           </select>
         </Field>
+        <Field label="Поставщик (контакт)">
+          <select value={vendor} onChange={(e) => setVendor(e.target.value)} style={inputStyle}>
+            <option value="">Все ({facets.vendors.reduce((s, x) => s + x.n, 0)})</option>
+            {facets.vendors.map((v) => (
+              <option key={v.v || "__null__"} value={v.v || "__null__"}>{v.v || "(без поставщика)"} ({v.n})</option>
+            ))}
+          </select>
+        </Field>
         <Field label="Статус">
           <select value={status} onChange={(e) => setStatus(e.target.value)} style={inputStyle}>
             <option value="">Все ({facets.statuses.reduce((s, x) => s + x.n, 0)})</option>
@@ -197,10 +214,18 @@ export default function PurchasesPage() {
             ))}
           </select>
         </Field>
+        <Field label="Категория">
+          <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
+            <option value="">Все ({facets.categories.reduce((s, x) => s + x.n, 0)})</option>
+            {facets.categories.map((c) => (
+              <option key={c.c || "__null__"} value={c.c || "__null__"}>{c.c || "(без категории)"} ({c.n})</option>
+            ))}
+          </select>
+        </Field>
         <Field label="Поиск">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="имя товара или nm_id" style={{ ...inputStyle, width: 200 }} />
         </Field>
-        <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setStatus(""); setQ(""); }} style={resetBtnStyle}>Сбросить</button>
+        <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setVendor(""); setStatus(""); setCategory(""); setQ(""); }} style={resetBtnStyle}>Сбросить</button>
         <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить партию"}
         </button>
@@ -220,14 +245,6 @@ export default function PurchasesPage() {
         <AddForm form={addForm} setForm={setAddForm} onAdd={addRecord} busy={adding} />
       )}
 
-      {/* Плашка методологии */}
-      <div style={{ ...alertStyle, marginBottom: 14 }}>
-        <strong>Как читать/править:</strong> модель = лист «Себес товара» (29 колонок).
-        Правь вводные поля (предоплата ¥, курс, кол-во, цена ¥, логистика, даты) —
-        расчётные (<code>N Q R S V W Z</code> и выделенная <code>Себестоимость AA</code>)
-        пересчитаются на сервере по формулам Excel и обновятся после сохранения.
-        Источник правды = дашборд, Sheets = backup.
-      </div>
 
       {/* Таблица */}
       <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
@@ -377,7 +394,8 @@ function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
       <td style={{ padding: "8px 10px", verticalAlign: "middle" }}>
         <ProductCell it={it} edit={edit} setEdit={setEdit} setText={setText}
           onCommit={(v) => onSave(it, "supplier_name", v)}
-          onSupplierCommit={(v) => onSave(it, "supplier", v)} />
+          onSupplierCommit={(v) => onSave(it, "supplier", v)}
+          onCategoryCommit={(v) => onSave(it, "category", v)} />
       </td>
       <Td right>{renderNum("prepay_yuan", "any", yuan)}</Td>          {/* L */}
       <Td right>{renderNum("prepay_rate", "rate", r2)}</Td>            {/* M */}
@@ -429,8 +447,8 @@ function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
     );
   }
 }
-// Композитная колонка «Товар» — фото + где закуплено + наименование + артикул + поставщик.
-function ProductCell({ it, edit, setEdit, setText, onCommit, onSupplierCommit }) {
+// Композитная колонка «Товар» — фото + где закуплено + наименование + артикул + поставщик + категория.
+function ProductCell({ it, edit, setEdit, setText, onCommit, onSupplierCommit, onCategoryCommit }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 240, maxWidth: 320 }}>
       {it.im_url ? (
@@ -476,6 +494,22 @@ function ProductCell({ it, edit, setEdit, setText, onCommit, onSupplierCommit })
             <span style={{ color: C.faint }}>
               {it.supplier || <span style={{ opacity: 0.6 }}>поставщик —</span>}
             </span>
+          </button>
+        )}
+        {/* Категория — кликабельный бейдж (inline-редактор). */}
+        {edit === "category" ? (
+          <input autoFocus value={text}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={() => { const v = text.trim(); setEdit(null); if (v !== (it.category ?? "")) onCategoryCommit(v || null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setEdit(null); }}
+            style={{ ...cellInput, fontSize: 11, width: "100%", marginTop: 2 }} placeholder="категория (напр. Экшн-камеры)" />
+        ) : (
+          <button onClick={() => { setText(String(it.category ?? "")); setEdit("category"); }}
+            style={{ ...badgeStyle, cursor: "pointer", marginTop: 2, background: it.category ? "rgba(79,140,255,0.14)" : "transparent",
+                     border: it.category ? "none" : `1px dashed ${C.line}`, color: it.category ? C.accent : C.faint,
+                     fontSize: 10, padding: "1px 7px", textAlign: "left" }}
+            title="Кликни чтобы задать категорию">
+            {it.category || "без категории"}
           </button>
         )}
       </div>
@@ -583,10 +617,15 @@ function PurchaseDetailPanel({ it, reload }) {
 
   async function delPayment(ppId) {
     if (!confirm("Удалить платёж из графика?")) return;
-    const r = await fetch(`/api/purchase-payments?id=${ppId}`, { method: "DELETE" });
-    const d = await r.json();
-    if (!r.ok || d.error) { alert("Не удалилось: " + (d.error || "")); return; }
-    reload();
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/purchase-payments?id=${ppId}`, { method: "DELETE" });
+      if (r.status === 404) { alert("Удаление платежей: эндпоинт не реализован в SaaS."); return; }
+      const d = await r.json();
+      if (!r.ok || d.error) { alert("Не удалилось: " + (d.error || "")); return; }
+      reload();
+    } catch (e) {
+      alert("Сеть: " + e.message);
+    }
   }
 
   const pays = it.payments || [];
@@ -759,6 +798,7 @@ function Td({ right, children }) {
 function emptyAdd() {
   return {
     supplier_name: "", source_country: "Китай", supplier: "", nm_id: "",
+    category: "",
     prepay_yuan: "", prepay_rate: "", qty: "",
     unit_cost_yuan: "", logistics_yuan: "", exchange_rate: "",
     logistics_rub_per_unit: "", logistics_rub: "",
@@ -777,6 +817,7 @@ function AddForm({ form, setForm, onAdd, busy }) {
         <Field label="Наименование"><input value={form.supplier_name} onChange={set("supplier_name")} style={{ ...inputStyle, width: 200 }} placeholder="напр. Видеорегулятор" /></Field>
         <Field label="Где закуплено"><input value={form.source_country} onChange={set("source_country")} style={{ ...inputStyle, width: 110 }} placeholder="Китай / РФ" /></Field>
         <Field label="Поставщик"><input value={form.supplier} onChange={set("supplier")} style={{ ...inputStyle, width: 140 }} /></Field>
+        <Field label="Категория"><input value={form.category} onChange={set("category")} style={{ ...inputStyle, width: 150 }} placeholder="напр. Экшн-камеры" /></Field>
         <Field label="nm_id (опц.)"><input value={form.nm_id} onChange={set("nm_id")} style={{ ...inputStyle, width: 120 }} placeholder="в пути" /></Field>
         <Field label="Предоплата ¥ (L)"><input type="number" step="any" value={form.prepay_yuan} onChange={set("prepay_yuan")} style={{ ...inputStyle, width: 110 }} /></Field>
         <Field label="Курс аванса (M)"><input type="number" step="any" value={form.prepay_rate} onChange={set("prepay_rate")} style={{ ...inputStyle, width: 100 }} placeholder="11.5" /></Field>
@@ -806,10 +847,6 @@ function Header() {
   return (
     <div style={{ marginBottom: 18 }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, margin: "0 0 4px 0" }}>Закупки (Себес товара)</h1>
-      <div style={{ color: C.faint, fontSize: 13 }}>
-        Точная копия листа «Себес товара» (таблица 1biax). <strong>Источник правды — дашборд</strong>,
-        Google Sheets (1g1MUL) = backup.
-      </div>
     </div>
   );
 }

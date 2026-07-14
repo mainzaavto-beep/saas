@@ -21,7 +21,7 @@ export default async function LandingPage() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 24 }}>📊</span>
-          <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.3 }}>MP Analytics</span>
+          <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -0.3 }}>SySell</span>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <Link href="/login" style={{
@@ -65,7 +65,7 @@ export default async function LandingPage() {
           <Link href="/login" style={{
             padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 600,
             border: '1px solid #243049', color: '#8a99b8', textDecoration: 'none',
-          }}>Войти в кабинет</Link>
+          }}>Войти</Link>
         </div>
       </div>
 
@@ -98,7 +98,7 @@ export default async function LandingPage() {
         padding: '20px 32px', borderTop: '1px solid #243049',
         textAlign: 'center', color: '#6b7a8f', fontSize: 13,
       }}>
-        © 2026 MP Analytics · Сервис оцифровки продаж на маркетплейсах
+        © 2026 SySell · Сервис оцифровки продаж на маркетплейсах
       </footer>
     </div>
   );

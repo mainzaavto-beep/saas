@@ -74,7 +74,7 @@ function emptyAdd() {
   };
 }
 
-export default function SelfBuyoutsPage() {
+export default function SelfBuyoutsPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [from, setFrom] = useState("");
@@ -103,7 +103,7 @@ export default function SelfBuyoutsPage() {
     if (to) p.set("to", to);
     if (nm.trim()) p.set("nm", nm.trim());
     if (q.trim()) p.set("q", q.trim());
-    return "/api/cabinets/${cabinetId}/self-buyouts?" + p.toString();
+    return `/api/cabinets/${cabinetId}/self-buyouts?` + p.toString();
   }, [from, to, nm, q]);
 
   const reload = () => {
@@ -209,7 +209,7 @@ export default function SelfBuyoutsPage() {
     if (!confirm("Выгрузить самовыкупы в Google Sheets? (backup в «Расчет раздачь и самовыкупов»)")) return;
     setBackup({ busy: true });
     try {
-      const r = await fetch("/api/cabinets/${cabinetId}/self-buyouts?action=backup", { method: "POST" });
+      const r = await fetch(`/api/cabinets/${cabinetId}/self-buyouts?action=backup`, { method: "POST" });
       const d = await r.json();
       if (!r.ok || d.error) {
         setBackup({ ok: false, error: d.error || d.log || "backup провалился" });
@@ -296,15 +296,6 @@ export default function SelfBuyoutsPage() {
         />
       )}
 
-      {/* Плашка методологии */}
-      <div style={{ ...alertStyle, marginBottom: 14 }}>
-        <strong>Как читать/править:</strong> параллельный справочный отчёт по самовыкупам.{" "}
-        <strong>В P&L НЕ ВХОДИТ</strong> (WB уже считает самовыкуп как обычную продажу в <code>finance_report</code>{" "}
-        — тут мы видим только чистые затраты на услугу выкупа, без двойного счёта).{" "}
-        <strong>Источник правды — дашборд</strong>; Google Sheets = backup (кнопка «💾 В Sheets»). Кликайте по вводным
-        ячейкам (дата, артикул, кол-во, цена, скидка, СПП, комиссия, логистика, цена выкупа, налог) — формульные колонки{" "}
-        (<code>K L O Q S U total</code>) пересчитаются на сервере автоматически.
-      </div>
 
       {/* Таблица */}
       <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>

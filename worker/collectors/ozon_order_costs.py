@@ -48,7 +48,12 @@ def collect(date_from=None, date_to=None):
         "SELECT posting_id, operation_type_name, operation_dt, product_id, "
         "item_qty, accruals_for_sale, commission_amount, services_amount, payout_amount "
         "FROM tenant.ozon_finance_report WHERE posting_id != ''" + where, params)
-    cogs_map = {r["product_id"]: float(r["cost"]) for r in db_pg.query("SELECT product_id, cost FROM tenant.ozon_cogs") if r["cost"] is not None}
+    # cost_overrides — единый источник себестоимости (с 2026-07-14).
+    # Актуальный override = последний с effective_from <= сегодня.
+    cogs_map = {r["product_id"]: float(r["cost"]) for r in db_pg.query(
+        "SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides "
+        "WHERE platform='ozon' AND effective_from <= current_date "
+        "ORDER BY product_id, effective_from DESC") if r["cost"] is not None}
     order_meta = {r["posting_number"]: r for r in db_pg.query("SELECT posting_number, order_dt, size, product_id FROM tenant.ozon_orders")}
 
     g = defaultdict(lambda: {

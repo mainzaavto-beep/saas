@@ -2,19 +2,22 @@
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { query } from "@/lib/db.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export const GET = withCabinet(async (req, { cabinet }) => {
   const rows = await query(
-    `SELECT shop_id, mp_code, shop_name, legal_name,
+    `SELECT shop_id, mp_code, shop_name, legal_name, tax_mode,
             CASE WHEN api_creds_enc IS NOT NULL THEN true ELSE false END AS has_creds,
             is_active, created_at
      FROM auth.shops WHERE cabinet_id = $1 ORDER BY shop_id`,
     [cabinet.cabinet_id]
   );
-  return NextResponse.json({ items: rows });
+  // Нормализовать tax_mode для фронта.
+  const items = rows.map((r) => ({ ...r, tax_mode: normalizeTaxMode(r.tax_mode) }));
+  return NextResponse.json({ items });
 });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
@@ -40,10 +43,10 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
 
   const rows = await query(
-    `INSERT INTO auth.shops (cabinet_id, mp_code, shop_name, legal_name, api_creds, api_creds_enc)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING shop_id`,
+    `INSERT INTO auth.shops (cabinet_id, mp_code, shop_name, legal_name, api_creds, api_creds_enc, tax_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING shop_id`,
     [cabinet.cabinet_id, b.mp_code, b.shop_name || null, b.legal_name || null,
-     JSON.stringify(apiMeta), apiCredsEnc]
+     JSON.stringify(apiMeta), apiCredsEnc, JSON.stringify(normalizeTaxMode(b.tax_mode))]
   );
   return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id });
 });
@@ -56,29 +59,42 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ ok: true });
 });
 
-// PUT — обновить API-ключи магазина (шифрование через pgcrypto).
+// PUT — обновить API-ключи и/или налоговый режим магазина.
+// Тело: { shop_id, api_creds?, tax_mode? }
 export const PUT = withCabinet(async (req, { cabinet }) => {
   const b = await req.json();
   if (!b.shop_id) return NextResponse.json({ error: "shop_id required" }, { status: 400 });
-  if (!b.api_creds) return NextResponse.json({ error: "api_creds required" }, { status: 400 });
 
-  const encKey = process.env.SAAS_CRED_MASTER_KEY;
-  if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
+  const sets = [];
+  const vals = [];
+  let i = 0;
 
-  // Шифровать полные креды.
-  const encRows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
-  const apiCredsEnc = encRows[0]?.enc;
-
-  // Метаданные (не секретные флаги).
-  const apiMeta = {};
-  for (const [mp, creds] of Object.entries(b.api_creds)) {
-    apiMeta[mp] = {};
-    for (const k of Object.keys(creds)) apiMeta[mp][`has_${k}`] = true;
+  // API-креды (шифрование через pgcrypto).
+  if (b.api_creds) {
+    const encKey = process.env.SAAS_CRED_MASTER_KEY;
+    if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
+    const encRows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
+    const apiCredsEnc = encRows[0]?.enc;
+    const apiMeta = {};
+    for (const [mp, creds] of Object.entries(b.api_creds)) {
+      apiMeta[mp] = {};
+      for (const k of Object.keys(creds)) apiMeta[mp][`has_${k}`] = true;
+    }
+    sets.push(`api_creds = $${++i}`); vals.push(JSON.stringify(apiMeta));
+    sets.push(`api_creds_enc = $${++i}`); vals.push(apiCredsEnc);
   }
 
+  // Налоговый режим.
+  if (b.tax_mode !== undefined) {
+    sets.push(`tax_mode = $${++i}`);
+    vals.push(JSON.stringify(normalizeTaxMode(b.tax_mode)));
+  }
+
+  if (!sets.length) return NextResponse.json({ error: "no fields to update" }, { status: 400 });
+  vals.push(Number(b.shop_id), cabinet.cabinet_id);
   await query(
-    `UPDATE auth.shops SET api_creds = $1, api_creds_enc = $2 WHERE shop_id = $3 AND cabinet_id = $4`,
-    [JSON.stringify(apiMeta), apiCredsEnc, Number(b.shop_id), cabinet.cabinet_id]
+    `UPDATE auth.shops SET ${sets.join(", ")} WHERE shop_id = $${vals.length - 1} AND cabinet_id = $${vals.length}`,
+    vals
   );
   return NextResponse.json({ ok: true });
 });

@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const from = url.searchParams.get("from") ||
     new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
   const mps = cabinet.marketplaces || ["wb", "ozon"];
+
+  // Налоговый режим на каждый МП (per shop / per legal entity).
+  const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+  const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
+
   const items = [];
 
   // WB
@@ -38,7 +44,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     for (const r of rows) {
       const price = Number(r.price) || 0;
+      const cost = Number(r.cost) || 0;
+      const commission = Number(r.commission) || 0;
+      const logistics = Number(r.logistics) || 0;
+      const acquiring = Number(r.acquiring) || 0;
       const profit = Number(r.profit) || 0;
+      // Налог на единицу: расходы = себест + комиссия + логистика + эквайринг.
+      const unitExpenses = cost + commission + logistics + acquiring;
       items.push({
         platform: "wb",
         nm: r.nm_id,
@@ -48,11 +60,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         category: r.category,
         sold: Number(r.sold) || 0,
         price: Math.round(price * 100) / 100,
-        cost: Math.round((Number(r.cost) || 0) * 100) / 100,
-        commission: Math.round((Number(r.commission) || 0) * 100) / 100,
-        logistics: Math.round((Number(r.logistics) || 0) * 100) / 100,
-        acquiring: Math.round((Number(r.acquiring) || 0) * 100) / 100,
-        tax: Math.round(price * 0.06 * 100) / 100,
+        cost: Math.round(cost * 100) / 100,
+        commission: Math.round(commission * 100) / 100,
+        logistics: Math.round(logistics * 100) / 100,
+        acquiring: Math.round(acquiring * 100) / 100,
+        tax: calcUsnTax(wbTax, price, unitExpenses),
         profit: Math.round(profit * 100) / 100,
         margin: price > 0 ? Math.round((profit / price) * 10000) / 100 : 0,
       });
@@ -82,7 +94,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     for (const r of rows) {
       const price = Number(r.price) || 0;
+      const cost = Number(r.cost) || 0;
+      const commission = Number(r.commission) || 0;
+      const logistics = Number(r.logistics) || 0;
+      const acquiring = Number(r.acquiring) || 0;
       const profit = Number(r.profit) || 0;
+      // Налог на единицу: расходы = себест + комиссия + логистика + эквайринг.
+      const unitExpenses = cost + commission + logistics + acquiring;
       items.push({
         platform: "ozon",
         nm: r.nm,
@@ -92,11 +110,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         category: "",
         sold: Number(r.sold) || 0,
         price: Math.round(price * 100) / 100,
-        cost: Math.round((Number(r.cost) || 0) * 100) / 100,
-        commission: Math.round((Number(r.commission) || 0) * 100) / 100,
-        logistics: Math.round((Number(r.logistics) || 0) * 100) / 100,
-        acquiring: Math.round((Number(r.acquiring) || 0) * 100) / 100,
-        tax: Math.round(price * 0.06 * 100) / 100,
+        cost: Math.round(cost * 100) / 100,
+        commission: Math.round(commission * 100) / 100,
+        logistics: Math.round(logistics * 100) / 100,
+        acquiring: Math.round(acquiring * 100) / 100,
+        tax: calcUsnTax(ozonTax, price, unitExpenses),
         profit: Math.round(profit * 100) / 100,
         margin: price > 0 ? Math.round((profit / price) * 10000) / 100 : 0,
       });

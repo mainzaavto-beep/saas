@@ -32,7 +32,7 @@ const CATEGORIES = ["Закупка", "Налоги", "ЗП", "Реклама", 
 const INCOME_TYPES = ["wb_payout", "ozon_payout", "client_return", "owner_inject", "credit"];
 const ACCOUNTS = ["расчётный", "карта", "касса", "wb_cabinet", "ozon_cabinet"];
 
-export default function DdsPage() {
+export default function DdsPage({ cabinetId }) {
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
   const [typeFilter, setTypeFilter] = useState("");
@@ -59,7 +59,7 @@ export default function DdsPage() {
     if (from) p.set("date_from", from);
     if (to) p.set("date_to", to);
     if (typeFilter) p.set("type", typeFilter);
-    return "/api/dds?" + p.toString();
+    return `/api/cabinets/${cabinetId}/dds?` + p.toString();
   }, [from, to, typeFilter]);
 
   const reload = useCallback(() => {

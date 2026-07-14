@@ -48,22 +48,21 @@ a:hover { text-decoration: underline; }
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
-  max-width: 1600px; margin: 0 auto; padding: 0 20px;
-  display: flex; align-items: center; gap: 16px; min-height: 56px;
-  flex-wrap: wrap;
+  max-width: 1920px; margin: 0 auto; padding: 0 16px;
+  display: flex; align-items: center; gap: 10px; min-height: 52px;
 }
 .topbar-brand {
-  display: flex; align-items: baseline; gap: 8px;
-  white-space: nowrap; margin-right: 8px;
+  display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; flex-shrink: 0;
 }
 .topbar-brand .brand-mark { font-size: 18px; }
-.topbar-brand .brand-text { font-weight: 800; font-size: 15px; color: var(--text); }
-.topbar-brand .brand-cab {
-  font-size: 12px; color: var(--muted);
-  border-left: 1px solid var(--border); padding-left: 8px;
+.topbar-brand .brand-text {
+  font-weight: 800; font-size: 16px; color: var(--text);
+  letter-spacing: -0.02em;
 }
 .topnav {
-  display: flex; align-items: center; gap: 2px; flex-wrap: wrap; flex: 1;
+  display: flex; align-items: center; gap: 2px; flex: 1;
+  justify-content: center;
 }
 .topnav-link {
   display: inline-flex; align-items: center; gap: 6px;
@@ -88,6 +87,11 @@ a:hover { text-decoration: underline; }
   padding: 6px; box-shadow: 0 12px 28px rgba(0,0,0,0.4);
   z-index: 100; margin-top: 4px;
 }
+/* Невидимый мостик над dropdown — закрывает зазор margin-top:4px,
+   чтобы мышь не «выпадала» из hover при движении от кнопки к меню. */
+.topnav-dropdown::before {
+  content: ""; position: absolute; top: -4px; left: 0; right: 0; height: 4px;
+}
 .topnav-group:hover > .topnav-dropdown { display: block; }
 .topnav-sublink {
   display: block; padding: 8px 12px; border-radius: 7px;
@@ -96,7 +100,7 @@ a:hover { text-decoration: underline; }
 }
 .topnav-sublink:hover { background: var(--panel2); color: var(--text); text-decoration: none; }
 .topnav-sublink.active { color: var(--accent); font-weight: 700; background: rgba(79,140,255,0.10); }
-.topbar-actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; flex-shrink: 0; }
 .topbar-action {
   display: inline-block; padding: 8px 12px; border-radius: 8px;
   background: transparent; border: 1px solid var(--border);
@@ -104,6 +108,30 @@ a:hover { text-decoration: underline; }
   font-family: inherit; text-decoration: none;
 }
 .topbar-action:hover { background: var(--panel2); color: var(--text); text-decoration: none; }
+
+/* Аватар-кружок (профиль) */
+.avatar-btn {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  border: none; flex-shrink: 0; transition: opacity 0.12s;
+}
+.avatar-btn:hover { opacity: 0.85; }
+
+/* Селектор проекта (compact) */
+.project-switcher > .topnav-link {
+  background: var(--panel2); border: 1px solid var(--border);
+  font-size: 13px; font-weight: 600; color: var(--text);
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+}
+.project-switcher > .topnav-link .brand-cab { border: none; padding: 0; }
+.project-switcher .topnav-dropdown { right: 0; left: auto; min-width: 220px; }
+
+/* Сжатие пунктов навигации */
+.topnav-link { padding: 7px 10px; font-size: 13px; gap: 5px; }
+.topnav-link .topnav-label { white-space: nowrap; }
+.topnav-link .topnav-icon { font-size: 13px; }
 
 .placeholder { margin-top: 24px; background: var(--panel); border: 1px dashed var(--border);
   border-radius: var(--radius); padding: 40px; text-align: center; color: var(--muted); }

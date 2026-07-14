@@ -1,6 +1,6 @@
 'use client';
 // /onboarding — создание проекта с несколькими магазинами.
-// Поддержка: WB (до 4), Ozon (до 4), разные юрлица, налоги.
+// Поддержка: WB (до 4), Ozon (до 4), разные юрлица, налоги per shop.
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -21,19 +21,20 @@ const MP_CONFIG = {
   ]},
 };
 
+// Дефолтный налоговый режим для нового магазина.
+const DEFAULT_TAX = () => ({ type: "usn_income", rate: 6, vat: 0 });
+
 export default function OnboardingPage() {
   const router = useRouter();
   const [displayName, setDisplayName] = useState('');
-  const [usnPct, setUsnPct] = useState('6');
-  const [vat, setVat] = useState(false);
-  const [shops, setShops] = useState([]); // [{mp_code, shop_name, legal_name, creds:{}}]
+  const [shops, setShops] = useState([]); // [{mp_code, shop_name, legal_name, tax, creds:{}}]
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const addShop = (mpCode) => {
     const count = shops.filter(s => s.mp_code === mpCode).length;
     if (count >= 4) return;
-    setShops([...shops, { mp_code: mpCode, shop_name: '', legal_name: '', creds: {} }]);
+    setShops([...shops, { mp_code: mpCode, shop_name: '', legal_name: '', tax: DEFAULT_TAX(), creds: {} }]);
   };
   const removeShop = (idx) => setShops(shops.filter((_, i) => i !== idx));
   const updateShop = (idx, field, val) => {
@@ -41,6 +42,15 @@ export default function OnboardingPage() {
   };
   const updateCred = (idx, key, val) => {
     setShops(shops.map((s, i) => i === idx ? { ...s, creds: { ...s.creds, [key]: val } } : s));
+  };
+  const updateTax = (idx, field, val) => {
+    setShops(shops.map((s, i) => {
+      if (i !== idx) return s;
+      const newTax = { ...s.tax, [field]: val };
+      // При смене типа — сбросить ставку на дефолт.
+      if (field === 'type') newTax.rate = val === 'usn_income_expenses' ? 15 : 6;
+      return { ...s, tax: newTax };
+    }));
   };
 
   async function submit(e) {
@@ -58,17 +68,19 @@ export default function OnboardingPage() {
     }
     setBusy(true);
     try {
-      // Создаём проект
+      // Создаём проект. marketplaces[] = unique МП из выбранных магазинов —
+      // воркер по нему выбирает сборщиков, а онбординг-эндпоинт создаёт job
+      // на backfill за 75 дней.
+      const marketplaces = [...new Set(shops.map((s) => s.mp_code))];
       const projectR = await fetch('/api/onboarding/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: displayName, usn_pct: Number(usnPct), vat }),
+        body: JSON.stringify({ display_name: displayName, marketplaces }),
       });
       const projectData = await projectR.json();
       if (!projectR.ok) { setErr(projectData.error || 'Ошибка'); return; }
       const cabinetId = projectData.cabinet.cabinet_id;
 
-      // Добавляем магазины
-      const marketplaces = [...new Set(shops.map(s => s.mp_code))];
+      // Добавляем магазины с налоговым режимом
       for (const s of shops) {
         await fetch(`/api/cabinets/${cabinetId}/shops`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -76,16 +88,11 @@ export default function OnboardingPage() {
             mp_code: s.mp_code,
             shop_name: s.shop_name,
             legal_name: s.legal_name,
+            tax_mode: s.tax,
             api_creds: { [s.mp_code]: s.creds },
           }),
         });
       }
-
-      // Обновить marketplaces в кабинете
-      await fetch(`/api/cabinets/${cabinetId}/settings`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: displayName }),
-      });
 
       router.push(`/cabinets/${cabinetId}`);
       router.refresh();
@@ -100,19 +107,11 @@ export default function OnboardingPage() {
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Подключите магазины — мы начнём собирать аналитику автоматически</p>
         {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
 
-        {/* Название + налоги */}
+        {/* Название */}
         <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 16 }}>
           <label style={{ fontSize: 12, color: C.muted }}>Название проекта
             <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="Напр. ИП Иванов" required autoFocus style={{ ...inputStyle, marginTop: 4 }} />
           </label>
-          <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
-            <label style={{ fontSize: 12, color: C.muted }}>УСН %
-              <input type="number" min="0" max="100" value={usnPct} onChange={e => setUsnPct(e.target.value)} style={{ ...inputStyle, width: 80, marginTop: 4 }} />
-            </label>
-            <label style={{ fontSize: 14, color: C.ink, display: "flex", alignItems: "center", gap: 6, paddingTop: 20 }}>
-              <input type="checkbox" checked={vat} onChange={e => setVat(e.target.checked)} /> С НДС
-            </label>
-          </div>
         </div>
 
         {/* Магазины */}
@@ -142,6 +141,27 @@ export default function OnboardingPage() {
                 <div style={{ display: "grid", gap: 10 }}>
                   <input value={s.shop_name} onChange={e => updateShop(idx, 'shop_name', e.target.value)} placeholder="Название магазина (напр. ИП Матвеев WB)" style={inputStyle} />
                   <input value={s.legal_name} onChange={e => updateShop(idx, 'legal_name', e.target.value)} placeholder="Юрлицо (ИП/ООО)" style={inputStyle} />
+
+                  {/* Налоговый режим */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: "10px 0", borderTop: `1px dashed ${C.line}` }}>
+                    <label style={{ fontSize: 11, color: C.muted }}>Налог. система
+                      <select value={s.tax.type} onChange={e => updateTax(idx, 'type', e.target.value)} style={{ ...inputStyle, width: "auto", marginTop: 4, fontSize: 13 }}>
+                        <option value="usn_income">УСН «Доходы»</option>
+                        <option value="usn_income_expenses">УСН «Доходы−Расходы»</option>
+                      </select>
+                    </label>
+                    <label style={{ fontSize: 11, color: C.muted }}>Ставка %
+                      <input type="number" min="0" max="100" value={s.tax.rate} onChange={e => updateTax(idx, 'rate', Number(e.target.value))} style={{ ...inputStyle, width: 70, marginTop: 4, fontSize: 13 }} />
+                    </label>
+                    <label style={{ fontSize: 11, color: C.muted }}>НДС
+                      <select value={s.tax.vat} onChange={e => updateTax(idx, 'vat', Number(e.target.value))} style={{ ...inputStyle, width: "auto", marginTop: 4, fontSize: 13 }}>
+                        <option value={0}>Без НДС</option>
+                        <option value={5}>5%</option>
+                        <option value={7}>7%</option>
+                      </select>
+                    </label>
+                  </div>
+
                   {cfg.fields.map(f => (
                     <input key={f.key} type={f.type} value={s.creds[f.key] || ''} onChange={e => updateCred(idx, f.key, e.target.value)} placeholder={f.label + (f.required ? " *" : "")} style={inputStyle} />
                   ))}

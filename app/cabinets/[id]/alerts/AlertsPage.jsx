@@ -34,7 +34,7 @@ const FILTERS = [
   { id: "unread", label: "✨ Новые" },
 ];
 
-export default function AlertsPage() {
+export default function AlertsPage({ cabinetId }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");

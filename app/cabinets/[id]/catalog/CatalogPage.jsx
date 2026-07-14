@@ -42,7 +42,7 @@ const PLATFORMS = [
 ];
 const platMeta = (p) => PLATFORMS.find((x) => x.v === p) || { label: p, color: C.muted, badge: C.surfaceAlt };
 
-export default function CatalogPage() {
+export default function CatalogPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -447,7 +447,7 @@ function SkuManager({ productId, skus, onChanged }) {
     setSearching(true);
     const t = setTimeout(() => {
       const p = new URLSearchParams({ sku_search: platform, q: query.trim() });
-      fetch("/api/cabinets/${cabinetId}/catalog?" + p.toString())
+      fetch(`/api/cabinets/${cabinetId}/catalog?` + p.toString())
         .then((r) => r.json())
         .then((d) => setResults(d.results || []))
         .catch(() => setResults([]))

@@ -125,7 +125,8 @@ export default function TimingPage({ cabinetId }) {
   };
 
   const facets = data?.facets || { brand: [], group: [], nm: [] };
-  const maxCell = data ? Math.max(1, ...data.heatmap.flat()) : 1;
+  const heatmap = Array.isArray(data?.heatmap) ? data.heatmap : [];
+  const maxCell = Math.max(1, ...heatmap.flat());
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.ink, fontFamily: font }}>
@@ -286,10 +287,10 @@ export default function TimingPage({ cabinetId }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.weekdays.map((wd, d) => (
+                    {(data?.weekdays || []).map((wd, d) => (
                       <tr key={d}>
                         <td style={{ position: "sticky", left: 0, background: C.surface, padding: "4px 8px", color: C.ink, fontWeight: 600, whiteSpace: "nowrap" }}>{wd.short}</td>
-                        {data.heatmap[d].map((v, idx) => (
+                        {(heatmap[d] || []).map((v, idx) => (
                           <td key={idx} title={`${wd.label}, ${granularity === "m30" ? slotLabel(idx) : hourLabel(idx)} — ${num(v)}`} style={{ padding: granularity === "m30" ? "5px 1px" : "5px 5px", textAlign: "center", background: heatColor(v, maxCell), color: v / maxCell > 0.6 ? "#fff" : C.ink, borderRadius: 2 }}>
                             {v || ""}
                           </td>

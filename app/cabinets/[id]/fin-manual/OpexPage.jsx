@@ -70,6 +70,29 @@ function dayLabel(iso) {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`;
 }
 
+// Тема (совпадает с соседними страницами кабинета).
+const C = {
+  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
+  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
+  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
+  blue: "#4f8cff",
+};
+const ALERT = {
+  warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
+  info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
+};
+
+// Запись OPEX-строки в ДДС (фиксация движения денег). Паттерн из соседних страниц.
+const postToDds = async (opts) => {
+  try {
+    await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(opts),
+    });
+  } catch {}
+};
+
 const DOMAIN_FILTERS = ["all", ...DOMAINS]; // «Все» + 3 домена
 const PIE_PALETTE = ["#00E5FF", "#D9B08C", "#4ADE80", "#F87171", "#A78BFA", "#FBBF24", "#60A5FA", "#34D399"];
 
@@ -79,7 +102,7 @@ function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
 
-export default function OpexPage() {
+export default function OpexPage({ cabinetId }) {
   const [period, setPeriod] = useState(curMonth());
   const [domainFilter, setDomainFilter] = useState("all"); // all|business|personal|family
   const [items, setItems] = useState([]);
@@ -125,7 +148,16 @@ export default function OpexPage() {
         if (d.error) setError(d.error);
         else {
           setItems(d.items || []);
-          setTotals(d.totals || { count: 0, total: 0, by_category: [], by_domain: [] });
+          // API отдаёт totals={count,total} и facets.categories=[{category,n,total}].
+          // Собираем by_category из facets (с маппингом n→count), чтобы все места
+          // фронта (pieData, KPI-карточки), ждущие totals.by_category, работали.
+          const facets = d.facets || {};
+          const byCategory = (facets.categories || []).map((c) => ({
+            category: c.category,
+            count: Number(c.n) || 0,
+            total: Number(c.total) || 0,
+          }));
+          setTotals({ ...(d.totals || { count: 0, total: 0 }), by_category: byCategory });
         }
       })
       .catch((e) => setError(String(e)))
@@ -179,7 +211,7 @@ export default function OpexPage() {
     setVoiceBusy(true);
     setVoiceErr(null);
     try {
-      const r = await fetch("/api/cabinets/${cabinetId}/opex", {
+      const r = await fetch(`/api/cabinets/${cabinetId}/opex`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, domain: fDomain }),
@@ -433,7 +465,7 @@ export default function OpexPage() {
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <Kpi label="Σ расходов" value={money(totals.total)} color={C.neg} />
         <Kpi label="Записей" value={num(totals.count)} />
-        {totals.by_category.map((b) => (
+        {(totals.by_category || []).map((b) => (
           <Kpi key={b.category} label={b.category} value={money(b.total)} hint={`${b.count} зап.`} />
         ))}
         {totals.count === 0 && <Kpi label="—" value="нет данных за период" />}

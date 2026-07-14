@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 // Навигация с группами (как в эталоне data-presenter/Nav.jsx).
 // Группа = { label, icon, items: [{href, label}] } — рендерится как dropdown.
 // Пункт = { href, label, icon } — плоский.
+// Настройки и Команда перенесены в профиль (/settings).
 const MENU = [
   { href: "", label: "Главная", icon: "📊" },
   { href: "/briefing", label: "Брифинг", icon: "📋" },
@@ -52,8 +53,6 @@ const MENU = [
     ],
   },
   { href: "/alerts", label: "Оповещения", icon: "🔔" },
-  { href: "/settings", label: "Настройки", icon: "⚙️" },
-  { href: "/team", label: "Команда", icon: "👥" },
 ];
 
 export default async function CabinetLayout({ children, params }) {
@@ -73,10 +72,19 @@ export default async function CabinetLayout({ children, params }) {
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
 
+  // Список всех проектов пользователя — для dropdown выбора.
+  const allProjects = await query(
+    `SELECT c.cabinet_id, c.display_name, c.marketplaces
+     FROM auth.cabinets c
+     JOIN auth.memberships m ON m.cabinet_id = c.cabinet_id
+     WHERE m.user_id = $1 AND c.status <> 'deleted'
+     ORDER BY c.cabinet_id`,
+    [session.user_id]
+  );
+
   // Текущий путь — для подсветки активного пункта меню.
   const h = await headers();
   const pathname = h.get("x-invoke-path") || h.get("referer") || "";
-  // x-invoke-path отдаёт путь без basePath; fallback на referer при отсутствии.
   const current = pathname.replace(basePath, "") || "";
 
   return (
@@ -85,12 +93,11 @@ export default async function CabinetLayout({ children, params }) {
         <div className="topbar-inner">
           <div className="topbar-brand">
             <span className="brand-mark">📊</span>
-            <span className="brand-text">MP Analytics</span>
-            <span className="brand-cab">{cab.display_name}</span>
+            <span className="brand-text">SySell</span>
           </div>
+
           <nav className="topnav" id="topnav-groups">
             {MENU.map((item) => {
-              // Группа с подменю (dropdown по hover)
               if (item.items) {
                 const groupActive = item.items.some((sub) => current === sub.href);
                 return (
@@ -117,7 +124,6 @@ export default async function CabinetLayout({ children, params }) {
                   </div>
                 );
               }
-              // Плоский пункт
               const active = item.href === "" ? current === "" : current === item.href;
               return (
                 <Link
@@ -132,11 +138,40 @@ export default async function CabinetLayout({ children, params }) {
               );
             })}
           </nav>
+
           <div className="topbar-actions">
-            <Link href="/settings" className="topbar-action" title="Профиль">👤 Профиль</Link>
-            <Link href="/" className="topbar-action" title="Все кабинеты">← Кабинеты</Link>
+            {/* Селектор проекта */}
+            <div className="topnav-group project-switcher">
+              <button className="topnav-link" title="Сменить проект">
+                <span className="brand-cab">{cab.display_name}</span>
+                <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 4 }}>▼</span>
+              </button>
+              <div className="topnav-dropdown">
+                {allProjects.map((p) => (
+                  <Link
+                    key={p.cabinet_id}
+                    href={`/cabinets/${p.cabinet_id}`}
+                    className={"topnav-sublink" + (p.cabinet_id === cabinetId ? " active" : "")}
+                  >
+                    {p.display_name || `Проект #${p.cabinet_id}`}
+                  </Link>
+                ))}
+                <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
+                <Link href="/onboarding" className="topnav-sublink">+ Новый проект</Link>
+              </div>
+            </div>
+
+            {/* Аватар-профиль */}
+            <Link
+              href={`/settings?cabinet=${cabinetId}`}
+              className="avatar-btn"
+              title="Профиль и настройки"
+            >
+              {(session.email || "?")[0].toUpperCase()}
+            </Link>
+
             <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
-              <button type="submit" className="topbar-action" title="Выйти">Выйти</button>
+              <button type="submit" className="topbar-action" title="Выйти">⏻</button>
             </form>
           </div>
         </div>

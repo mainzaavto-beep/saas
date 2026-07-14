@@ -2,11 +2,12 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
 import {
-  wbFinancePeriodByNm, wbSold, wbAdTotal, wbUnitCost, calcOperatingProfit, USN_RATE as WB_USN,
+  wbFinancePeriodByNm, wbSold, wbAdTotal, wbUnitCost, calcOperatingProfit,
 } from "@/lib/wbMetrics.js";
 import {
   ozOrderCostsByProduct, ozAdSpend, calcOperatingProfit as ozCalcProfit,
 } from "@/lib/ozonMetrics.js";
+import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,14 +27,14 @@ export const dynamic = "force-dynamic";
 //    articles/products — имя/бренд/категория/фото
 //    daily_metrics — ad_spend по SKU за период (для ДРР/CPA/ROMI)
 //    daily_stock   — средний остаток и остаток на конец периода
-//    cogs          — себестоимость единицы (контракт №12: cost>0)
+//    cost_overrides — себестоимость единицы (единый источник, с 2026-07-14)
 //
 //  ⚠️ МЕТОДОЛОГИЯ: цифры считаются прозрачно из боевых БД по нашим формулам
 //  (решение владельца) и МОГУТ расходиться с выгрузкой Mpassistant на 5–30%
 //  из-за разной трактовки (окна данных, отношение к отменам, формула %выкупа).
 // =====================================================================
 
-const USN_RATE = WB_USN; // из lib/wbMetrics.js (единый канон)
+const USN_RATE = 0.06; // legacy — не используется (налог через calcUsnTax из lib/tax.js)
 
 
 
@@ -68,8 +69,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const toEnd = to ? to + "T23:59:59" : "";
 
     let items = [];
-    if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb));
-    if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon));
+    const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+    const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
+    if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb, wbTax));
+    if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon, ozonTax));
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
@@ -208,7 +211,7 @@ function aggTotals(items) {
 }
 
 // ---------- WB ----------
-async function collectWB(from, toEnd, shopName) {
+async function collectWB(from, toEnd, shopName, taxMode) {
   const db = new DatabaseSync("wb", {readOnly:true});
   // Дней в периоде — для среднедневных показателей.
   const days = Math.max(1, Math.round((new Date(toEnd.slice(0, 10)) - new Date(from)) / 86400000) + 1);
@@ -316,8 +319,15 @@ async function collectWB(from, toEnd, shopName) {
   }
 
   // 5) Себестоимость единицы (для налога-базы это не нужно, но храним).
+  //    Единый источник — tenant.cost_overrides (с 2026-07-14): актуальный override
+  //    на сегодня = последний с effective_from <= current_date. DISTINCT ON убирает
+  //    дубли по nm_id, оставляя самую свежую запись.
   const unitCost = {};
-  for (const r of await db.prepare(`SELECT nm_id, cost FROM cogs`).all()) {
+  for (const r of await db.prepare(
+    `SELECT DISTINCT ON (nm_id) nm_id, cost FROM tenant.cost_overrides
+     WHERE platform = 'wb' AND effective_from <= current_date
+     ORDER BY nm_id, effective_from DESC`
+  ).all()) {
     unitCost[r.nm_id] = r.cost > 0 ? r.cost : null;
   }
 
@@ -355,7 +365,6 @@ async function collectWB(from, toEnd, shopName) {
     const acquiring  = round2(f.acquiring || 0);
     const logistics  = round2(f.logistics || 0);
     const loyalty    = round2(f.loyalty || 0);
-    const tax = round2(salesRub * USN_RATE);
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
     // Инварианта: ordered >= sold + cancelled. ⚠️ returns НЕ прибавляем к sold:
@@ -367,6 +376,10 @@ async function collectWB(from, toEnd, shopName) {
     const ordered = Math.max(o.ordered || 0, minOrdered);
     const adSp = ad[nm] || 0;
     const costRub = round2((unitCost[nm] ?? 0) * sold);
+    // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
+    // лояльность + себестоимость + реклама (хранение не привязано к SKU).
+    const itemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
+    const tax = calcUsnTax(taxMode, salesRub, itemExpenses);
     // ЧИСТАЯ прибыль по SKU = выручка − все расходы. Хранение сюда НЕ входит —
     // оно не привязано к товару (№27), показывается в плитке «Кабинетные расходы».
     const profitClean = round2(
@@ -390,7 +403,7 @@ async function collectWB(from, toEnd, shopName) {
 }
 
 // ---------- Ozon ----------
-async function collectOzon(from, toEnd, shopName) {
+async function collectOzon(from, toEnd, shopName, taxMode) {
   const db = new DatabaseSync("ozon", {readOnly:true});
   const days = Math.max(1, Math.round((new Date(toEnd.slice(0, 10)) - new Date(from)) / 86400000) + 1);
   const rows = await db.prepare(
@@ -525,8 +538,15 @@ async function collectOzon(from, toEnd, shopName) {
   // Дата снимка (одинакова для всех товаров — последний прогон stocks.py).
   if (lastSnapshotDate) stockDate._ozon = lastSnapshotDate;
 
+  // Единый источник себестоимости — tenant.cost_overrides (с 2026-07-14):
+  // актуальный override на сегодня = последний с effective_from <= current_date.
+  // DISTINCT ON убирает дубли по product_id, оставляя самую свежую запись.
   const unitCost = {};
-  for (const r of await db.prepare(`SELECT product_id, cost FROM cogs`).all()) {
+  for (const r of await db.prepare(
+    `SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides
+     WHERE platform = 'ozon' AND effective_from <= current_date
+     ORDER BY product_id, effective_from DESC`
+  ).all()) {
     unitCost[r.product_id] = r.cost > 0 ? r.cost : null;
   }
 
@@ -550,10 +570,13 @@ async function collectOzon(from, toEnd, shopName) {
     const logistics  = round2(r.logistics || 0);
     const loyalty    = round2(r.loyalty || 0);
     const costRub    = round2(r.costRub || 0);
-    const tax = round2(salesRub * USN_RATE);
+    const adSp = ad[nm] || 0;
+    // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
+    // лояльность + себестоимость + реклама.
+    const ozItemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
+    const tax = calcUsnTax(taxMode, salesRub, ozItemExpenses);
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
-    const adSp = ad[nm] || 0;
     // profitClean = ОПЕРАЦИОННАЯ прибыль (правка 2026-06-26): та же формула, что в
     // collectWB — выручка − себест − комиссия − логистика − эквайринг − лояльность −
     // реклама − УСН 6%. Раньше здесь было просто order_costs.profit (валовая, без

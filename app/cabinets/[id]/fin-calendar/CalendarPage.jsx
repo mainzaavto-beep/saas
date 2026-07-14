@@ -35,7 +35,7 @@ const fmtWeek = (iso) => {
 
 const HORIZONS = [4, 8, 12];
 
-export default function CalendarPage() {
+export default function CalendarPage({ cabinetId }) {
   const [horizon, setHorizon] = useState(8);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);

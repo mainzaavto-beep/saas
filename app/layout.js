@@ -2,7 +2,7 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'MP Analytics',
+  title: 'SySell',
   description: 'Аналитика для продавцов Wildberries и Ozon',
 };
 

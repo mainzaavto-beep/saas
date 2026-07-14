@@ -24,7 +24,7 @@ const MPS = [
   { id: "ozon", label: "Ozon" },
 ];
 
-export default function BriefingPage() {
+export default function BriefingPage({ cabinetId }) {
   const [brief, setBrief] = useState(null);
   const [mp, setMp] = useState("all");
   const [loading, setLoading] = useState(true);

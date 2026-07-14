@@ -5,9 +5,9 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
   wbFinancePeriod, wbOrdersCount, wbCancelCount, wbAdTotal, wbSold,
-  USN_RATE,
 } from "@/lib/wbMetrics.js";
 import { ozOrderCostsAggregate, ozAdSpend } from "@/lib/ozonMetrics.js";
+import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ const zeroKpi = () => ({
   netPay: 0, storage: 0,
 });
 
-async function collectWb(db, from, to, toEnd) {
+async function collectWb(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
   const fin = await wbFinancePeriod(db, { from, to });
   k.revenue = fin.salesRub;
@@ -29,8 +29,14 @@ async function collectWb(db, from, to, toEnd) {
   k.sold = Object.values(await wbSold(db, { from, to })).reduce((a, b) => a + b, 0);
 
   k.costRub = (await db.prepare(
-    `SELECT COALESCE(SUM(s.quantity * CASE WHEN c.cost > 0 THEN c.cost ELSE NULL END),0) AS v
-     FROM finance_report s LEFT JOIN cogs c ON c.nm_id = s.nm_id
+    `SELECT COALESCE(SUM(s.quantity * co.cost),0) AS v
+     FROM finance_report s
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = s.nm_id AND platform = 'wb'
+         AND effective_from <= substr(s.rr_dt,1,10)::date
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      WHERE s.supplier_oper_name = 'Продажа' AND s.nm_id > 0
        AND s.rr_dt >= ? AND s.rr_dt <= ?`
   ).get(from, toEnd)).v || 0;
@@ -55,14 +61,16 @@ async function collectWb(db, from, to, toEnd) {
   k.orders = await wbOrdersCount(db, { from, to });
   k.cancelCnt = await wbCancelCount(db, { from, to });
 
-  k.tax = Math.round(k.revenue * USN_RATE * 100) / 100;
+  // Налог: для УСН Доходы−Расходы нужны расходы.
+  const expenses = k.commission + k.acquiring + k.logistics + k.costRub + k.adSp + k.storage;
+  k.tax = calcUsnTax(taxMode, k.revenue, expenses);
   k.profit = Math.round(
     (k.revenue - k.commission - k.acquiring - k.logistics - k.costRub - k.adSp - k.tax) * 100
   ) / 100;
   return k;
 }
 
-async function collectOzon(db, from, to, toEnd) {
+async function collectOzon(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
   const f = await ozOrderCostsAggregate(db, { from, to });
   k.revenue = f.revenue;
@@ -91,7 +99,9 @@ async function collectOzon(db, from, to, toEnd) {
      WHERE is_cancel = 1 AND substr(order_dt,1,10) >= ? AND substr(order_dt,1,10) <= ?`
   ).get(from, to)).c || 0;
 
-  k.tax = Math.round(k.revenue * USN_RATE * 100) / 100;
+  // Налог: для УСН Доходы−Расходы нужны расходы.
+  const expenses = k.commission + k.acquiring + k.logistics + k.loyalty + k.costRub + k.adSp;
+  k.tax = calcUsnTax(taxMode, k.revenue, expenses);
   k.profit = Math.round(
     (k.revenue - k.commission - k.acquiring - k.logistics - k.loyalty
       - k.costRub - k.adSp - k.tax) * 100
@@ -111,14 +121,18 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const from = fromQ || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
   const toEnd = to + "T23:59:59";
 
+  // Налоговый режим на каждый МП (per shop / per legal entity).
+  const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+  const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
+
   const parts = [];
   if (mp !== "ozon" && mps.includes('wb')) {
     const db = new DatabaseSync('wb', { readOnly: true });
-    parts.push(await collectWb(db, from, to, toEnd));
+    parts.push(await collectWb(db, from, to, toEnd, wbTax));
   }
   if (mp !== "wb" && mps.includes('ozon')) {
     const db = new DatabaseSync('ozon', { readOnly: true });
-    parts.push(await collectOzon(db, from, to, toEnd));
+    parts.push(await collectOzon(db, from, to, toEnd, ozonTax));
   }
 
   const k = zeroKpi();
@@ -160,16 +174,22 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const lmLogMap = {}, lmAdMap = {}, lmCost = {}, lmName = {};
     for (const r of lmLog) lmLogMap[r.nm_id] = r.logistics || 0;
     for (const r of lmAd) lmAdMap[r.nm_id] = r.ad || 0;
-    for (const r of await db.prepare("SELECT nm_id, cost FROM cogs WHERE cost > 0").all()) lmCost[r.nm_id] = r.cost;
+    for (const r of await db.prepare(
+      `SELECT DISTINCT ON (nm_id) nm_id, cost FROM tenant.cost_overrides
+       WHERE platform = 'wb' AND cost > 0
+         AND effective_from <= current_date
+       ORDER BY nm_id, effective_from DESC`
+    ).all()) lmCost[r.nm_id] = r.cost;
     for (const r of await db.prepare("SELECT nm_id, name FROM articles").all()) lmName[r.nm_id] = r.name;
     lossMakers = lmFin
       .filter((f) => lmCost[f.nm_id] != null)
       .map((f) => {
         const rev = f.salesRub || 0;
-        const tax = rev * USN_RATE;
         const costRub = (lmCost[f.nm_id] || 0) * (f.qty || 0);
-        const profit = rev - (f.commission || 0) - (f.acquiring || 0)
-          - (lmLogMap[f.nm_id] || 0) - (lmAdMap[f.nm_id] || 0) - tax - costRub;
+        const itemExpenses = (f.commission || 0) + (f.acquiring || 0)
+          + (lmLogMap[f.nm_id] || 0) + (lmAdMap[f.nm_id] || 0) + costRub;
+        const tax = calcUsnTax(wbTax, rev, itemExpenses);
+        const profit = rev - itemExpenses - tax;
         return { nm_id: f.nm_id, name: lmName[f.nm_id] || String(f.nm_id),
                  profit: Math.round(profit * 100) / 100 };
       })
@@ -210,9 +230,15 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     noCogsCount = (await db.prepare(
       `SELECT COUNT(DISTINCT s.nm_id) AS c
-       FROM finance_report s LEFT JOIN cogs c ON c.nm_id = s.nm_id
+       FROM finance_report s
+       LEFT JOIN LATERAL (
+         SELECT cost FROM tenant.cost_overrides
+         WHERE nm_id = s.nm_id AND platform = 'wb'
+           AND effective_from <= substr(s.rr_dt,1,10)::date
+         ORDER BY effective_from DESC LIMIT 1
+       ) co ON true
        WHERE s.supplier_oper_name = 'Продажа' AND s.nm_id > 0
-         AND (c.cost IS NULL OR c.cost <= 0) AND s.rr_dt >= ? AND s.rr_dt <= ?`
+         AND (co.cost IS NULL OR co.cost <= 0) AND s.rr_dt >= ? AND s.rr_dt <= ?`
     ).get(from, toEnd)).c || 0;
   }
 

@@ -59,7 +59,7 @@ const fmtCover = (x) => {
   return String(x);
 };
 
-export default function MovePage() {
+export default function MovePage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("state"); // state | recommend | requests

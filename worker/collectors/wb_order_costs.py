@@ -58,13 +58,18 @@ def _aggregate_sql(start, end):
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_retail END AS cost_value_retail,
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_pay END AS cost_value_pay,
            o.commission, o.acquiring, o.logistics, o.loyalty,
-           c.cost AS cost,
+           co.cost AS cost,
            o.qty
     FROM ops o
     LEFT JOIN tenant.wb_orders ord ON ord.cabinet_id = current_setting('app.cabinet_id')::bigint
                                     AND ord.srid = o.srid
-    LEFT JOIN tenant.wb_cogs c ON c.cabinet_id = current_setting('app.cabinet_id')::bigint
-                                AND c.nm_id = o.nm_id
+    LEFT JOIN LATERAL (
+      SELECT cost FROM tenant.cost_overrides
+      WHERE cabinet_id = current_setting('app.cabinet_id')::bigint
+        AND nm_id = o.nm_id AND platform = 'wb'
+        AND effective_from <= COALESCE(substr(o.sale_dt,1,10)::date, substr(o.order_dt,1,10)::date, current_date)
+      ORDER BY effective_from DESC LIMIT 1
+    ) co ON true
     WHERE o.qty > 0 OR o.cost_value_retail > 0"""
     rows = db_pg.query(cid_sql, (start, end))
     # Считаем profit/profit_alt/self_buyout на стороне Python (как боевой).

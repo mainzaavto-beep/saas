@@ -57,7 +57,7 @@ const SUBJECTS = [
   ["person", "Физлицо"],
 ];
 
-export default function BalancePage() {
+export default function BalancePage({ cabinetId }) {
   const [date, setDate] = useState(today());
   const [snap, setSnap] = useState(null);
   const [history, setHistory] = useState([]);
@@ -231,7 +231,7 @@ export default function BalancePage() {
   async function removeAccount(id) {
     if (!confirm("Убрать счёт из каталога? Исторические снапшоты не затрагиваются.")) return;
     try {
-      const r = await fetch(`/api/balance?id=${id}`, { method: "DELETE" });
+      const r = await fetch(`/api/cabinets/${cabinetId}/balance?id=${id}`, { method: "DELETE" });
       const d = await r.json();
       if (!r.ok || d.error) { alert("Не удалось удалить: " + (d.error || "")); return; }
       const cat = await reloadCatalog();

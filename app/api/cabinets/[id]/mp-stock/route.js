@@ -96,8 +96,8 @@ async function collectWB(dateParam) {
             st.quantity_full,
             st.in_way_to,
             st.in_way_from,
-            COALESCE(c.cost, 0) AS cost,
-            ROUND(st.quantity_full * COALESCE(c.cost, 0), 2) AS value_cost,
+            COALESCE(co.cost, 0) AS cost,
+            ROUND(st.quantity_full * COALESCE(co.cost, 0), 2) AS value_cost,
             COALESCE(m.price, 0) AS price,
             ROUND(st.quantity_full * COALESCE(m.price, 0), 2) AS value_retail
      FROM (
@@ -109,7 +109,12 @@ async function collectWB(dateParam) {
        FROM daily_stock WHERE date = ? GROUP BY nm_id
      ) st
      LEFT JOIN articles a ON a.nm_id = st.nm_id
-     LEFT JOIN cogs c     ON c.nm_id = st.nm_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = st.nm_id AND platform = 'wb'
+         AND effective_from <= current_date
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      LEFT JOIN (
        SELECT nm_id, price FROM daily_metrics
        WHERE date = (SELECT MAX(date) FROM daily_metrics)
@@ -151,8 +156,8 @@ async function collectOzon(dateParam) {
             st.fbo_present AS quantity_full,
             0 AS in_way_to,
             0 AS in_way_from,
-            COALESCE(MAX(c.cost), 0) AS cost,
-            ROUND(st.fbo_present * COALESCE(MAX(c.cost), 0), 2) AS value_cost,
+            COALESCE(co.cost, 0) AS cost,
+            ROUND(st.fbo_present * COALESCE(co.cost, 0), 2) AS value_cost,
             COALESCE(MAX(p.price), 0) AS price,
             ROUND(st.fbo_present * COALESCE(MAX(p.price), 0), 2) AS value_retail
      FROM (
@@ -162,8 +167,13 @@ async function collectOzon(dateParam) {
        FROM daily_stock WHERE date = ? GROUP BY product_id
      ) st
      LEFT JOIN products p ON p.product_id = st.product_id
-     LEFT JOIN cogs c     ON c.product_id = st.product_id
-     GROUP BY st.product_id, st.fbo_present, st.fbo_reserved
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE product_id = st.product_id AND platform = 'ozon'
+         AND effective_from <= current_date
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
+     GROUP BY st.product_id, st.fbo_present, st.fbo_reserved, co.cost
      ORDER BY value_cost DESC`
   ).all(date).map((it) => ({
     ...it,

@@ -120,14 +120,23 @@ async function collectWB(limit, shopName) {
             a.im_url        AS im_url,
             oc.order_dt, oc.sale_dt, o.cancel_dt, oc.return_dt,
             oc.is_return, oc.self_buyout,
-            oc.qty, oc.cost, oc.cost_value_retail AS order_total,
+            oc.qty,
+            COALESCE(co.cost, oc.cost) AS cost,
+            oc.cost_value_retail AS order_total,
             oc.cost_value_pay AS sale_total,
-            oc.commission, oc.acquiring, oc.logistics, oc.loyalty, oc.profit,
+            oc.commission, oc.acquiring, oc.logistics, oc.loyalty,
+            oc.profit + COALESCE(oc.cost, 0) - COALESCE(co.cost, oc.cost, 0) AS profit,
             o.g_number      AS posting_id,
             oc.updated_at
      FROM order_costs oc
      LEFT JOIN orders o   ON o.srid = oc.srid
      LEFT JOIN articles a ON a.nm_id = oc.nm_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = oc.nm_id AND platform = 'wb'
+         AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      ORDER BY oc.order_dt DESC
      LIMIT ?`
   ).all(limit);
@@ -155,17 +164,22 @@ async function collectWB(limit, shopName) {
             0               AS is_return,
             0               AS self_buyout,
             1               AS qty,
-            COALESCE(cg.cost, 0) AS cost,
+            COALESCE(co.cost, 0) AS cost,
             o.price_with_disc AS order_total,
             0               AS sale_total,
             0               AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
-            -COALESCE(cg.cost, 0) AS profit,
+            -COALESCE(co.cost, 0) AS profit,
             o.g_number      AS posting_id,
             o.updated_at,
             o.is_cancel
      FROM orders o
      LEFT JOIN articles a ON a.nm_id = o.nm_id
-     LEFT JOIN cogs cg    ON cg.nm_id = o.nm_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = o.nm_id AND platform = 'wb'
+         AND effective_from <= COALESCE(substr(o.order_dt,1,10)::date, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc WHERE oc.srid = o.srid)
      ORDER BY o.order_dt DESC`
   ).all();
@@ -223,13 +237,22 @@ async function collectOzon(limit, shopName) {
             p.im_url          AS im_url,
             oc.order_dt, oc.sale_dt, oc.return_dt, o.cancel_dt,
             oc.is_return, oc.self_buyout,
-            oc.qty, oc.cost, oc.cost_value_retail AS order_total,
-            oc.commission, oc.acquiring, oc.logistics, oc.loyalty, oc.profit,
+            oc.qty,
+            COALESCE(co.cost, oc.cost) AS cost,
+            oc.cost_value_retail AS order_total,
+            oc.commission, oc.acquiring, oc.logistics, oc.loyalty,
+            oc.profit + COALESCE(oc.cost, 0) - COALESCE(co.cost, oc.cost, 0) AS profit,
             oc.posting_number AS posting_id,
             oc.updated_at
      FROM order_costs oc
      LEFT JOIN orders o   ON o.posting_number = oc.posting_number
      LEFT JOIN products p ON p.product_id = oc.product_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE product_id = oc.product_id AND platform = 'ozon'
+         AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      ORDER BY oc.order_dt DESC
      LIMIT ?`
   ).all(limit);
@@ -255,17 +278,22 @@ async function collectOzon(limit, shopName) {
             0                AS is_return,
             0                AS self_buyout,
             o.qty,
-            COALESCE(cg.cost, 0) AS cost,
+            COALESCE(co.cost, 0) AS cost,
             o.total          AS order_total,
             0                AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
-            -COALESCE(cg.cost, 0) * o.qty AS profit,
+            -COALESCE(co.cost, 0) * o.qty AS profit,
             o.posting_number AS posting_id,
             o.updated_at,
             o.status,
             o.is_cancel
      FROM orders o
      LEFT JOIN products p ON p.product_id = o.product_id
-     LEFT JOIN cogs cg    ON cg.product_id = o.product_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE product_id = o.product_id AND platform = 'ozon'
+         AND effective_from <= COALESCE(substr(o.order_dt,1,10)::date, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc
                        WHERE oc.posting_number = o.posting_number AND oc.product_id = o.product_id)
      ORDER BY o.order_dt DESC`

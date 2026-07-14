@@ -6,15 +6,25 @@ import { NextResponse } from "next/server";
 import { DatabaseSync, tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { calcWB, calcOzon } from "@/lib/unit.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Конвертировать tax_mode {type,rate,vat} в ставки для calcWB/calcOzon.
+// usnRate = rate/100 (доля). vatRate = vat/100 (доля); 0 → без НДС.
+function taxRates(taxMode) {
+  const tm = normalizeTaxMode(taxMode);
+  return { usnRate: tm.rate / 100, vatRate: tm.vat / 100 };
+}
+
 export const GET = withCabinet(async (req, { cabinet }) => {
   try {
     const mps = cabinet.marketplaces || ["wb", "ozon"];
-    const wbItems = mps.includes("wb") ? await computeWB() : [];
-    const ozonItems = mps.includes("ozon") ? await computeOzon() : [];
+    const wbRates = taxRates(cabinet.shopTax?.wb);
+    const ozRates = taxRates(cabinet.shopTax?.ozon);
+    const wbItems = mps.includes("wb") ? await computeWB(wbRates) : [];
+    const ozonItems = mps.includes("ozon") ? await computeOzon(ozRates) : [];
     const items = [...wbItems, ...ozonItems];
     const categories = [...new Set(items.map((i) => i.category).filter(Boolean))].sort();
 
@@ -97,7 +107,7 @@ async function loadManual(platform) {
 }
 
 // ---------- WB ----------
-async function computeWB() {
+async function computeWB(rates = {}) {
   const db = new DatabaseSync("wb", { readOnly: true });
   const salesRows = await db.prepare(
     `SELECT nm_id, MAX(sa_name) AS art,
@@ -115,8 +125,15 @@ async function computeWB() {
     subjects[r.nm_id] = r.subject || null;
     if (r.im_url) imgs[r.nm_id] = r.im_url;
   }
+  // Себестоимость — единый источник: tenant.cost_overrides (с 2026-07-14).
+  // Актуальный override = последний с effective_from <= сегодня. DISTINCT ON
+  // убирает дубли по nm_id, оставляя самую свежую запись.
   const cogs = {};
-  for (const r of await db.prepare("SELECT nm_id, cost FROM cogs").all()) cogs[r.nm_id] = r.cost > 0 ? r.cost : null;
+  for (const r of await db.prepare(
+    `SELECT DISTINCT ON (nm_id) nm_id, cost FROM tenant.cost_overrides
+     WHERE platform = 'wb' AND effective_from <= current_date
+     ORDER BY nm_id, effective_from DESC`
+  ).all()) cogs[r.nm_id] = r.cost > 0 ? r.cost : null;
   const prices = {};
   for (const r of await db.prepare("SELECT nm_id, price_seller, discount FROM wb_prices").all()) {
     prices[r.nm_id] = {
@@ -141,7 +158,7 @@ async function computeWB() {
   for (const s of salesRows) {
     const nm = s.nm_id;
     const name = names[nm] || s.art || String(nm);
-    const input = { ...autoWb(s), spp: sppAuto[nm] ?? null, ...manual[String(nm)], sku: String(nm), name };
+    const input = { ...autoWb(s), spp: sppAuto[nm] ?? null, ...manual[String(nm)], sku: String(nm), name, ...rates };
     if (cogs[nm] != null) input.cost = cogs[nm];
     if (prices[nm]) {
       if (prices[nm].priceSeller != null) input.priceSeller = prices[nm].priceSeller;
@@ -200,6 +217,7 @@ async function computeWB() {
       commissionRate: subject && subjAvg[subject] != null ? subjAvg[subject] : globalComm,
       spp: sppAuto[nm] ?? null,
       ...manual[String(nm)],
+      ...rates,
     };
     if (cogs[nm] != null) input.cost = cogs[nm];
     const r = await calcWB(input);
@@ -215,7 +233,7 @@ async function computeWB() {
 }
 
 // ---------- Ozon ----------
-async function computeOzon() {
+async function computeOzon(rates = {}) {
   const db = new DatabaseSync("ozon", { readOnly: true });
   const products = {};
   for (const r of await db.prepare(
@@ -232,8 +250,13 @@ async function computeOzon() {
      FROM orders WHERE product_id IS NOT NULL GROUP BY product_id`
   ).all();
 
+  // Себестоимость — единый источник: tenant.cost_overrides (с 2026-07-14).
   const cogs = {};
-  for (const r of await db.prepare("SELECT product_id, cost FROM cogs").all()) cogs[r.product_id] = r.cost > 0 ? r.cost : null;
+  for (const r of await db.prepare(
+    `SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides
+     WHERE platform = 'ozon' AND effective_from <= current_date
+     ORDER BY product_id, effective_from DESC`
+  ).all()) cogs[r.product_id] = r.cost > 0 ? r.cost : null;
   const manual = await loadManual("ozon");
 
   // Бустинг Ozon — MAX(current_boost) на последнюю дату.
@@ -254,7 +277,7 @@ async function computeOzon() {
     const pid = s.product_id;
     const p = products[pid] || {};
     const name = p.name || p.offer_id || String(pid);
-    const input = { ...autoOzon(s, p, cogs[pid]), boost: boostByPid[pid] ?? 0, ...manual[String(pid)], sku: String(pid), name };
+    const input = { ...autoOzon(s, p, cogs[pid]), boost: boostByPid[pid] ?? 0, ...manual[String(pid)], sku: String(pid), name, ...rates };
     const r = await calcOzon(input);
     r.platform = "ozon";
     r.article = p.offer_id || String(pid);
@@ -276,6 +299,7 @@ async function computeOzon() {
       boost: boostByPid[pid] ?? 0,
       cost: cogs[pid] ?? null,
       sku: String(pid), name: p.name || p.offer_id || String(pid),
+      ...rates,
     };
     const r = await calcOzon(input);
     r.platform = "ozon";
