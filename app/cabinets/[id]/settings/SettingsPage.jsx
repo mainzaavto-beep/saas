@@ -59,7 +59,7 @@ export default function SettingsPage({ cabinetId }) {
       </div>
 
       {/* Магазины */}
-      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Магазины (интеграции)</h2>
         {shops.length === 0 ? (
           <p style={{ color: C.muted, fontSize: 14 }}>Магазинов нет. Добавьте через онбординг.</p>
@@ -77,6 +77,18 @@ export default function SettingsPage({ cabinetId }) {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Внешние сервисы */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Внешние сервисы</h2>
+        <p style={{ color: C.muted, fontSize: 13, margin: "0 0 12px" }}>API-ключи для расширенной аналитики. Хранятся зашифрованными.</p>
+        <label style={{ fontSize: 12, color: C.muted }}>MPStats API-ключ
+          <input type="password" value={data.mpstats_token || ""} onChange={e => setData({ ...data, mpstats_token: e.target.value })} placeholder="Для сбора позиций по поисковым запросам" style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
+        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+        </div>
       </div>
     </div>
   );
