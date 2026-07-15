@@ -94,7 +94,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     vals
   );
   return NextResponse.json({ ok: true, id: rows[0]?.id });
-});
+}, { requireRole: 'owner' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -105,4 +105,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
     [Number(id)]
   );
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });

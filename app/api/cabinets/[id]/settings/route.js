@@ -40,4 +40,4 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   vals.push(cabinet.cabinet_id);
   await query(`UPDATE auth.cabinets SET ${sets.join(", ")} WHERE cabinet_id = $${vals.length}`, vals);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });

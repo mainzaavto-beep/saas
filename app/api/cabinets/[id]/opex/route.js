@@ -61,7 +61,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     vals
   );
   return NextResponse.json({ ok: true, id: rows[0]?.id });
-});
+}, { requireRole: 'owner' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -69,4 +69,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await tenantQuery(`UPDATE tenant.opex SET status = 'deleted', updated_at = now() WHERE id = $1`, [Number(id)]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });

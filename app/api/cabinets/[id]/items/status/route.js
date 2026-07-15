@@ -15,4 +15,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
   const r = await setStatus({ platform, nm_id, product_id, status });
   return NextResponse.json({ ok: true, status: r });
-});
+}, { requireRole: 'manager' });

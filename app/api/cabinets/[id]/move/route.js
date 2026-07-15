@@ -74,7 +74,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
      Number(b.quantity) || 0, b.status || "new", b.note || null]
   );
   return NextResponse.json({ ok: true, id: rows[0]?.id });
-});
+}, { requireRole: 'manager' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -82,4 +82,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await tenantQuery(`DELETE FROM tenant.wb_realloc_requests WHERE id = $1`, [Number(id)]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'manager' });

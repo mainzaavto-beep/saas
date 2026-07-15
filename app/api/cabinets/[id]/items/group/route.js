@@ -31,4 +31,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: "unknown action: " + action }, { status: 400 });
-});
+}, { requireRole: 'manager' });

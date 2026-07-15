@@ -30,7 +30,7 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   if (existing[0].role === "owner") return NextResponse.json({ error: "cannot change owner role" }, { status: 403 });
   await query(`UPDATE auth.memberships SET role = $1 WHERE user_id = $2 AND cabinet_id = $3`, [b.role, b.user_id, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });
 
 // Удаление сотрудника.
 export const DELETE = withCabinet(async (req, { cabinet }) => {
@@ -43,4 +43,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (existing[0].role === "owner") return NextResponse.json({ error: "cannot remove owner" }, { status: 403 });
   await query(`DELETE FROM auth.memberships WHERE user_id = $1 AND cabinet_id = $2`, [userId, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });

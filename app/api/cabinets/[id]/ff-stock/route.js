@@ -107,4 +107,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
 
   return NextResponse.json({ ok: true, snapshot_id: snapId });
-});
+}, { requireRole: 'manager' });

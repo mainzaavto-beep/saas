@@ -43,4 +43,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     [String(platform), String(sku), String(key), Number(value), note ? String(note) : null]
   );
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'manager' });

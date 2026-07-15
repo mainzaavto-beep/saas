@@ -38,7 +38,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     [ts, level, source || null, category || null, title, message || null, ref || null]
   );
   return NextResponse.json({ ok: true, id: rows[0]?.id });
-});
+}, { requireRole: 'manager' });
 
 export const PATCH = withCabinet(async (req, { cabinet }) => {
   const { action, id } = await req.json();
@@ -51,7 +51,7 @@ export const PATCH = withCabinet(async (req, { cabinet }) => {
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: "Неизвестное действие." }, { status: 400 });
-});
+}, { requireRole: 'manager' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -59,4 +59,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (!id) return NextResponse.json({ error: "Нужен id." }, { status: 400 });
   await tenantQuery("DELETE FROM tenant.notifications WHERE id = $1", [Number(id)]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'manager' });

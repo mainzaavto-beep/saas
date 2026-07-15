@@ -240,10 +240,12 @@ function MainTab() {
 function SettingsTab({ cabinetId }) {
   const [data, setData] = useState(null);
   const [shops, setShops] = useState([]);
+  const [myRole, setMyRole] = useState(null);
   const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
 
   useEffect(() => {
+    fetch(`/api/cabinets/${cabinetId}/me`).then(r => r.json()).then(d => setMyRole(d.role || null));
     fetch(`/api/cabinets/${cabinetId}/settings`).then(r => r.json()).then(d => d.error ? setError(d.error) : setData(d));
     fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
   }, [cabinetId]);
@@ -251,6 +253,8 @@ function SettingsTab({ cabinetId }) {
   if (error) return <div style={{ color: C.neg, padding: 20 }}>{error}</div>;
   if (!data) return <div style={{ color: C.muted, padding: 20 }}>Загрузка…</div>;
 
+  // Менять настройки проекта / магазины / API-ключи может только владелец.
+  const canManage = myRole === "owner";
   const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
 
   const save = async () => {
@@ -264,16 +268,24 @@ function SettingsTab({ cabinetId }) {
 
   return (
     <div style={{ display: "grid", gap: 20 }}>
+      {!canManage && (
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, color: C.muted, fontSize: 14 }}>
+          ⚠️ Настройки проекта (название, магазины, API-ключи) может менять только владелец. Ниже — только просмотр.
+        </div>
+      )}
+
       {/* Общие */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Общие</h2>
         <label style={{ fontSize: 12, color: C.muted }}>Название проекта
-          <input value={data.display_name || ""} onChange={e => setData({ ...data, display_name: e.target.value })} style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
+          <input value={data.display_name || ""} onChange={e => setData({ ...data, display_name: e.target.value })} disabled={!canManage} style={{ ...inputStyle, width: "100%", marginTop: 4, opacity: canManage ? 1 : 0.6 }} />
         </label>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
-          {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
-        </div>
+        {canManage && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+            {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
+          </div>
+        )}
       </div>
 
       {/* Магазины */}
@@ -284,30 +296,34 @@ function SettingsTab({ cabinetId }) {
           <p style={{ color: C.muted, fontSize: 14 }}>Магазинов пока нет.</p>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
-            {shops.map(s => <ShopRow key={s.shop_id} shop={s} cabinetId={cabinetId} onSaved={() => {
+            {shops.map(s => <ShopRow key={s.shop_id} shop={s} cabinetId={cabinetId} canManage={canManage} onSaved={() => {
               fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
             }} />)}
           </div>
         )}
-        {/* Добавление магазина (inline, пока не достигнут лимит). */}
-        <AddShopForm
-          cabinetId={cabinetId}
-          disabled={shops.length >= MAX_SHOPS_PER_CABINET}
-          onAdded={() => {
-            fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
-          }}
-        />
+        {/* Добавление магазина — только для владельца. */}
+        {canManage && (
+          <AddShopForm
+            cabinetId={cabinetId}
+            disabled={shops.length >= MAX_SHOPS_PER_CABINET}
+            onAdded={() => {
+              fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
+            }}
+          />
+        )}
       </div>
 
       {/* Внешние сервисы */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Внешние сервисы</h2>
         <label style={{ fontSize: 12, color: C.muted }}>MPStats API-ключ
-          <input type="password" value={data.mpstats_token || ""} onChange={e => setData({ ...data, mpstats_token: e.target.value })} placeholder="Для сбора позиций по поисковым запросам" style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
+          <input type="password" value={data.mpstats_token || ""} onChange={e => setData({ ...data, mpstats_token: e.target.value })} disabled={!canManage} placeholder={canManage ? "Для сбора позиций по поисковым запросам" : ""} style={{ ...inputStyle, width: "100%", marginTop: 4, opacity: canManage ? 1 : 0.6 }} />
         </label>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
-        </div>
+        {canManage && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -317,16 +333,20 @@ function SettingsTab({ cabinetId }) {
 function TeamTab({ cabinetId }) {
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
+  const [myRole, setMyRole] = useState(null);
   const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
   const [inviteRole, setInviteRole] = useState("viewer");
 
   const load = () => {
+    fetch(`/api/cabinets/${cabinetId}/me`).then(r => r.json()).then(d => setMyRole(d.role || null));
     fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.json()).then(d => setMembers(d.items || []));
     fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.json()).then(d => setInvites(d.items || []));
   };
 
   useEffect(() => { load(); }, [cabinetId]);
+  // Управлять командой может только владелец.
+  const canManage = myRole === "owner";
 
   const createInvite = async () => {
     setMsg(null);
@@ -380,7 +400,7 @@ function TeamTab({ cabinetId }) {
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {m.role === "owner" ? (
                   <span style={{ fontSize: 12, color: C.muted, padding: "4px 10px", background: C.surface, borderRadius: 6 }}>{roleLabel(m.role)}</span>
-                ) : (
+                ) : canManage ? (
                   <>
                     <select value={m.role} onChange={e => changeRole(m.user_id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontSize: 12, fontFamily: "inherit", colorScheme: "dark" }}>
                       <option value="manager">Менеджер</option>
@@ -388,6 +408,8 @@ function TeamTab({ cabinetId }) {
                     </select>
                     <button onClick={() => removeMember(m.user_id)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
                   </>
+                ) : (
+                  <span style={{ fontSize: 12, color: C.muted, padding: "4px 10px", background: C.surface, borderRadius: 6 }}>{roleLabel(m.role)}</span>
                 )}
               </div>
             </div>
@@ -398,26 +420,32 @@ function TeamTab({ cabinetId }) {
       {/* Приглашения */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Пригласить сотрудника</h2>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select value={inviteRole} onChange={e => setInviteRole(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" }}>
-            <option value="manager">Менеджер</option>
-            <option value="viewer">Наблюдатель</option>
-          </select>
-          <button onClick={createInvite} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать ссылку</button>
-          {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, wordBreak: "break-all" }}>{msg}</span>}
-        </div>
-        {invites.length > 0 && (
-          <div style={{ marginTop: 16, display: "grid", gap: 8 }}>
-            {invites.map(inv => (
-              <div key={inv.token} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.surfaceAlt, borderRadius: 8 }}>
-                <span style={{ fontSize: 12, color: C.muted }}>{inv.role} — истекает {new Date(inv.expires_at).toLocaleDateString("ru-RU")}</span>
-                <button onClick={async () => {
-                  await fetch(`/api/cabinets/${cabinetId}/invites?token=${inv.token}`, { method: "DELETE" });
-                  load();
-                }} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>Отозвать</button>
+        {canManage ? (
+          <>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select value={inviteRole} onChange={e => setInviteRole(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" }}>
+                <option value="manager">Менеджер</option>
+                <option value="viewer">Наблюдатель</option>
+              </select>
+              <button onClick={createInvite} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать ссылку</button>
+              {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, wordBreak: "break-all" }}>{msg}</span>}
+            </div>
+            {invites.length > 0 && (
+              <div style={{ marginTop: 16, display: "grid", gap: 8 }}>
+                {invites.map(inv => (
+                  <div key={inv.token} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.surfaceAlt, borderRadius: 8 }}>
+                    <span style={{ fontSize: 12, color: C.muted }}>{inv.role} — истекает {new Date(inv.expires_at).toLocaleDateString("ru-RU")}</span>
+                    <button onClick={async () => {
+                      await fetch(`/api/cabinets/${cabinetId}/invites?token=${inv.token}`, { method: "DELETE" });
+                      load();
+                    }} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>Отозвать</button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
+        ) : (
+          <p style={{ color: C.muted, fontSize: 14 }}>Приглашать сотрудников может только владелец проекта.</p>
         )}
       </div>
     </div>
@@ -434,7 +462,7 @@ function NoProject() {
 }
 
 // --- ShopRow (компонент магазина с налогами + ключами) ---
-function ShopRow({ shop, cabinetId, onSaved }) {
+function ShopRow({ shop, cabinetId, canManage, onSaved }) {
   const [expanded, setExpanded] = useState(false);
   const [creds, setCreds] = useState({});
   const [saving, setSaving] = useState(false);
@@ -491,7 +519,9 @@ function ShopRow({ shop, cabinetId, onSaved }) {
           <span style={{ marginLeft: 8, fontSize: 11, color: C.muted }}>{tax.type === "usn_income_expenses" ? "УСН Д−Р" : "УСН Доходы"} {tax.rate}%{tax.vat ? ` + НДС ${tax.vat}%` : ""}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button onClick={(e) => { e.stopPropagation(); remove(); }} title="Удалить магазин" style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
+          {canManage && (
+            <button onClick={(e) => { e.stopPropagation(); remove(); }} title="Удалить магазин" style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
+          )}
           <span style={{ fontSize: 12, color: C.muted }}>{expanded ? "▴ свернуть" : "▾ настройки"}</span>
         </div>
       </div>

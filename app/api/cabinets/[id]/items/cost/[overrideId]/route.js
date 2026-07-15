@@ -13,11 +13,11 @@ export const PUT = withCabinet(async (req, { params }) => {
   const body = await req.json();
   const ov = await updateCostOverride(id, body);
   return NextResponse.json({ ok: true, override: ov });
-});
+}, { requireRole: 'manager' });
 
 export const DELETE = withCabinet(async (req, { params }) => {
   const id = Number(params.overrideId);
   if (!id) return NextResponse.json({ error: "overrideId required" }, { status: 400 });
   const ok = await deleteCostOverride(id);
   return NextResponse.json({ ok });
-});
+}, { requireRole: 'manager' });

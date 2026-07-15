@@ -185,4 +185,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
   const ov = await upsertCostOverride({ platform, nm_id, product_id, cost, effective_from, note });
   return NextResponse.json({ ok: true, override: ov });
-});
+}, { requireRole: 'manager' });

@@ -31,7 +31,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   );
   const inviteUrl = `${process.env.NEXT_PUBLIC_URL || "https://sysell.ru"}/register?invite=${token}`;
   return NextResponse.json({ ok: true, token, url: inviteUrl, role });
-});
+}, { requireRole: 'owner' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -39,4 +39,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (!token) return NextResponse.json({ error: "token required" }, { status: 400 });
   await query(`DELETE FROM auth.invitations WHERE token = $1 AND cabinet_id = $2`, [token, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });

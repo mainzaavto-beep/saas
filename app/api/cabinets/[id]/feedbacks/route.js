@@ -98,4 +98,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   ).run(String(draft || "").slice(0, 4000), status || "draft", repliedAt, now, String(id));
 
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'manager' });

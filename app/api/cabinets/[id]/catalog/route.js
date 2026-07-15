@@ -83,7 +83,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
   const p = await createProduct(b.internal_name, b.note);
   return NextResponse.json({ ok: true, product: p });
-});
+}, { requireRole: 'manager' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -91,4 +91,4 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await deleteProduct(id);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'manager' });

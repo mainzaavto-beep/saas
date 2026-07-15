@@ -114,7 +114,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   );
 
   return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id });
-});
+}, { requireRole: 'owner' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -124,7 +124,7 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   // Удержать cabinet.marketplaces в консистентности с оставшимися shops.
   await resyncMarketplaces(cabinet.cabinet_id);
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });
 
 // PUT — обновить API-ключи и/или налоговый режим магазина.
 // Тело: { shop_id, api_creds?, tax_mode? }
@@ -164,4 +164,4 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     vals
   );
   return NextResponse.json({ ok: true });
-});
+}, { requireRole: 'owner' });
