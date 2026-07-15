@@ -1,8 +1,9 @@
 'use client';
 // /onboarding — создание проекта с несколькими магазинами.
-// Поддержка: WB (до 4), Ozon (до 4), разные юрлица, налоги per shop.
+// Поддержка: до 4 магазинов всего (любая комбинация WB/Ozon), разные юрлица, налоги per shop.
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from '@/lib/mpConfig.js';
 
 const C = {
   bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
@@ -11,15 +12,7 @@ const C = {
 };
 const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", width: "100%", colorScheme: "dark" };
 
-const MP_CONFIG = {
-  wb: { label: "Wildberries", fields: [{ key: "token", label: "WB Token (доступ «Статистика»)", type: "password", required: true }] },
-  ozon: { label: "Ozon", fields: [
-    { key: "client_id", label: "Client-Id", type: "text", required: true },
-    { key: "api_key", label: "Api-Key", type: "password", required: true },
-    { key: "perf_client_id", label: "Performance Client-Id (реклама)", type: "text", required: false },
-    { key: "perf_client_secret", label: "Performance Client-Secret", type: "password", required: false },
-  ]},
-};
+// MP_CONFIG импортируется из lib/mpConfig.js (единый источник правды).
 
 // Дефолтный налоговый режим для нового магазина.
 const DEFAULT_TAX = () => ({ type: "usn_income", rate: 6, vat: 0 });
@@ -32,8 +25,8 @@ export default function OnboardingPage() {
   const [busy, setBusy] = useState(false);
 
   const addShop = (mpCode) => {
-    const count = shops.filter(s => s.mp_code === mpCode).length;
-    if (count >= 4) return;
+    // Лимит общий на проект — любая комбинация WB/Ozon, не более 4 всего.
+    if (shops.length >= MAX_SHOPS_PER_CABINET) return;
     setShops([...shops, { mp_code: mpCode, shop_name: '', legal_name: '', tax: DEFAULT_TAX(), creds: {} }]);
   };
   const removeShop = (idx) => setShops(shops.filter((_, i) => i !== idx));
@@ -117,14 +110,18 @@ export default function OnboardingPage() {
         {/* Магазины */}
         <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Магазины ({shops.length})</h2>
+            <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Магазины ({shops.length}/{MAX_SHOPS_PER_CABINET})</h2>
             <div style={{ display: "flex", gap: 8 }}>
-              {Object.entries(MP_CONFIG).map(([code, cfg]) => (
-                <button key={code} type="button" onClick={() => addShop(code)} style={{
-                  padding: "6px 14px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surfaceAlt,
-                  color: C.ink, cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600,
-                }}>+ {cfg.label}</button>
-              ))}
+              {Object.entries(MP_CONFIG).map(([code, cfg]) => {
+                const atLimit = shops.length >= MAX_SHOPS_PER_CABINET;
+                return (
+                  <button key={code} type="button" onClick={() => addShop(code)} disabled={atLimit} style={{
+                    padding: "6px 14px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surfaceAlt,
+                    color: atLimit ? C.faint : C.ink, cursor: atLimit ? "not-allowed" : "pointer",
+                    opacity: atLimit ? 0.5 : 1, fontSize: 13, fontFamily: "inherit", fontWeight: 600,
+                  }}>+ {cfg.label}</button>
+                );
+              })}
             </div>
           </div>
 

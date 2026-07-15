@@ -10,14 +10,11 @@ export default function RegisterPageWrapper() {
 }
 
 function RegisterInner() {
-
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b",
-};
-
-function RegisterInner() {
+  const C = {
+    bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
+    muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
+    pos: "#4ade80", neg: "#ff6b6b",
+  };
   const router = useRouter();
   const sp = useSearchParams();
   const inviteToken = sp.get('invite') || '';
@@ -26,6 +23,7 @@ function RegisterInner() {
   const [firstName, setFirstName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [password2, setPassword2] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -42,7 +40,9 @@ function RegisterInner() {
 
   async function submit(e) {
     e.preventDefault();
-    setErr(''); setBusy(true);
+    setErr('');
+    if (password !== password2) { setErr('Пароли не совпадают'); return; }
+    setBusy(true);
     try {
       const r = await fetch('/api/auth/register', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -96,6 +96,13 @@ function RegisterInner() {
           <label style={{ fontSize: 13, color: C.muted }}>Пароль (мин. 8 символов)</label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
         </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, color: C.muted }}>Повторите пароль</label>
+          <input type="password" value={password2} onChange={e => setPassword2(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${password2 && password2 !== password ? C.neg : C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          {password2 && password2 !== password && (
+            <span style={{ display: "block", color: C.neg, fontSize: 12, marginTop: 4 }}>Пароли не совпадают</span>
+          )}
+        </div>
         {!inviteToken && (
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, color: C.muted }}>Invite-код (если есть)</label>
@@ -111,5 +118,4 @@ function RegisterInner() {
       </form>
     </div>
   );
-}
 }

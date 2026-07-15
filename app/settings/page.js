@@ -3,6 +3,7 @@
 // Вкладки: Основное (личные данные + пароль), Настройки (проект), Команда.
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
 
 const C = {
   bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
@@ -277,10 +278,10 @@ function SettingsTab({ cabinetId }) {
 
       {/* Магазины */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
-        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 4px" }}>Магазины (интеграции)</h2>
-        <p style={{ color: C.muted, fontSize: 12, margin: "0 0 12px" }}>Налоговый режим настраивается на каждый магазин (юрлицо) отдельно.</p>
+        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 4px" }}>Магазины ({shops.length}/{MAX_SHOPS_PER_CABINET})</h2>
+        <p style={{ color: C.muted, fontSize: 12, margin: "0 0 12px" }}>Налоговый режим настраивается на каждый магазин (юрлицо) отдельно. До {MAX_SHOPS_PER_CABINET} магазинов на проект.</p>
         {shops.length === 0 ? (
-          <p style={{ color: C.muted, fontSize: 14 }}>Магазинов нет.</p>
+          <p style={{ color: C.muted, fontSize: 14 }}>Магазинов пока нет.</p>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
             {shops.map(s => <ShopRow key={s.shop_id} shop={s} cabinetId={cabinetId} onSaved={() => {
@@ -288,6 +289,14 @@ function SettingsTab({ cabinetId }) {
             }} />)}
           </div>
         )}
+        {/* Добавление магазина (inline, пока не достигнут лимит). */}
+        <AddShopForm
+          cabinetId={cabinetId}
+          disabled={shops.length >= MAX_SHOPS_PER_CABINET}
+          onAdded={() => {
+            fetch(`/api/cabinets/${cabinetId}/shops`).then(r => r.json()).then(d => setShops(d.items || []));
+          }}
+        />
       </div>
 
       {/* Внешние сервисы */}
@@ -432,17 +441,17 @@ function ShopRow({ shop, cabinetId, onSaved }) {
   const [msg, setMsg] = useState(null);
   const [tax, setTax] = useState(shop.tax_mode || { type: "usn_income", rate: 6, vat: 0 });
 
-  const FIELDS = {
-    wb: [{ key: "token", label: "WB Token (доступ «Статистика»)", type: "password" }],
-    ozon: [
-      { key: "client_id", label: "Client-Id", type: "text" },
-      { key: "api_key", label: "Api-Key", type: "password" },
-      { key: "perf_client_id", label: "Performance Client-Id (опц.)", type: "text" },
-      { key: "perf_client_secret", label: "Performance Client-Secret (опц.)", type: "password" },
-    ],
-  };
-  const fields = FIELDS[shop.mp_code] || [];
+  // Поля API-кредов — из единого конфига lib/mpConfig.js.
+  const fields = (MP_CONFIG[shop.mp_code]?.fields) || [];
   const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+
+  const remove = async () => {
+    const name = shop.shop_name || `Магазин #${shop.shop_id}`;
+    if (!confirm(`Удалить «${name}»?\nСобранные данные остаются, но новый сбор остановится.`)) return;
+    const r = await fetch(`/api/cabinets/${cabinetId}/shops?shop_id=${shop.shop_id}`, { method: "DELETE" });
+    if (r.ok) onSaved();
+    else alert("Не удалось удалить магазин");
+  };
 
   const saveCreds = async () => {
     setSaving(true); setMsg(null);
@@ -481,7 +490,10 @@ function ShopRow({ shop, cabinetId, onSaved }) {
           {shop.has_creds ? <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span> : <span style={{ marginLeft: 8, fontSize: 11, color: C.neg }}>⚠ Нет ключей</span>}
           <span style={{ marginLeft: 8, fontSize: 11, color: C.muted }}>{tax.type === "usn_income_expenses" ? "УСН Д−Р" : "УСН Доходы"} {tax.rate}%{tax.vat ? ` + НДС ${tax.vat}%` : ""}</span>
         </div>
-        <span style={{ fontSize: 12, color: C.muted }}>{expanded ? "▴ свернуть" : "▾ настройки"}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={(e) => { e.stopPropagation(); remove(); }} title="Удалить магазин" style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
+          <span style={{ fontSize: 12, color: C.muted }}>{expanded ? "▴ свернуть" : "▾ настройки"}</span>
+        </div>
       </div>
       {expanded && (
         <div style={{ padding: "0 14px 14px", borderTop: `1px solid ${C.line}` }}>
@@ -523,6 +535,130 @@ function ShopRow({ shop, cabinetId, onSaved }) {
           {msg && <div style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, marginTop: 10 }}>{msg}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+// --- AddShopForm: добавление нового магазина в существующий проект ---
+// Inline в SettingsTab. По образцу AddShopForm из SettingsPage.jsx. disabled=true
+// когда достигнут лимит MAX_SHOPS_PER_CABINET.
+function AddShopForm({ cabinetId, disabled, onAdded }) {
+  const [open, setOpen] = useState(false);
+  const [mpCode, setMpCode] = useState("wb");
+  const [shopName, setShopName] = useState("");
+  const [legalName, setLegalName] = useState("");
+  const [creds, setCreds] = useState({});
+  const [tax, setTax] = useState({ type: "usn_income", rate: 6, vat: 0 });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+  const cfg = MP_CONFIG[mpCode] || { fields: [] };
+
+  const reset = () => {
+    setShopName(""); setLegalName(""); setCreds({});
+    setTax({ type: "usn_income", rate: 6, vat: 0 }); setErr("");
+  };
+
+  const submit = async () => {
+    setErr("");
+    for (const f of cfg.fields) {
+      if (f.required && !creds[f.key]) { setErr(`Заполните «${f.label}»`); return; }
+    }
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/shops`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mp_code: mpCode,
+          shop_name: shopName,
+          legal_name: legalName,
+          tax_mode: tax,
+          api_creds: { [mpCode]: creds },
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setErr(d.error || "Ошибка"); return; }
+      reset(); setOpen(false);
+      onAdded();
+    } catch {
+      setErr("Сетевая ошибка");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <button onClick={() => setOpen(true)} disabled={disabled} style={{
+          padding: "8px 18px", borderRadius: 8,
+          background: disabled ? C.surfaceAlt : C.accent, color: disabled ? C.faint : "#fff",
+          border: `1px solid ${C.line}`, cursor: disabled ? "not-allowed" : "pointer",
+          fontWeight: 600, fontFamily: "inherit", fontSize: 13, opacity: disabled ? 0.6 : 1,
+        }}>+ Добавить магазин</button>
+        {disabled && <span style={{ marginLeft: 10, fontSize: 12, color: C.faint }}>Достигнут лимит {MAX_SHOPS_PER_CABINET} магазинов</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 16, background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontWeight: 700, fontSize: 14 }}>Новый магазин</span>
+        <button onClick={() => { setOpen(false); reset(); }} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.line}`, background: "transparent", color: C.muted, cursor: "pointer", fontSize: 12 }}>✕ отмена</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {Object.entries(MP_CONFIG).map(([code, c]) => (
+          <button key={code} type="button" onClick={() => { setMpCode(code); setCreds({}); }}
+            style={{
+              padding: "6px 14px", borderRadius: 6,
+              border: `1px solid ${mpCode === code ? C.accent : C.line}`,
+              background: mpCode === code ? "rgba(79,140,255,0.15)" : "transparent",
+              color: mpCode === code ? C.accent : C.ink, cursor: "pointer",
+              fontSize: 13, fontFamily: "inherit", fontWeight: 600,
+            }}>{c.label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gap: 10 }}>
+        <input value={shopName} onChange={e => setShopName(e.target.value)} placeholder="Название магазина (напр. ИП Матвеев WB)" style={inputStyle} />
+        <input value={legalName} onChange={e => setLegalName(e.target.value)} placeholder="Юрлицо (ИП/ООО)" style={inputStyle} />
+        {cfg.fields.map(f => (
+          <label key={f.key} style={{ fontSize: 12, color: C.muted }}>{f.label}{f.required ? " *" : ""}
+            <input type={f.type} value={creds[f.key] || ""} onChange={e => setCreds({ ...creds, [f.key]: e.target.value })} style={{ ...inputStyle, marginTop: 4 }} />
+          </label>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", padding: "12px 0 0", marginTop: 4, borderTop: `1px dashed ${C.line}` }}>
+        <label style={{ fontSize: 11, color: C.muted }}>Налог. система
+          <select value={tax.type} onChange={e => setTax({ ...tax, type: e.target.value, rate: e.target.value === "usn_income_expenses" ? 15 : 6 })} style={{ ...inputStyle, width: "auto", marginTop: 4, fontSize: 13 }}>
+            <option value="usn_income">УСН «Доходы»</option>
+            <option value="usn_income_expenses">УСН «Доходы−Расходы»</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: C.muted }}>Ставка %
+          <input type="number" min="0" max="100" value={tax.rate} onChange={e => setTax({ ...tax, rate: Number(e.target.value) })} style={{ ...inputStyle, width: 70, marginTop: 4, fontSize: 13 }} />
+        </label>
+        <label style={{ fontSize: 11, color: C.muted }}>НДС
+          <select value={tax.vat} onChange={e => setTax({ ...tax, vat: Number(e.target.value) })} style={{ ...inputStyle, width: "auto", marginTop: 4, fontSize: 13 }}>
+            <option value={0}>Без НДС</option>
+            <option value={5}>5%</option>
+            <option value={7}>7%</option>
+          </select>
+        </label>
+      </div>
+
+      {err && <div style={{ color: C.neg, fontSize: 13, marginTop: 10 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button onClick={submit} disabled={saving} style={{
+          padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
+          border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
+        }}>{saving ? "Сохранение…" : "Добавить магазин"}</button>
+        <span style={{ fontSize: 12, color: C.faint, alignSelf: "center" }}>Начнётся backfill за 75 дней</span>
+      </div>
     </div>
   );
 }

@@ -1,14 +1,49 @@
 // /api/cabinets/[id]/shops — управление магазинами проекта.
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { query } from "@/lib/db.js";
+import { tenantQuery } from "@/lib/db.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
+import { KNOWN_MP, MAX_SHOPS_PER_CABINET, BACKFILL_DAYS } from "@/lib/mpConfig.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Все мутации идут через tenantQuery — он пишет в ТОТ ЖЕ клиент транзакции withTenant
+// (ALS-контекст), значит INSERT shop + resync marketplaces + onboarding-job
+// выполняются атомарно (BEGIN…COMMIT в lib/db.js withTenant). auth.* и jobs.*
+// без RLS — GUC app.cabinet_id на них не влияет.
+// (query() из lib/db.js, напротив, берёт СВОЙ клиент pool — это были бы отдельные
+// auto-commit транзакции, без атомарности.)
+
+// Пересчёт auth.cabinets.marketplaces по актуальным активным shops кабинета.
+// marketplaces[] — это то, по чему воркер выбирает сборщики (_collectors_for_marketplaces).
+// Если не держать поле актуальным, добавление Ozon-магазина в WB-кабинет НЕ запустит
+// сбор Ozon. Вызывается после INSERT/DELETE магазина.
+async function resyncMarketplaces(cabinetId) {
+  await tenantQuery(
+    `UPDATE auth.cabinets c
+     SET marketplaces = COALESCE(
+       (SELECT array_agg(DISTINCT mp_code ORDER BY mp_code)
+        FROM auth.shops WHERE cabinet_id = c.cabinet_id AND is_active),
+       ARRAY[]::text[]
+     )
+     WHERE c.cabinet_id = $1`,
+    [cabinetId]
+  );
+}
+
+// Создать onboarding-job (backfill за BACKFILL_DAYS), который подхватит таймер
+// saas-backfill (orchestrator --drain-queue). date_to = вчера — за сегодня данные
+// доберёт ежедневный таймер. Дубликат логики дат из api/onboarding/start.
+function makeBackfillDateRange() {
+  const from = new Date(Date.now() - BACKFILL_DAYS * 86400000);
+  const to = new Date(Date.now() - 86400000); // вчера
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return [fmt(from), fmt(to)];
+}
+
 export const GET = withCabinet(async (req, { cabinet }) => {
-  const rows = await query(
+  const rows = await tenantQuery(
     `SELECT shop_id, mp_code, shop_name, legal_name, tax_mode,
             CASE WHEN api_creds_enc IS NOT NULL THEN true ELSE false END AS has_creds,
             is_active, created_at
@@ -23,14 +58,29 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 export const POST = withCabinet(async (req, { cabinet }) => {
   const b = await req.json();
   if (!b.mp_code) return NextResponse.json({ error: "mp_code required" }, { status: 400 });
+  if (!KNOWN_MP.includes(b.mp_code)) {
+    return NextResponse.json({ error: `Неизвестный маркетплейс: ${b.mp_code}` }, { status: 400 });
+  }
+
+  // Лимит магазинов на проект — общий по всем МП (любая комбинация WB/Ozon).
+  const cnt = await tenantQuery(
+    `SELECT count(*)::int AS n FROM auth.shops WHERE cabinet_id = $1 AND is_active`,
+    [cabinet.cabinet_id]
+  );
+  if ((cnt[0]?.n || 0) >= MAX_SHOPS_PER_CABINET) {
+    return NextResponse.json(
+      { error: `Максимум ${MAX_SHOPS_PER_CABINET} магазина на проект` },
+      { status: 400 }
+    );
+  }
 
   // Шифрование API-кредов если есть.
   let apiCredsEnc = null;
   if (b.api_creds && Object.keys(b.api_creds).length > 0) {
     const masterKey = process.env.SAAS_CRED_MASTER_KEY;
     if (masterKey) {
-      const rows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), masterKey]);
-      apiCredsEnc = rows[0]?.enc;
+      const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), masterKey]);
+      apiCredsEnc = encRows[0]?.enc;
     }
   }
   // Метаданные (не секретные).
@@ -42,12 +92,27 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     }
   }
 
-  const rows = await query(
+  const rows = await tenantQuery(
     `INSERT INTO auth.shops (cabinet_id, mp_code, shop_name, legal_name, api_creds, api_creds_enc, tax_mode)
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING shop_id`,
     [cabinet.cabinet_id, b.mp_code, b.shop_name || null, b.legal_name || null,
      JSON.stringify(apiMeta), apiCredsEnc, JSON.stringify(normalizeTaxMode(b.tax_mode))]
   );
+
+  // Держать cabinet.marketplaces актуальным — иначе воркер не запустит сбор
+  // для нового МП (выбирает сборщики по marketplaces[]).
+  await resyncMarketplaces(cabinet.cabinet_id);
+
+  // Backfill за BACKFILL_DAYS — подхватит таймер saas-backfill (drain-queue).
+  // Прогон всего кабинета; сборщики идемпотентны (ON CONFLICT), существующие
+  // данные не портятся.
+  const [dateFrom, dateTo] = makeBackfillDateRange();
+  await tenantQuery(
+    `INSERT INTO jobs.collect_jobs (cabinet_id, job_type, date_from, date_to, status)
+     VALUES ($1, 'onboarding', $2, $3, 'queued')`,
+    [cabinet.cabinet_id, dateFrom, dateTo]
+  );
+
   return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id });
 });
 
@@ -55,7 +120,9 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const shopId = url.searchParams.get("shop_id");
   if (!shopId) return NextResponse.json({ error: "shop_id required" }, { status: 400 });
-  await query(`DELETE FROM auth.shops WHERE shop_id = $1 AND cabinet_id = $2`, [Number(shopId), cabinet.cabinet_id]);
+  await tenantQuery(`DELETE FROM auth.shops WHERE shop_id = $1 AND cabinet_id = $2`, [Number(shopId), cabinet.cabinet_id]);
+  // Удержать cabinet.marketplaces в консистентности с оставшимися shops.
+  await resyncMarketplaces(cabinet.cabinet_id);
   return NextResponse.json({ ok: true });
 });
 
@@ -73,7 +140,7 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   if (b.api_creds) {
     const encKey = process.env.SAAS_CRED_MASTER_KEY;
     if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
-    const encRows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
+    const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
     const apiCredsEnc = encRows[0]?.enc;
     const apiMeta = {};
     for (const [mp, creds] of Object.entries(b.api_creds)) {
@@ -92,7 +159,7 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
 
   if (!sets.length) return NextResponse.json({ error: "no fields to update" }, { status: 400 });
   vals.push(Number(b.shop_id), cabinet.cabinet_id);
-  await query(
+  await tenantQuery(
     `UPDATE auth.shops SET ${sets.join(", ")} WHERE shop_id = $${vals.length - 1} AND cabinet_id = $${vals.length}`,
     vals
   );
