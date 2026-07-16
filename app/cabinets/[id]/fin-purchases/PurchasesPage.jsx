@@ -7,10 +7,6 @@ const C = {
   accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
   blue: "#4f8cff",
 };
-const ALERT = {
-  warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
-  info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
-};
 const postToDds = async (opts) => { try { await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) }); } catch {} };
 
 // =====================================================================
@@ -22,7 +18,7 @@ const postToDds = async (opts) => { try { await fetch(`/api/cabinets/${opts.cabi
 //  Композитная колонка «Товар» (по требованию владельца) схлопывает:
 //    Фото + Где закуплено + Наименование + Артикул + nm_id.
 //  Редактируемые ВВОДНЫЕ колонки (Excel): L(M=курс аванса), M, O(qty),
-//    P(цена¥), T(логистика¥), U(курс остатка), X(МСК на ед), Y(МСК на партию),
+//    P(цена¥), T(логистика¥), U(курс остатка), X(логист. до МСК/ед), Y(логист. МСК→ФФ/ед),
 //    даты, статус.
 //  Read-only РАСЧЁТНЫЕ колонки (формулы Excel, обновляются после сохранения):
 //    N(аванс₽), Q(сумма¥), R(остаток¥), S(остаток₽), V(цена/ед₽),
@@ -68,13 +64,13 @@ export default function PurchasesPage({ cabinetId }) {
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
   const [q, setQ] = useState("");
+  const [archived, setArchived] = useState(false); // показывать архивные (завершённые→склад)
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
 
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addForm, setAddForm] = useState(emptyAdd());
-  const [backup, setBackup] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
   const api = useMemo(() => {
@@ -86,8 +82,9 @@ export default function PurchasesPage({ cabinetId }) {
     if (status) p.set("status", status);
     if (category) p.set("category", category);
     if (q.trim()) p.set("q", q.trim());
+    if (archived) p.set("archived", "1");
     return `/api/cabinets/${cabinetId}/purchases?` + p.toString();
-  }, [cabinetId, from, to, supplier, vendor, status, category, q]);
+  }, [cabinetId, from, to, supplier, vendor, status, category, q, archived]);
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -102,7 +99,7 @@ export default function PurchasesPage({ cabinetId }) {
   }, [api]);
 
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => { setPage(1); setExpanded(null); }, [from, to, supplier, vendor, status, category, q, pageSize]);
+  useEffect(() => { setPage(1); setExpanded(null); }, [from, to, supplier, vendor, status, category, q, pageSize, archived]);
 
   if (error && !data) return <Centered>⚠️ Ошибка: {error}</Centered>;
   if (!data) return <Centered>Загрузка…</Centered>;
@@ -139,6 +136,21 @@ export default function PurchasesPage({ cabinetId }) {
     reload();
   }
 
+  // Завершить закупку → переместить партию на склад/ФФ + скрыть из активных (archived).
+  async function completeToStock(it) {
+    if (!confirm(`Завершить партию «${it.supplier_name || "#" + it.id}»?\n` +
+      `Товар (${num(it.qty)} шт) с себестоимостью ${money(it.unit_cost)} попадёт в «Остатки склад/ФФ»,\n` +
+      `а сама партия скроется из активных закупок.`)) return;
+    const r = await fetch(`/api/cabinets/${cabinetId}/purchases`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "complete_to_stock", id: it.id }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) { alert("Не завершилось: " + (d.error || "")); return; }
+    if (expanded === it.id) setExpanded(null);
+    reload();
+  }
+
   async function addRecord() {
     const qty = Number(addForm.qty);
     if (!Number.isInteger(qty) || qty <= 0) { alert("Кол-во (шт) должно быть целым > 0"); return; }
@@ -154,22 +166,6 @@ export default function PurchasesPage({ cabinetId }) {
     setAddForm(emptyAdd());
     setShowAdd(false);
     reload();
-  }
-
-  async function doBackup() {
-    if (!confirm("Выгрузить закупки в Google Sheets? (backup в таблицу 1g1MUL)")) return;
-    setBackup({ busy: true });
-    try {
-      const r = await fetch(`/api/cabinets/${cabinetId}/purchases?action=backup`, { method: "POST" });
-      const d = await r.json();
-      if (!r.ok || d.error) {
-        setBackup({ ok: false, error: d.error || d.log || "backup провалился" });
-      } else {
-        setBackup({ ok: true, log: d.log });
-      }
-    } catch (e) {
-      setBackup({ ok: false, error: String(e) });
-    }
   }
 
   return (
@@ -225,21 +221,16 @@ export default function PurchasesPage({ cabinetId }) {
         <Field label="Поиск">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="имя товара или nm_id" style={{ ...inputStyle, width: 200 }} />
         </Field>
-        <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setVendor(""); setStatus(""); setCategory(""); setQ(""); }} style={resetBtnStyle}>Сбросить</button>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: C.muted, cursor: "pointer" }}>
+          <input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />
+          архивные
+        </label>
+        <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setVendor(""); setStatus(""); setCategory(""); setQ(""); setArchived(false); }} style={resetBtnStyle}>Сбросить</button>
         <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить партию"}
         </button>
-        <button onClick={doBackup} disabled={backup?.busy} style={resetBtnStyle} title="Выгрузить в Google Sheets (1g1MUL)">
-          {backup?.busy ? "⏳ Выгрузка…" : "💾 В Sheets"}
-        </button>
       </div>
 
-      {backup && !backup.busy && (
-        <div style={{ ...alertStyle, marginBottom: 12, ...(backup.ok ? {} : { border: `1px solid ${C.neg}` }) }}>
-          {backup.ok ? "✅ Выгружено в Google Sheets." : "❌ " + (backup.error || "ошибка")}
-          {backup.log ? <details style={{ marginTop: 4 }}><summary style={{ cursor: "pointer", color: C.faint }}>лог</summary><pre style={{ whiteSpace: "pre-wrap", fontSize: 11 }}>{backup.log}</pre></details> : null}
-        </div>
-      )}
 
       {showAdd && (
         <AddForm form={addForm} setForm={setAddForm} onAdd={addRecord} busy={adding} />
@@ -265,8 +256,8 @@ export default function PurchasesPage({ cabinetId }) {
               <th style={thR}>Курс ост. (U)</th>
               <th style={thR}>Цена/ед ₽ (V)</th>
               <th style={thR}>Сумма ₽ (W)</th>
-              <th style={thR}>Логист. МСК/ед ₽ (X)</th>
-              <th style={thR}>Логист. МСК ₽ (Y)</th>
+              <th style={thR}>Логист. до МСК/ед ₽ (X)</th>
+              <th style={thR}>Логист. МСК→ФФ/ед ₽ (Y)</th>
               <th style={thR}>ИТОГО (Z)</th>
               <th style={thR}>Себест. ₽ (AA)</th>
               <th style={thR}>Дата заказа</th>
@@ -279,7 +270,8 @@ export default function PurchasesPage({ cabinetId }) {
           </thead>
           <tbody>
             {slice.map((it) => (
-              <Row key={it.id} it={it} onSave={saveField} onDel={delRow}
+              <Row key={it.id} it={it} cabinetId={cabinetId} onSave={saveField} onDel={delRow}
+                onComplete={completeToStock}
                 isOpen={expanded === it.id} onToggle={() => setExpanded(expanded === it.id ? null : it.id)} reload={reload} />
             ))}
             {slice.length === 0 && !loading && (
@@ -318,7 +310,7 @@ export default function PurchasesPage({ cabinetId }) {
 
 // ---------------- Строка таблицы (inline-редактирование вводных) ----------------
 
-function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
+function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reload }) {
   const [text, setText] = useState("");
   const [edit, setEdit] = useState(null);
 
@@ -392,7 +384,7 @@ function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
       </td>
       {/* Композитная колонка Товар: фото + где закуплено + наименование + артикул + поставщик */}
       <td style={{ padding: "8px 10px", verticalAlign: "middle" }}>
-        <ProductCell it={it} edit={edit} setEdit={setEdit} setText={setText}
+        <ProductCell it={it} edit={edit} setEdit={setEdit} setText={setText} text={text}
           onCommit={(v) => onSave(it, "supplier_name", v)}
           onSupplierCommit={(v) => onSave(it, "supplier", v)}
           onCategoryCommit={(v) => onSave(it, "category", v)} />
@@ -419,13 +411,16 @@ function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
       <td style={{ padding: "6px 8px", verticalAlign: "middle" }}><LifecycleBadge status={it.lifecycle_effective} /></td>
       <td style={{ padding: "6px 8px", verticalAlign: "middle" }}>{renderPayStatus(it)}</td>
       <td style={tdRight}>
+        {!it.archived && (
+          <button onClick={() => onComplete(it)} style={{ ...miniBtn, color: C.pos, marginRight: 4 }} title="Завершить → переместить на склад/ФФ">✓↧ склад</button>
+        )}
         <button onClick={() => onDel(it.id)} style={{ ...miniBtn, color: C.neg }} title="Удалить (мягкое)">🗑</button>
       </td>
     </tr>
     {isOpen && (
       <tr>
         <td colSpan={24} style={{ padding: "14px 20px", background: C.surface, borderBottom: `1px solid ${C.line}33` }}>
-          <PurchaseDetailPanel it={it} reload={reload} />
+          <PurchaseDetailPanel it={it} cabinetId={cabinetId} reload={reload} />
         </td>
       </tr>
     )}
@@ -448,7 +443,7 @@ function Row({ it, onSave, onDel, isOpen, onToggle, reload }) {
   }
 }
 // Композитная колонка «Товар» — фото + где закуплено + наименование + артикул + поставщик + категория.
-function ProductCell({ it, edit, setEdit, setText, onCommit, onSupplierCommit, onCategoryCommit }) {
+function ProductCell({ it, edit, setEdit, setText, text, onCommit, onSupplierCommit, onCategoryCommit }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 240, maxWidth: 320 }}>
       {it.im_url ? (
@@ -546,7 +541,7 @@ function LifecycleBadge({ status }) {
   );
 }
 
-function PurchaseDetailPanel({ it, reload }) {
+function PurchaseDetailPanel({ it, cabinetId, reload }) {
   const cur = it.lifecycle_effective || "planned";
   const curIdx = LIFECYCLE.indexOf(cur);
   const next = curIdx >= 0 && curIdx < LIFECYCLE.length - 1 ? LIFECYCLE[curIdx + 1] : null;
@@ -825,8 +820,8 @@ function AddForm({ form, setForm, onAdd, busy }) {
         <Field label="Цена ¥ (P)"><input type="number" step="any" value={form.unit_cost_yuan} onChange={set("unit_cost_yuan")} style={{ ...inputStyle, width: 100 }} /></Field>
         <Field label="Логист. ¥ (T)"><input type="number" step="any" value={form.logistics_yuan} onChange={set("logistics_yuan")} style={{ ...inputStyle, width: 100 }} /></Field>
         <Field label="Курс ост. (U)"><input type="number" step="any" value={form.exchange_rate} onChange={set("exchange_rate")} style={{ ...inputStyle, width: 100 }} placeholder="11.46" /></Field>
-        <Field label="Логист. МСК/ед ₽ (X)"><input type="number" step="any" value={form.logistics_rub_per_unit} onChange={set("logistics_rub_per_unit")} style={{ ...inputStyle, width: 120 }} /></Field>
-        <Field label="Логист. МСК ₽ (Y)"><input type="number" step="any" value={form.logistics_rub} onChange={set("logistics_rub")} style={{ ...inputStyle, width: 120 }} /></Field>
+        <Field label="Логист. до МСК/ед ₽ (X)"><input type="number" step="any" value={form.logistics_rub_per_unit} onChange={set("logistics_rub_per_unit")} style={{ ...inputStyle, width: 120 }} /></Field>
+        <Field label="Логист. МСК→ФФ/ед ₽ (Y)"><input type="number" step="any" value={form.logistics_rub} onChange={set("logistics_rub")} style={{ ...inputStyle, width: 120 }} /></Field>
         <Field label="Дата заказа"><input type="date" value={form.order_dt} onChange={set("order_dt")} style={inputStyle} /></Field>
         <Field label="Дата отправки"><input type="date" value={form.ship_dt} onChange={set("ship_dt")} style={inputStyle} /></Field>
         <Field label="Дата доставки"><input type="date" value={form.delivery_dt} onChange={set("delivery_dt")} style={inputStyle} /></Field>
@@ -834,7 +829,7 @@ function AddForm({ form, setForm, onAdd, busy }) {
       </div>
       <div style={{ fontSize: 11, color: C.faint, marginTop: 8 }}>
         Себестоимость AA и расчётные поля (N,Q,R,S,V,W,Z) посчитаются автоматически
-        по формулам Excel: N=L×M, Q=O×P, R=Q−L, S=M×R, V=P×U, W=R×U+N, Z=W+X×O+Y, AA=Z/O.
+        по формулам Excel: N=L×M, Q=O×P, R=Q−L, S=M×R, V=P×U, W=R×U+N, Z=W+(X+Y)×O, AA=Z/O.
         № заказа и этап «Планируется» проставятся автоматически.
       </div>
     </div>
@@ -938,12 +933,6 @@ const tdFootR = { padding: "10px 6px", textAlign: "right", fontVariantNumeric: "
 const formCardStyle = {
   background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10,
   padding: "14px 16px", marginBottom: 14,
-};
-const alertStyle = {
-  padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-  background: ALERT?.bg || "rgba(255,193,7,0.08)",
-  border: `1px solid ${ALERT?.line || "rgba(255,193,7,0.3)"}`,
-  color: ALERT?.text || C.ink,
 };
 const expandBtnStyle = {
   background: "transparent", border: "none", cursor: "pointer",
