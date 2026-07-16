@@ -1,22 +1,12 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 // /cabinets/[id]/pnl — Сводка по прибыли (P&L).
 // Поддержка: произвольный диапазон от-до + разбивка по неделям/месяцам
 // (отрезки как колонки). Без разбивки — 3 колонки (Показатель/Всего/% выр.).
 import { useEffect, useState } from "react";
 
 // Палитра SAAS (тёмно-синяя).
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-};
+
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -151,7 +141,7 @@ export default function PnlPage({ cabinetId }) {
                   const bg = row.kind === "h0" ? C.surfaceAlt : "transparent";
                   const revenue = data.total.netSales || 0;
                   return (
-                    <tr key={ri} style={{ borderTop: isTotal ? `2px solid ${C.line}` : `1px solid ${C.line}55`, background: bg }}>
+                    <tr key={ri} style={{ borderTop: isTotal ? `2px solid ${C.line}` : `1px solid ${soft("line", 33)}`, background: bg }}>
                       <td style={{
                         padding: isTotal ? "12px 16px" : "9px 16px",
                         paddingLeft: row.kind === "sub" ? 30 : 16,
@@ -235,7 +225,7 @@ export default function PnlPage({ cabinetId }) {
                     const ozVal = data.ozon?.[key];
                     const profitCol = key === "netProfit";
                     return (
-                      <tr key={key} style={{ borderTop: `1px solid ${C.line}55` }}>
+                      <tr key={key} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
                         <td style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}>{label}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (wbVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(wbVal)}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (ozVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(ozVal)}</td>
@@ -285,7 +275,7 @@ function SegBtn({ active, onClick, children }) {
 
 const dateInputStyle = {
   padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.line}`,
-  background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit", colorScheme: "dark",
+  background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit",
 };
 const thLeft = { textAlign: "left", padding: "10px 16px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, color: C.muted, whiteSpace: "nowrap" };
 const thRight = { textAlign: "right", padding: "10px 16px", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, color: C.muted, whiteSpace: "nowrap" };

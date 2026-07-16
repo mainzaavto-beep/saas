@@ -4,6 +4,7 @@ import { query } from "@/lib/db.js";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
+import ThemeToggle from "@/app/ThemeToggle.jsx";
 import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
@@ -160,6 +161,9 @@ export default async function CabinetLayout({ children, params }) {
                 <Link href="/onboarding" className="topnav-sublink">+ Новый проект</Link>
               </div>
             </div>
+
+            {/* Переключатель темы */}
+            <ThemeToggle />
 
             {/* Аватар-профиль */}
             <Link

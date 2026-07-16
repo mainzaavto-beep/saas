@@ -1,4 +1,5 @@
 'use client';
+import { C } from "@/lib/palette.js";
 // /register — регистрация. Поддержка инвайт-токена (?invite=TOKEN).
 // Если инвайт валиден — после регистрации пользователь автоматически
 // добавляется в проект с ролью manager/viewer.
@@ -10,11 +11,7 @@ export default function RegisterPageWrapper() {
 }
 
 function RegisterInner() {
-  const C = {
-    bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-    muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-    pos: "#4ade80", neg: "#ff6b6b",
-  };
+  
   const router = useRouter();
   const sp = useSearchParams();
   const inviteToken = sp.get('invite') || '';
@@ -82,23 +79,23 @@ function RegisterInner() {
         {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Фамилия</label>
-          <input type="text" value={lastName} onChange={e => setLastName(e.target.value)} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          <input type="text" value={lastName} onChange={e => setLastName(e.target.value)} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Имя</label>
-          <input type="text" value={firstName} onChange={e => setFirstName(e.target.value)} autoFocus style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          <input type="text" value={firstName} onChange={e => setFirstName(e.target.value)} autoFocus style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Email</label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} required style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} required style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Пароль (мин. 8 символов)</label>
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
         </div>
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Повторите пароль</label>
-          <input type="password" value={password2} onChange={e => setPassword2(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${password2 && password2 !== password ? C.neg : C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+          <input type="password" value={password2} onChange={e => setPassword2(e.target.value)} required minLength={8} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${password2 && password2 !== password ? C.neg : C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
           {password2 && password2 !== password && (
             <span style={{ display: "block", color: C.neg, fontSize: 12, marginTop: 4 }}>Пароли не совпадают</span>
           )}
@@ -106,7 +103,7 @@ function RegisterInner() {
         {!inviteToken && (
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, color: C.muted }}>Invite-код (если есть)</label>
-            <input type="text" value={inviteCode} onChange={e => setInviteCode(e.target.value)} placeholder="Для закрытой регистрации" style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4, colorScheme: "dark" }} />
+            <input type="text" value={inviteCode} onChange={e => setInviteCode(e.target.value)} placeholder="Для закрытой регистрации" style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
           </div>
         )}
         <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit" }}>

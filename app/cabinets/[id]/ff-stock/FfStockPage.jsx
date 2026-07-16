@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 
 // =====================================================================
 //  /items/ff-stock — ОСТАТКИ НА СКЛАДЕ/ФФ (заявка 2026-06-25 (5)).
@@ -304,7 +300,7 @@ export default function FfStockPage({ cabinetId }) {
                 const cost = locs.map((l) => row.byLoc[l.id]?.unit_cost).find((v) => v != null && v !== "") ?? null;
                 const value = round2(totalQty * (Number(cost) || 0));
                 return (
-                  <tr key={row.catalog_id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                  <tr key={row.catalog_id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                     <td style={{ padding: "8px 10px", verticalAlign: "middle" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         {row.im_url ? (

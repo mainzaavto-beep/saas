@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useState, useCallback } from "react";
-const C = {
-  bg:"#0b1220", surface:"#131c2e", surfaceAlt:"#1a2540", ink:"#e8edf7",
-  muted:"#8a99b8", faint:"#6b7a8f", line:"#243049", accent:"#4f8cff",
-  accent2:"#2bd4a0", pos:"#4ade80", neg:"#ff6b6b", pink:"#f97316",
-  blue:"#4f8cff",
-};
+
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
 // postToDds заглушён — будет запись в ДДС после сохранения баланса (отдельная задача).
@@ -385,7 +381,7 @@ export default function BalancePage({ cabinetId }) {
                 const prev = history[i + 1];
                 const delta = prev ? (h.cash_on_hand ?? 0) - (prev.cash_on_hand ?? 0) : null;
                 return (
-                <tr key={h.as_of_date} style={{ borderBottom: `1px solid ${C.line}33`, cursor: "pointer" }} onClick={() => setDate(h.as_of_date)}>
+                <tr key={h.as_of_date} style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: "pointer" }} onClick={() => setDate(h.as_of_date)}>
                   <td style={{ padding: "8px 10px" }}>{h.as_of_date}</td>
                   <td style={tdRight}>{money(h.assets_total)}</td>
                   <td style={tdRight}>{money(h.liabilities_total)}</td>

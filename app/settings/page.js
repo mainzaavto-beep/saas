@@ -1,15 +1,12 @@
 "use client";
+import { C } from "@/lib/palette.js";
 // /settings — профиль пользователя: хаб с вкладками.
 // Вкладки: Основное (личные данные + пароль), Настройки (проект), Команда.
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
 
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b",
-};
+
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 
 function ProfileHub() {
@@ -91,7 +88,7 @@ function ProfileHub() {
               style={{
                 padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`,
                 background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit",
-                flex: 1, colorScheme: "dark",
+                flex: 1,
               }}
             >
               {projects.map(p => (
@@ -161,7 +158,7 @@ function MainTab() {
   if (error) return <div style={{ color: C.neg, padding: 20 }}>{error}</div>;
   if (!data) return <div style={{ color: C.muted, padding: 20 }}>Загрузка…</div>;
 
-  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", width: "100%", colorScheme: "dark" };
+  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", width: "100%" };
 
   const save = async () => {
     setSaving(true); setMsg(null);
@@ -255,7 +252,7 @@ function SettingsTab({ cabinetId }) {
 
   // Менять настройки проекта / магазины / API-ключи может только владелец.
   const canManage = myRole === "owner";
-  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" };
 
   const save = async () => {
     setMsg(null);
@@ -402,7 +399,7 @@ function TeamTab({ cabinetId }) {
                   <span style={{ fontSize: 12, color: C.muted, padding: "4px 10px", background: C.surface, borderRadius: 6 }}>{roleLabel(m.role)}</span>
                 ) : canManage ? (
                   <>
-                    <select value={m.role} onChange={e => changeRole(m.user_id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontSize: 12, fontFamily: "inherit", colorScheme: "dark" }}>
+                    <select value={m.role} onChange={e => changeRole(m.user_id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontSize: 12, fontFamily: "inherit" }}>
                       <option value="manager">Менеджер</option>
                       <option value="viewer">Наблюдатель</option>
                     </select>
@@ -423,7 +420,7 @@ function TeamTab({ cabinetId }) {
         {canManage ? (
           <>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <select value={inviteRole} onChange={e => setInviteRole(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" }}>
+              <select value={inviteRole} onChange={e => setInviteRole(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" }}>
                 <option value="manager">Менеджер</option>
                 <option value="viewer">Наблюдатель</option>
               </select>
@@ -471,7 +468,7 @@ function ShopRow({ shop, cabinetId, canManage, onSaved }) {
 
   // Поля API-кредов — из единого конфига lib/mpConfig.js.
   const fields = (MP_CONFIG[shop.mp_code]?.fields) || [];
-  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" };
 
   const remove = async () => {
     const name = shop.shop_name || `Магазин #${shop.shop_id}`;
@@ -582,7 +579,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+  const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" };
   const cfg = MP_CONFIG[mpCode] || { fields: [] };
 
   const reset = () => {

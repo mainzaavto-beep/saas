@@ -1,16 +1,13 @@
 'use client';
+import { C } from "@/lib/palette.js";
 // /onboarding — создание проекта с несколькими магазинами.
 // Поддержка: до 4 магазинов всего (любая комбинация WB/Ozon), разные юрлица, налоги per shop.
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from '@/lib/mpConfig.js';
 
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b",
-};
-const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", width: "100%", colorScheme: "dark" };
+
+const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", width: "100%" };
 
 // MP_CONFIG импортируется из lib/mpConfig.js (единый источник правды).
 

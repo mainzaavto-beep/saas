@@ -1,12 +1,9 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 // /cabinets/[id]/team — команда проекта (сотрудники + приглашения).
 import { useEffect, useState } from "react";
 
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b",
-};
+
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 
 export default function TeamPage({ cabinetId }) {
@@ -66,7 +63,7 @@ export default function TeamPage({ cabinetId }) {
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Сотрудники ({members.length})</h2>
         {members.map((m) => (
-          <div key={m.user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.line}33` }}>
+          <div key={m.user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${soft("line", 20)}` }}>
             <div>
               <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email}</span>
               <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>

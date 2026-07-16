@@ -1,13 +1,9 @@
 "use client";
+import { C } from "@/lib/palette.js";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-const C = {
-  bg:"#0b1220", surface:"#131c2e", surfaceAlt:"#1a2540", ink:"#e8edf7",
-  muted:"#8a99b8", faint:"#6b7a8f", line:"#243049", accent:"#4f8cff",
-  accent2:"#2bd4a0", pos:"#4ade80", neg:"#ff6b6b", pink:"#f97316",
-  blue:"#4f8cff",
-};
+
 
 const num = (n) => Math.round(n).toLocaleString("ru-RU");
 const metricLabel = (m) => ({

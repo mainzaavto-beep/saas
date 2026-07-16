@@ -1,23 +1,12 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useMemo, useState } from "react";
 
 // Цветовая палитра SAAS (тёмно-синяя). Согласована с globals.css.
 // Внутренние компоненты (Kpi/Th/Td/ProductCell/...) обращаются к C.*,
 // поэтому держим объект C здесь — не тянем старую палитру из lib/theme.
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-  pink: "#f97316", // для Ozon-бейджа (в эталоне был розовый, тут оранжевый как в globals)
-};
+
 const ALERT = {
   info: {
     background: "rgba(79, 140, 255, 0.10)",
@@ -349,8 +338,8 @@ export default function SummaryPage({ cabinetId }) {
                 key={it.platform + "-" + it.nm}
                 onClick={() => openDetail(it)}
                 title="Кликните, чтобы открыть детальную сводку по товару"
-                style={{ borderBottom: `1px solid ${C.line}33`, cursor: "pointer" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = `${C.accent}0D`)}
+                style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: "pointer" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = `${soft("accent", 5)}`)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
               >
                 <Td left><ProductCell it={it} /></Td>
@@ -462,12 +451,12 @@ export default function SummaryPage({ cabinetId }) {
               </thead>
               <tbody>
                 {cab.items.map((it) => (
-                  <tr key={it.platform + "-" + it.cost_type} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                  <tr key={it.platform + "-" + it.cost_type} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                     <Td left>{it.label}</Td>
                     <Td>
                       <span style={{
                         padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700,
-                        background: it.platform === "wb" ? `${C.accent}22` : `${C.pink}22`,
+                        background: it.platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
                         color: it.platform === "wb" ? C.accent : C.pink,
                       }}>{it.platform === "wb" ? "WB" : "Ozon"}</span>
                     </Td>
@@ -519,7 +508,7 @@ function ProductCell({ it }) {
           {` · ${it.shop}`}
           <span style={{
             marginLeft: 6, padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700,
-            background: it.platform === "wb" ? `${C.accent}22` : `${C.pink}22`,
+            background: it.platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
             color: it.platform === "wb" ? C.accent : C.pink,
           }}>{it.platform === "wb" ? "WB" : "Ozon"}</span>
         </div>

@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 const ALERT = {
   warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
   info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
@@ -245,7 +241,7 @@ function MonthPlan({ data, setData, platform, period, savingKey, setSavingKey })
           </thead>
           <tbody>
             {items.map((it) => (
-              <tr key={it.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+              <tr key={it.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                 {/* Артикул — композитная ячейка с фото */}
                 <td style={{ padding: "8px", maxWidth: 170 }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -266,11 +262,11 @@ function MonthPlan({ data, setData, platform, period, savingKey, setSavingKey })
                 {/* Статус строки (✓ утверждён / черновик / 🆕 новый SKU) */}
                 <td style={{ padding: "8px" }}>
                   {it.is_new ? (
-                    <Badge bg={`${C.pink}22`} color={C.pink}>🆕 старт {it.launch_date ? it.launch_date.slice(5, 10) : "—"}</Badge>
+                    <Badge bg={`${soft("pink", 13)}`} color={C.pink}>🆕 старт {it.launch_date ? it.launch_date.slice(5, 10) : "—"}</Badge>
                   ) : it.approved ? (
-                    <Badge bg={`${C.pos}22`} color={C.pos}>✓ утверждён</Badge>
+                    <Badge bg={`${soft("pos", 13)}`} color={C.pos}>✓ утверждён</Badge>
                   ) : (
-                    <Badge bg={`${C.accent}22`} color={C.accent}>черновик</Badge>
+                    <Badge bg={`${soft("accent", 13)}`} color={C.accent}>черновик</Badge>
                   )}
                 </td>
                 {/* ПЛАН (11 колонок). Заказы шт/Сумма ₽/ROI — RO. Цена/Себест/Пр%/ДРР% — ✏️.
@@ -476,7 +472,7 @@ function QuarterYear({ data, platform, period }) {
 
   // Стиль строк-подытогов квартала и года.
   const qSubtotalStyle = { background: C.surfaceAlt, fontWeight: 700, borderTop: `1px solid ${C.line}` };
-  const yearTotalStyle = { background: `${C.accent}11`, fontWeight: 800, borderTop: `2px solid ${C.accent}` };
+  const yearTotalStyle = { background: `${soft("accent", 7)}`, fontWeight: 800, borderTop: `2px solid ${C.accent}` };
 
   // Ячейка факта-прибыли — с цветом.
   const profitColor = (v) => ((v || 0) >= 0 ? C.pos : C.neg);
@@ -514,7 +510,7 @@ function QuarterYear({ data, platform, period }) {
               return (
                 <FragmentByKey key={`q${qq.q}`}>
                   {/* Заголовок квартала (строка-разделитель) */}
-                  <tr style={{ background: `${C.accent}0d` }}>
+                  <tr style={{ background: `${soft("accent", 5)}` }}>
                     <td colSpan={11} style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: C.accent, textTransform: "uppercase", letterSpacing: 0.5 }}>
                       Q{qq.q} ({qq.ym.map(fmtMonth).join(" · ")})
                     </td>
@@ -523,7 +519,7 @@ function QuarterYear({ data, platform, period }) {
                   {qq.ym.map((mm) => {
                     const r = rowFor(mm);
                     return (
-                      <tr key={mm} style={{ borderBottom: `1px solid ${C.line}22` }}>
+                      <tr key={mm} style={{ borderBottom: `1px solid ${soft("line", 13)}` }}>
                         <Td left style={{ paddingLeft: 22 }}>{fmtMonth(mm)}</Td>
                         <Td right>{fmtMoney(r.plan.rev)}</Td>
                         <Td right muted>{fmtPct(r.plan.drrPct)}</Td>
@@ -707,7 +703,7 @@ function Purchase({ data }) {
           </thead>
           <tbody>
             {existing.map((it) => (
-              <tr key={it.id || it.nm_id || it.product_id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+              <tr key={it.id || it.nm_id || it.product_id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                 <Td left><strong>{it.sku_label}</strong><div style={{ fontSize: 11, color: C.faint }}>{it.platform === "OZON" ? `pid ${it.product_id}` : `nm ${it.nm_id}`} · {it.platform}</div></Td>
                 <Td right>{num(it.qty_plan)}</Td>
                 <Td right>{num(it.stock_now)}</Td>
@@ -729,7 +725,7 @@ function Purchase({ data }) {
       </div>
 
       {news.length > 0 && (
-        <div style={{ padding: 14, border: `1px solid ${C.pink}44`, borderRadius: 10, background: `${C.pink}08` }}>
+        <div style={{ padding: 14, border: `1px solid ${soft("pink", 27)}`, borderRadius: 10, background: `${soft("pink", 3)}` }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>🆕 Новые SKU (заказать к старту)</div>
           {news.map((it) => (
             <div key={it.id} style={{ fontSize: 12.5, marginBottom: 4 }}>
@@ -861,7 +857,7 @@ function Thumb({ url, isNew }) {
   const [err, setErr] = useState(false);
   if (isNew) {
     return (
-      <div style={{ width: 36, height: 36, borderRadius: 6, flexShrink: 0, background: `${C.pink}22`, border: `1px solid ${C.pink}55`, display: "grid", placeItems: "center", color: C.pink, fontSize: 16 }}>🆕</div>
+      <div style={{ width: 36, height: 36, borderRadius: 6, flexShrink: 0, background: `${soft("pink", 13)}`, border: `1px solid ${soft("pink", 33)}`, display: "grid", placeItems: "center", color: C.pink, fontSize: 16 }}>🆕</div>
     );
   }
   if (!url || err) {

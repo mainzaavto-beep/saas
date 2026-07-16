@@ -1,4 +1,5 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 // /cabinets/[id]/items — Себестоимость и справочники товаров.
 // Полный перенос эталона data-presenter/app/items/page.jsx с адаптацией:
@@ -9,19 +10,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 
 // Палитра SAAS (тёмно-синяя).
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-  pink: "#f97316", // Ozon-бейдж
-};
+
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) =>
@@ -239,7 +228,7 @@ function RowFragment({ it, isOpen, onToggle, cabinetId, facets, saving, setSavin
   const key = itemKey(it);
   return (
     <>
-      <tr style={{ borderBottom: isOpen ? "none" : `1px solid ${C.line}33` }}>
+      <tr style={{ borderBottom: isOpen ? "none" : `1px solid ${soft("line", 20)}` }}>
         <td style={{ padding: "8px 10px", textAlign: "center", width: 32 }}>
           <button onClick={onToggle} style={expandBtn} title={isOpen ? "Свернуть" : "Детализация"}>{isOpen ? "▾" : "▸"}</button>
         </td>
@@ -280,7 +269,7 @@ function RowFragment({ it, isOpen, onToggle, cabinetId, facets, saving, setSavin
       </tr>
       {isOpen && (
         <tr style={{ background: C.surface }}>
-          <td colSpan={9} style={{ padding: "16px 20px", borderBottom: `1px solid ${C.line}33` }}>
+          <td colSpan={9} style={{ padding: "16px 20px", borderBottom: `1px solid ${soft("line", 20)}` }}>
             <DetailPanel it={it} cabinetId={cabinetId} postCost={postCost} reload={reload} />
           </td>
         </tr>
@@ -536,7 +525,7 @@ function DetailPanel({ it, cabinetId, postCost, reload }) {
             </thead>
             <tbody>
               {history.map((h) => (
-                <tr key={h.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                <tr key={h.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                   {editing === h.id ? (
                     <>
                       <td style={{ padding: "4px 10px" }}>
@@ -658,7 +647,7 @@ function Pagination({ page, totalPages, setPage, totalItems, pageSize, setPageSi
 // ---------------- Стили ----------------
 const inputStyle = {
   padding: "6px 10px", borderRadius: 6, fontSize: 13,
-  background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120, colorScheme: "dark",
+  background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120,
 };
 const miniBtn = {
   padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer",

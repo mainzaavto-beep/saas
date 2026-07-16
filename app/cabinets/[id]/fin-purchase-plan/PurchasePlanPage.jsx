@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 
 // =====================================================================
 //  /finance/purchase-plan — План закупок (pivot, заявка №35, контракт №36).
@@ -208,7 +204,7 @@ export default function PurchasePlanPage({ cabinetId }) {
               {weeks.map((w) => {
                 const deltaNeg = w.delta < 0;
                 return (
-                  <tr key={w.week} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                  <tr key={w.week} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                     <td style={{ padding: "8px 10px", fontWeight: 600, whiteSpace: "nowrap" }}>{w.week}</td>
                     {nms.map((nm) =>
                       types.map((t) => {
@@ -387,7 +383,7 @@ function DraftModal({ window, setWindow, leadTime, setLeadTime, replenish, setRe
                         : cover < leadTime / 3 ? C.neg
                         : cover < (leadTime * 2) / 3 ? "#FFA000" : "#FF6F00";
                       return (
-                        <tr key={k} style={{ borderBottom: `1px solid ${C.line}33`, opacity: it.exists ? 0.45 : 1 }}>
+                        <tr key={k} style={{ borderBottom: `1px solid ${soft("line", 20)}`, opacity: it.exists ? 0.45 : 1 }}>
                           <td style={{ padding: "5px 8px" }}>
                             <input type="checkbox" disabled={it.exists} checked={isChk && !it.exists} onChange={() => toggle(k)} />
                           </td>

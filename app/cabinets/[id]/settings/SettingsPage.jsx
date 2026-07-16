@@ -1,15 +1,12 @@
 "use client";
+import { C } from "@/lib/palette.js";
 // /cabinets/[id]/settings — настройки проекта (название, магазины с налогами, API).
 import { useEffect, useState } from "react";
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
 
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b",
-};
+
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
-const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit", colorScheme: "dark" };
+const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" };
 
 export default function SettingsPage({ cabinetId }) {
   const [data, setData] = useState(null);

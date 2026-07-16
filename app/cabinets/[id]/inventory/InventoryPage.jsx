@@ -1,4 +1,5 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 // /cabinets/[id]/inventory — Остатки склад/ФФ (маршрут: закупка → завершить → склад).
 //
@@ -13,11 +14,7 @@
 // Запись: POST link_sku / unlink_sku / update_qty.
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-};
+
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v) + " ₽";
 const num = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v);
@@ -251,7 +248,7 @@ function Row({ it, cabinetId, locations, reload }) {
   const hasSku = !!it.platform;  // артикул привязан → фото/имя тянется с МП
 
   return (
-    <tr style={{ borderBottom: `1px solid ${C.line}33` }}>
+    <tr style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
       {/* Товар: фото (загружаемое если нет SKU) + имя (inline) */}
       <td style={{ padding: "8px 10px", verticalAlign: "middle" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -704,14 +701,14 @@ function ShipmentsHistory({ cabinetId, shipments, reload }) {
           </thead>
           <tbody>
             {shipments.map((s) => (
-              <tr key={s.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+              <tr key={s.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                 <td style={{ ...tdLeft, whiteSpace: "nowrap" }}>{s.ship_dt}</td>
                 <td style={tdLeft}>{s.item_name || "—"}</td>
                 <td style={{ ...tdRight, color: C.pink, fontWeight: 700 }}>−{num(s.qty)}</td>
                 <td style={tdLeft}>
                   <span style={{
                     padding: "2px 7px", borderRadius: 5, fontSize: 11, fontWeight: 700,
-                    background: s.platform === "wb" ? `${C.accent}22` : `${C.pink}22`,
+                    background: s.platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
                     color: s.platform === "wb" ? C.accent : C.pink,
                   }}>{s.platform === "wb" ? "WB" : "Ozon"}</span>
                 </td>
@@ -984,7 +981,7 @@ function Field({ label, children }) {
 }
 
 // ---------------- Стили ----------------
-const inputStyle = { padding: "6px 10px", borderRadius: 6, fontSize: 13, background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120, colorScheme: "dark" };
+const inputStyle = { padding: "6px 10px", borderRadius: 6, fontSize: 13, background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120 };
 const primaryBtn = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", fontWeight: 600, background: C.accent, color: "#0A1A1C", border: "none" };
 const resetBtnStyle = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };
 const miniBtn = { padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };

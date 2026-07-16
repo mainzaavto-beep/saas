@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 
 // =====================================================================
 //  /finance/dds — движение денежных средств (заявка №37, контракт №38).
@@ -294,7 +290,7 @@ export default function DdsPage({ cabinetId }) {
               editId === it.id && editVal ? (
                 <EditRow key={it.id} ev={editVal} setEv={setEditVal} onSave={saveEdit} onCancel={() => { setEditId(null); setEditVal(null); }} />
               ) : (
-                <tr key={it.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                <tr key={it.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                   <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>{it.date}</td>
                   <td style={{ padding: "8px 10px" }}>
                     {it.type === "income" ? (
@@ -417,7 +413,7 @@ function DraftModal({ data, loading, err, checked, setChecked, draftItemKey, onA
                         const k = draftItemKey(s.key, it);
                         const isChk = !!checked[k];
                         return (
-                          <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: `1px solid ${C.line}22`, opacity: it.exists ? 0.45 : 1, cursor: it.exists ? "not-allowed" : "pointer" }}>
+                          <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: `1px solid ${soft("line", 13)}`, opacity: it.exists ? 0.45 : 1, cursor: it.exists ? "not-allowed" : "pointer" }}>
                             <input type="checkbox" disabled={it.exists} checked={isChk && !it.exists} onChange={() => toggle(k)} />
                             <span style={{ width: 80, fontSize: 11, color: C.muted, flexShrink: 0 }}>{it.date}</span>
                             <span style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -454,7 +450,7 @@ function DraftModal({ data, loading, err, checked, setChecked, draftItemKey, onA
 function EditRow({ ev, setEv, onSave, onCancel }) {
   const up = (k) => (e) => setEv({ ...ev, [k]: e.target.value });
   return (
-    <tr style={{ borderBottom: `1px solid ${C.line}33`, background: "rgba(0,229,255,0.04)" }}>
+    <tr style={{ borderBottom: `1px solid ${soft("line", 20)}`, background: "rgba(0,229,255,0.04)" }}>
       <td style={{ padding: "4px 8px" }}><input type="date" value={ev.date || ""} onChange={up("date")} style={{ ...inputStyle, width: 140, padding: "3px 6px" }} /></td>
       <td style={{ padding: "4px 8px" }}>
         <select value={ev.type} onChange={up("type")} style={{ ...inputStyle, padding: "3px 6px" }}>

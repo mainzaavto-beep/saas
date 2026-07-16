@@ -10,14 +10,14 @@ export default async function LandingPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#0b1220', color: '#e8edf7',
+      minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
       display: 'flex', flexDirection: 'column',
     }}>
       {/* Шапка */}
       <header style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '16px 32px', borderBottom: '1px solid #243049',
+        padding: '16px 32px', borderBottom: '1px solid var(--border)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 24 }}>📊</span>
@@ -26,11 +26,11 @@ export default async function LandingPage() {
         <div style={{ display: 'flex', gap: 12 }}>
           <Link href="/login" style={{
             padding: '8px 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
-            color: '#8a99b8', textDecoration: 'none',
+            color: 'var(--muted)', textDecoration: 'none',
           }}>Войти</Link>
           <Link href="/register" style={{
             padding: '8px 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
-            background: '#4f8cff', color: '#fff', textDecoration: 'none',
+            background: 'var(--accent)', color: '#fff', textDecoration: 'none',
           }}>Начать бесплатно</Link>
         </div>
       </header>
@@ -42,7 +42,7 @@ export default async function LandingPage() {
       }}>
         <div style={{
           fontSize: 13, letterSpacing: 3, textTransform: 'uppercase',
-          color: '#4f8cff', fontWeight: 700, marginBottom: 16,
+          color: 'var(--accent)', fontWeight: 700, marginBottom: 16,
         }}>Сервис оцифровки продаж на маркетплейсах</div>
         <h1 style={{
           fontSize: 42, fontWeight: 800, margin: '0 0 16px', lineHeight: 1.2,
@@ -51,7 +51,7 @@ export default async function LandingPage() {
           Полная аналитика Wildberries и Ozon<br />в одном дашборде
         </h1>
         <p style={{
-          fontSize: 18, color: '#8a99b8', maxWidth: 580, margin: '0 0 32px',
+          fontSize: 18, color: 'var(--muted)', maxWidth: 580, margin: '0 0 32px',
           lineHeight: 1.5,
         }}>
           Выручка, прибыль, рекламные кампании, остатки, юнит-экономика и
@@ -60,11 +60,11 @@ export default async function LandingPage() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
           <Link href="/register" style={{
             padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 700,
-            background: '#4f8cff', color: '#fff', textDecoration: 'none',
+            background: 'var(--accent)', color: '#fff', textDecoration: 'none',
           }}>Попробовать бесплатно →</Link>
           <Link href="/login" style={{
             padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 600,
-            border: '1px solid #243049', color: '#8a99b8', textDecoration: 'none',
+            border: '1px solid var(--border)', color: 'var(--muted)', textDecoration: 'none',
           }}>Войти</Link>
         </div>
       </div>
@@ -83,19 +83,19 @@ export default async function LandingPage() {
           { icon: '🔒', title: 'Безопасность', desc: 'Мультитенантность с изоляцией данных (PostgreSQL RLS), шифрование API-ключей' },
         ].map((f) => (
           <div key={f.title} style={{
-            background: '#131c2e', border: '1px solid #243049', borderRadius: 12,
+            background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12,
             padding: '20px',
           }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>{f.icon}</div>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{f.title}</div>
-            <div style={{ fontSize: 14, color: '#8a99b8', lineHeight: 1.5 }}>{f.desc}</div>
+            <div style={{ fontSize: 14, color: 'var(--muted)', lineHeight: 1.5 }}>{f.desc}</div>
           </div>
         ))}
       </div>
 
       {/* Футер */}
       <footer style={{
-        padding: '20px 32px', borderTop: '1px solid #243049',
+        padding: '20px 32px', borderTop: '1px solid var(--border)',
         textAlign: 'center', color: '#6b7a8f', fontSize: 13,
       }}>
         © 2026 SySell · Сервис оцифровки продаж на маркетплейсах

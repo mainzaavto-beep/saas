@@ -1,4 +1,5 @@
 "use client";
+import { C } from "@/lib/palette.js";
 
 // /cabinets/[id]/unit — Юнит-экономика (WB+Ozon) с what-if прикидкой.
 // Полный перенос эталона data-presenter/app/finance/UnitTable.jsx с адаптацией:
@@ -11,19 +12,7 @@ import { Fragment, useEffect, useMemo, useState, useCallback } from "react";
 import { COLUMNS_WB, COLUMNS_OZON, calcWB, calcOzon } from "@/lib/unit";
 
 // Палитра SAAS (тёмно-синяя).
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  accent2: "#2bd4a0",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-};
+
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) =>

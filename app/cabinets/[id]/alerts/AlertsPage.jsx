@@ -1,11 +1,8 @@
 "use client";
+import { C } from "@/lib/palette.js";
 
 import { useState, useEffect } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-};
+
 const ALERT = {
   critical: { background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.35)", color: "#f87171" },
   warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },

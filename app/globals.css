@@ -1,4 +1,13 @@
-:root {
+/* ====================================================================
+   Тема: тёмная (по умолчанию) и светлая. next-themes вешает .dark/.light
+   на <html>. :root = дефолт = тёмная (на случай, если класс ещё не повешен).
+   Базовые токены: --bg/--panel/--panel2/--text/--muted/--accent/--accent2/
+   --danger/--border. Алиасные (--surface и т.д.) — для inline-стилей из
+   lib/palette.js, чтобы все ~30 страниц переключались одной сменой класса.
+   ==================================================================== */
+:root,
+.dark {
+  color-scheme: dark;
   --bg: #0b1220;
   --panel: #131c2e;
   --panel2: #1a2540;
@@ -9,6 +18,41 @@
   --danger: #ff6b6b;
   --border: #243049;
   --radius: 12px;
+  /* Алиасы для inline-палитры lib/palette.js (C.surface = var(--surface) …) */
+  --surface: var(--panel);
+  --surfaceAlt: var(--panel2);
+  --ink: var(--text);
+  --faint: #6b7a8f;
+  --line: var(--border);
+  --pos: #4ade80;
+  --neg: #ff6b6b;
+  --warn: #fbbf24;
+  --pink: #f97316;
+  --blue: var(--accent);
+}
+
+.light {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel2: #eef1f6;
+  --text: #1a2335;
+  --muted: #5d6b85;
+  --accent: #2563eb;
+  --accent2: #0d9488;
+  --danger: #dc2626;
+  --border: #d8deea;
+  --radius: 12px;
+  --surface: var(--panel);
+  --surfaceAlt: var(--panel2);
+  --ink: var(--text);
+  --faint: #8a98b0;
+  --line: var(--border);
+  --pos: #16a34a;
+  --neg: #dc2626;
+  --warn: #d97706;
+  --pink: #ea580c;
+  --blue: var(--accent);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);

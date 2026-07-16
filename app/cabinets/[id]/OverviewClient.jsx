@@ -1,4 +1,5 @@
 "use client";
+import { C } from "@/lib/palette.js";
 
 // /cabinets/[id] — Главная (Overview). Полный перенос эталона
 // data-presenter/app/page.jsx с адаптацией под мультитенантный контур.
@@ -9,20 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 // Палитра SAAS (тёмно-синяя). Согласована с globals.css и SummaryPage.
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  accent2: "#2bd4a0",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-  warn: "#fbbf24",
-};
+
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) =>
@@ -392,7 +380,7 @@ const th = (i) => ({ textAlign: i === 0 ? "left" : "right", padding: "0 8px 8px"
 const linkStyle = { color: C.accent, textDecoration: "none", fontSize: 13, fontWeight: 600, marginLeft: "auto" };
 const dateInputStyle = {
   padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.line}`,
-  background: C.surfaceAlt, fontSize: 13, fontFamily: "inherit", colorScheme: "dark",
+  background: C.surfaceAlt, fontSize: 13, fontFamily: "inherit",
 };
 
 function Centered({ children }) {

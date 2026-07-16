@@ -21,7 +21,7 @@ export default async function CabinetsPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#0b1220', color: '#e8edf7',
+      minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
       padding: '24px 32px',
     }}>
@@ -37,16 +37,16 @@ export default async function CabinetsPage() {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <Link href="/settings" style={{
             padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-            border: '1px solid #243049', color: '#8a99b8', textDecoration: 'none',
+            border: '1px solid var(--border)', color: 'var(--muted)', textDecoration: 'none',
           }}>👤 Профиль</Link>
           <Link href="/onboarding" style={{
             padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-            border: '1px solid #243049', color: '#8a99b8', textDecoration: 'none',
+            border: '1px solid var(--border)', color: 'var(--muted)', textDecoration: 'none',
           }}>+ Проект</Link>
           <form action="/api/auth/logout" method="post" style={{ display: 'inline' }}>
             <button type="submit" style={{
               padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-              border: '1px solid #243049', background: 'transparent', color: '#8a99b8',
+              border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)',
               cursor: 'pointer', fontFamily: 'inherit',
             }}>Выйти</button>
           </form>
@@ -54,19 +54,19 @@ export default async function CabinetsPage() {
       </div>
 
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: '0 0 8px' }}>Ваши проекты</h1>
-      <p style={{ color: '#8a99b8', fontSize: 14, margin: '0 0 24px' }}>
+      <p style={{ color: 'var(--muted)', fontSize: 14, margin: '0 0 24px' }}>
         Выберите проект, чтобы открыть аналитику.
       </p>
 
       {cabinets.length === 0 ? (
         <div style={{
-          background: '#131c2e', border: '1px dashed #243049', borderRadius: 12,
-          padding: 40, textAlign: 'center', color: '#8a99b8',
+          background: 'var(--panel)', border: '1px dashed var(--border)', borderRadius: 12,
+          padding: 40, textAlign: 'center', color: 'var(--muted)',
         }}>
           <p>Проектов пока нет.</p>
           <Link href="/onboarding" style={{
             display: 'inline-block', marginTop: 12, padding: '10px 24px',
-            borderRadius: 8, background: '#4f8cff', color: '#fff',
+            borderRadius: 8, background: 'var(--accent)', color: '#fff',
             textDecoration: 'none', fontWeight: 600,
           }}>Создать первый →</Link>
         </div>
@@ -76,13 +76,13 @@ export default async function CabinetsPage() {
         }}>
           {cabinets.map((c) => (
             <Link key={c.cabinet_id} href={`/cabinets/${c.cabinet_id}`} style={{
-              background: '#131c2e', border: '1px solid #243049', borderRadius: 12,
-              padding: 20, textDecoration: 'none', color: '#e8edf7', display: 'block',
+              background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 12,
+              padding: 20, textDecoration: 'none', color: 'var(--text)', display: 'block',
             }}>
               <div style={{ fontSize: 17, fontWeight: 700 }}>
                 {c.display_name || `Проект #${c.cabinet_id}`}
               </div>
-              <div style={{ color: '#8a99b8', fontSize: 13, marginTop: 6 }}>
+              <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 6 }}>
                 {(c.marketplaces || []).map((m) => m.toUpperCase()).join(' + ')} · {c.status}
               </div>
             </Link>

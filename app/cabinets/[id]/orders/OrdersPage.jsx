@@ -1,4 +1,5 @@
 "use client";
+import { C } from "@/lib/palette.js";
 
 // /cabinets/[id]/orders — журнал заказов «как в Mpassistant» (22 колонки).
 // Полный перенос эталона data-presenter/app/products/orders/page.jsx с
@@ -6,19 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 // Палитра SAAS (тёмно-синяя), согласована с globals.css.
-const C = {
-  bg: "#0b1220",
-  surface: "#131c2e",
-  surfaceAlt: "#1a2540",
-  ink: "#e8edf7",
-  muted: "#8a99b8",
-  faint: "#6b7a8f",
-  line: "#243049",
-  accent: "#4f8cff",
-  pos: "#4ade80",
-  neg: "#ff6b6b",
-  pink: "#f97316", // Ozon-бейдж
-};
+
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const r2 = (v) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 100) / 100);
@@ -181,9 +170,9 @@ export default function OrdersPage({ cabinetId }) {
       {/* Фильтры — ряд 2: период / бренд / группа / магазин / № заказа / № поставки + Сбросить */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
         <Field label="Период">
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, colorScheme: "dark" }} />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle }} />
           <span style={{ color: C.faint, fontSize: 12 }}>—</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, colorScheme: "dark" }} />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle }} />
         </Field>
         <Field label="Бренд">
           <select value={brand} onChange={(e) => setBrand(e.target.value)} style={selectStyle}>

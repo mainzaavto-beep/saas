@@ -1,4 +1,5 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
@@ -71,12 +72,7 @@ function dayLabel(iso) {
 }
 
 // Тема (совпадает с соседними страницами кабинета).
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 const ALERT = {
   warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
   info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
@@ -621,7 +617,7 @@ export default function OpexPage({ cabinetId }) {
               <tr
                 key={it.id}
                 style={{
-                  borderBottom: `1px solid ${C.line}33`,
+                  borderBottom: `1px solid ${soft("line", 20)}`,
                   background: it.included_in_cogs ? "rgba(217,176,140,0.06)" : "transparent",
                 }}
               >
@@ -942,7 +938,7 @@ const chartCardStyle = {
 };
 const chartTitleStyle = { fontSize: 12, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 };
 const previewCardStyle = {
-  background: "rgba(0,229,255,0.06)", border: `1px solid ${C.accent}55`, borderRadius: 10,
+  background: "rgba(0,229,255,0.06)", border: `1px solid ${soft("accent", 33)}`, borderRadius: 10,
   padding: "14px 16px", marginBottom: 16,
 };
 const alertStyle = {

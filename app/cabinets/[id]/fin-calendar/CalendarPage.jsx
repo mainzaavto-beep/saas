@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
 // =====================================================================
@@ -151,7 +147,7 @@ export default function CalendarPage({ cabinetId }) {
               const bd = w.plan_exp_breakdown || {};
               return (
               <tr key={w.week} style={{
-                borderBottom: `1px solid ${C.line}33`,
+                borderBottom: `1px solid ${soft("line", 20)}`,
                 background: w.at_risk ? "rgba(255,193,7,0.08)" : "transparent",
               }}>
                 <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>

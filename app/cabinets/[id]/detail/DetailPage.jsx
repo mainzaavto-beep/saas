@@ -1,4 +1,5 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -8,11 +9,7 @@ import {
   ComposedChart, Bar,
 } from "recharts";
 // Палитра SAAS (тёмно-синяя)
-const C = {
-  bg:"#0b1220", surface:"#131c2e", surfaceAlt:"#1a2540", ink:"#e8edf7",
-  muted:"#8a99b8", faint:"#6b7a8f", line:"#243049", accent:"#4f8cff",
-  accent2:"#2bd4a0", pos:"#4ade80", neg:"#ff6b6b", pink:"#f97316",
-};
+
 const ALERT = {
   warn: { background:"rgba(251,191,36,0.10)", border:"1px solid rgba(251,191,36,0.35)", color:"#fbbf24" },
   info: { background:"rgba(79,140,255,0.10)", border:"1px solid rgba(79,140,255,0.35)", color:"#4f8cff" },
@@ -148,7 +145,7 @@ function DetailInner({ cabinetId }) {
             {platform === "wb" ? "nm_id" : "product_id"}: {nm} · {data.product?.shop || ""}
             <span style={{
               marginLeft: 6, padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700,
-              background: platform === "wb" ? `${C.accent}22` : `${C.pink}22`,
+              background: platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
               color: platform === "wb" ? C.accent : C.pink,
             }}>{platform === "wb" ? "WB" : "Ozon"}</span>
           </div>
@@ -611,7 +608,7 @@ function Detail({ data, platform }) {
           style={{
             display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
             padding: "8px 14px", marginBottom: 14, borderRadius: 10,
-            background: C.surface, border: `1px solid ${C.accent}55`,
+            background: C.surface, border: `1px solid ${soft("accent", 33)}`,
           }}
         >
           <span style={{ fontSize: 16 }}>🔮</span>
@@ -865,7 +862,7 @@ function renderRatingGroup(days, product, expandRating, setExpandRating) {
   const lastImt = lastVal(days, "rating_imt");
   const rows = [
     <tr key="_rating_group" onClick={() => setExpandRating((v) => !v)}
-      style={{ borderBottom: `1px solid ${C.line}33`, cursor: "pointer", background: `${C.accent}08` }}>
+      style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: "pointer", background: `${soft("accent", 3)}` }}>
       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: 700, color: C.ink }}>
         {expandRating ? "▾ " : "▸ "}{hasGlue ? "Рейтинг и оценки" : "Рейтинг и отзывы"}
       </td>
@@ -883,7 +880,7 @@ function renderRatingGroup(days, product, expandRating, setExpandRating) {
   if (expandRating) {
     // Подстрока «Карточка (артикул)»: рейтинг + кол-во оценок по этому nm_id, по дням.
     rows.push(
-      <tr key="_rating_nm" style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+      <tr key="_rating_nm" style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
         <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>
           └ Карточка (артикул)
         </td>
@@ -902,7 +899,7 @@ function renderRatingGroup(days, product, expandRating, setExpandRating) {
     if (hasGlue) {
       const glueNote = imtMembers ? ` (из ${imtMembers} артикулов)` : "";
       rows.push(
-        <tr key="_rating_imt" style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+        <tr key="_rating_imt" style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
           <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>
             └ Склейка{glueNote}
           </td>
@@ -939,7 +936,7 @@ function renderProfitGroup(days, rowTotal, expandProfit, setExpandProfit) {
   const periodTotal = rowTotal(parentRow);
   const rows = [
     <tr key="_profit_group" onClick={() => setExpandProfit((v) => !v)}
-      style={{ borderBottom: `1px solid ${C.line}33`, cursor: "pointer", background: `${C.pos}0A` }}>
+      style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: "pointer", background: `${soft("pos", 4)}` }}>
       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: 700, color: C.ink }}>
         {expandProfit ? "▾ " : "▸ "}Прибыль ₽
       </td>
@@ -961,7 +958,7 @@ function renderProfitGroup(days, rowTotal, expandProfit, setExpandProfit) {
     for (const sub of PROFIT_SUB) {
       const subSum = rowTotal(sub);
       rows.push(
-        <tr key={"_profit_" + sub.key} style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+        <tr key={"_profit_" + sub.key} style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
           <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>└ {sub.label}</td>
           {days.map((d) => (
             <td key={d.date} style={{ ...tdMat, textAlign: "right", fontSize: 11, color: C.muted }}>
@@ -1062,14 +1059,14 @@ function KeyPositionsBlock({ days, keywords }) {
               <button key={opt.k} onClick={() => setSortBy(opt.k)} style={{
                 padding: "4px 10px", borderRadius: 7, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600,
                 border: `1px solid ${sortBy === opt.k ? C.accent : C.line}`,
-                background: sortBy === opt.k ? `${C.accent}1A` : "transparent",
+                background: sortBy === opt.k ? `${soft("accent", 10)}` : "transparent",
                 color: sortBy === opt.k ? C.accent : C.muted,
               }}>{opt.label}</button>
             ))}
             {hasFilter && (
               <button onClick={resetFilter} style={{
                 padding: "4px 10px", borderRadius: 7, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600,
-                border: `1px solid ${C.neg}`, background: `${C.neg}1A`, color: C.neg,
+                border: `1px solid ${C.neg}`, background: `${soft("neg", 10)}`, color: C.neg,
               }}>✕ Сбросить фильтр</button>
             )}
           </div>
@@ -1107,11 +1104,11 @@ function KeyPositionsBlock({ days, keywords }) {
                   const last = kw.last_position;
                   const color = last == null ? C.faint : last <= 10 ? C.pos : last <= 30 ? "#FBBF24" : C.neg;
                   return (
-                    <tr key={kw.keyword} style={{ borderBottom: `1px solid ${C.line}22` }}>
+                    <tr key={kw.keyword} style={{ borderBottom: `1px solid ${soft("line", 13)}` }}>
                       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }} title={kw.keyword}>
                         {kw.keyword}
                         {kw.is_ad_last ? (
-                          <span style={{ marginLeft: 6, fontSize: 9, padding: "1px 5px", borderRadius: 3, background: `${C.neg}22`, color: C.neg, fontWeight: 700 }}>рекл</span>
+                          <span style={{ marginLeft: 6, fontSize: 9, padding: "1px 5px", borderRadius: 3, background: `${soft("neg", 13)}`, color: C.neg, fontWeight: 700 }}>рекл</span>
                         ) : null}
                       </td>
                       <td style={{ ...tdMat, textAlign: "center", fontWeight: 800, color }}>{last ?? "—"}</td>
@@ -1156,7 +1153,7 @@ function renderAdGroup(days, rowTotal, expandAdGroup, setExpandAdGroup, expandAd
   const periodTotal = days.reduce((s, d) => s + adTotalSpend(d), 0);
   const rows = [
     <tr key="_ad_group" onClick={() => setExpandAdGroup((v) => !v)}
-      style={{ borderBottom: `1px solid ${C.line}33`, cursor: "pointer", background: `${C.accent}08` }}>
+      style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: "pointer", background: `${soft("accent", 3)}` }}>
       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: 700, color: C.ink }}>
         {expandAdGroup ? "▾ " : "▸ "}Реклама ₽
       </td>
@@ -1193,7 +1190,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
   // Применяется к корзинам Ozon (hits_to_cart отбрасывается API — ограничение подписки).
   if (row.na) {
     return [
-      <tr key={row.key} style={{ borderBottom: `1px solid ${C.line}33`, opacity: 0.5 }}>
+      <tr key={row.key} style={{ borderBottom: `1px solid ${soft("line", 20)}`, opacity: 0.5 }}>
         <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: 500, color: C.faint }}>
           {row.label}
           <span style={{ fontSize: 9, color: C.faint, marginLeft: 6 }} title={row.na}>(недоступно в API)</span>
@@ -1208,7 +1205,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
 
   const rows = [
     <tr key={row.key} onClick={onToggle}
-      style={{ borderBottom: `1px solid ${C.line}33`, cursor: onToggle ? "pointer" : "default", background: (splitGroup || isAd) ? `${C.accent}08` : "transparent", opacity: muted ? 0.55 : 1 }}>
+      style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: onToggle ? "pointer" : "default", background: (splitGroup || isAd) ? `${soft("accent", 3)}` : "transparent", opacity: muted ? 0.55 : 1 }}>
       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: (splitGroup || isAd) ? 600 : 500, color: muted ? C.faint : C.ink }}>
         {onToggle ? (expanded ? "▾ " : "▸ ") : ""}{row.label}
         {muted && <span style={{ fontSize: 9, color: C.faint, marginLeft: 6 }}>(нет данных — связи склеек нет в БД)</span>}
@@ -1233,7 +1230,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
       const planMonth = days.length > 0 ? days[0].orders_plan_month : null;
       const subSum = days.reduce((s, d) => s + (d[subKey] != null ? d[subKey] : 0), 0);
       rows.push(
-        <tr key={row.key + "_" + sub.suffix} style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+        <tr key={row.key + "_" + sub.suffix} style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
           <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>└ {sub.label}</td>
           {days.map((d) => (
             <td key={d.date} style={{ ...tdMat, textAlign: "right", fontSize: 11, color: C.muted }}>
@@ -1252,7 +1249,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
       const subKey = prefix + sub.suffix;
       const subSum = days.reduce((s, d) => s + (d[subKey] != null ? d[subKey] : 0), 0);
       rows.push(
-        <tr key={row.key + "_" + sub.suffix} style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+        <tr key={row.key + "_" + sub.suffix} style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
           <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>└ {sub.label}</td>
           {days.map((d) => (
             <td key={d.date} style={{ ...tdMat, textAlign: "right", fontSize: 11, color: C.muted }}>{d[subKey] != null ? num(d[subKey]) : "—"}</td>
@@ -1274,7 +1271,7 @@ function renderConvRow(row, days, t, expandConv, setExpandConv) {
   const onToggle = hasVariants ? () => setExpandConv((s) => ({ ...s, [row.key]: !s[row.key] })) : undefined;
   const rows = [
     <tr key={"conv_" + row.key} onClick={onToggle}
-      style={{ borderBottom: `1px solid ${C.line}33`, background: "transparent", cursor: onToggle ? "pointer" : "default" }}>
+      style={{ borderBottom: `1px solid ${soft("line", 20)}`, background: "transparent", cursor: onToggle ? "pointer" : "default" }}>
       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, color: C.accent2, fontWeight: 600 }}>
         {onToggle ? (expanded ? "▾ " : "▸ ") : ""}{row.label}
       </td>
@@ -1296,7 +1293,7 @@ function renderConvRow(row, days, t, expandConv, setExpandConv) {
     for (const vr of row.variants) {
       const vTotal = vr.total(t);
       rows.push(
-        <tr key={"conv_" + row.key + "_" + vr.src} style={{ borderBottom: `1px solid ${C.line}22`, background: C.surfaceAlt }}>
+        <tr key={"conv_" + row.key + "_" + vr.src} style={{ borderBottom: `1px solid ${soft("line", 13)}`, background: C.surfaceAlt }}>
           <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surfaceAlt, color: C.muted, paddingLeft: 28, fontSize: 11 }}>└ {SRC_LABEL[vr.src] || vr.src}</td>
           {days.map((d) => {
             const v = vr.fn(d);
@@ -1352,7 +1349,7 @@ function LocCard({ title, hint, accent, children }) {
 }
 function LocRow({ name, right, muted }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: `1px solid ${C.line}22` }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: `1px solid ${soft("line", 13)}` }}>
       <div style={{ flex: 1, minWidth: 0, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={name}>{name}</div>
       <div style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: 12.5 }}>{right}</div>
       {muted && <div style={{ minWidth: 44, textAlign: "right", color: C.faint, fontSize: 10.5 }}>{muted}</div>}
@@ -1362,7 +1359,7 @@ function LocRow({ name, right, muted }) {
 function LocRowThree({ name, count, share, localPct }) {
   const locColor = localPct == null ? C.faint : localPct >= 50 ? C.pos : localPct < 20 ? C.faint : C.ink;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 50px 56px 56px", gap: 6, alignItems: "center", padding: "6px 12px", borderBottom: `1px solid ${C.line}22` }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 50px 56px 56px", gap: 6, alignItems: "center", padding: "6px 12px", borderBottom: `1px solid ${soft("line", 13)}` }}>
       <div style={{ minWidth: 0, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={name}>{name}</div>
       <div style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: 12.5 }}>{num(count)}</div>
       <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 11.5, color: C.muted }}>{share != null ? pct(share) : "—"}</div>
@@ -1401,7 +1398,7 @@ function LocFoot({ label, value, accent }) {
 }
 function LocRowTwo({ name, count, share }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 50px 56px", gap: 6, alignItems: "center", padding: "6px 12px", borderBottom: `1px solid ${C.line}22` }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 50px 56px", gap: 6, alignItems: "center", padding: "6px 12px", borderBottom: `1px solid ${soft("line", 13)}` }}>
       <div style={{ minWidth: 0, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={name}>{name}</div>
       <div style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: 12.5 }}>{num(count)}</div>
       <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 11.5, color: C.muted }}>{share != null ? pct(share) : "—"}</div>
@@ -1494,7 +1491,7 @@ function Field({ label, children }) {
     </label>
   );
 }
-const inputStyle = { padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit", colorScheme: "dark" };
+const inputStyle = { padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit" };
 const selectStyle = { ...inputStyle, padding: "7px 26px 7px 10px", appearance: "none", cursor: "pointer" };
 const btnStyle = { padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, border: `1px solid ${C.line}`, background: "transparent", color: C.muted, fontFamily: "inherit" };
 

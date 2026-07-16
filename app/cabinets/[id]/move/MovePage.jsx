@@ -1,15 +1,11 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Line, ComposedChart,
 } from "recharts";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 const ALERT = {
   warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
   info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
@@ -198,7 +194,7 @@ function StateTab({ data }) {
         {/* Таблица остатков по складам */}
         <Table head={["Склад", "Остаток", "Доля"]}>
           {(loc.by_warehouse || []).map((w, i) => (
-            <tr key={w.warehouse} style={{ borderBottom: `1px solid ${C.line}33` }}>
+            <tr key={w.warehouse} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
               <Td>{i === 0 ? "🏆 " : ""}{w.warehouse}</Td>
               <Td right>{num(w.qty)} шт</Td>
               <Td right>
@@ -264,7 +260,7 @@ function StateTab({ data }) {
         ) : (
           <Table head={["Артикул", "Склад", "Доля", "Всего"]}>
             {(data.skewAlerts || []).map((a) => (
-              <tr key={a.nm_id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+              <tr key={a.nm_id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                 <Td>{a.nm_id}</Td>
                 <Td>{a.warehouse}</Td>
                 <Td right><strong style={{ color: a.share_pct > 90 ? C.neg : C.accent2 }}>{pct(a.share_pct)}</strong></Td>
@@ -384,7 +380,7 @@ function RecommendTab(props) {
                   const covAfter = r.to_days_cover_after;
                   const covColor = cov == null ? C.faint : cov < deficitDays / 2 ? C.neg : cov < deficitDays ? "#FFA000" : C.accent2;
                   return (
-                    <tr key={k} style={{ borderBottom: `1px solid ${C.line}33`, opacity: checked[k] ? 0.7 : 1 }}>
+                    <tr key={k} style={{ borderBottom: `1px solid ${soft("line", 20)}`, opacity: checked[k] ? 0.7 : 1 }}>
                       <td style={{ padding: "6px 8px" }}>
                         <input type="checkbox" checked={!!checked[k]} onChange={() => setChecked((c) => ({ ...c, [k]: !c[k] }))} />
                       </td>
@@ -476,7 +472,7 @@ function RequestsTab({ requests, flash, reload }) {
               {list.map((r) => {
                 const sm = STATUS_META[r.status] || STATUS_META.draft;
                 return (
-                  <tr key={r.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                  <tr key={r.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                     <Td style={{ fontSize: 11, color: C.faint }}>{fmtFull(r.created_at)} {new Date(r.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</Td>
                     <Td>
                       <Thumb url={r.im_url} />
@@ -505,7 +501,7 @@ function RequestsTab({ requests, flash, reload }) {
                         <button
                           onClick={() => patchStatus(r.id, "delivered", null, flash, reload)}
                           title="Склад-приёмник принял ≥ кол-ва заявки (по снимкам)"
-                          style={{ ...miniBtn, marginLeft: 4, color: C.pos, border: `1px solid ${C.pos}55` }}
+                          style={{ ...miniBtn, marginLeft: 4, color: C.pos, border: `1px solid ${soft("pos", 33)}` }}
                         >🟢 доставлено?</button>
                       )}
                     </Td>

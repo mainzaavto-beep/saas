@@ -1,12 +1,8 @@
 "use client";
+import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-const C = {
-  bg: "#0b1220", surface: "#131c2e", surfaceAlt: "#1a2540", ink: "#e8edf7",
-  muted: "#8a99b8", faint: "#6b7a8f", line: "#243049", accent: "#4f8cff",
-  accent2: "#2bd4a0", pos: "#4ade80", neg: "#ff6b6b", pink: "#f97316",
-  blue: "#4f8cff",
-};
+
 const postToDds = async (opts) => { try { await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) }); } catch {} };
 
 // =====================================================================
@@ -376,7 +372,7 @@ function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reloa
 
   return (
     <>
-    <tr style={{ borderBottom: isOpen ? "none" : `1px solid ${C.line}33`, background: isOpen ? "rgba(0,229,255,0.04)" : "transparent" }}>
+    <tr style={{ borderBottom: isOpen ? "none" : `1px solid ${soft("line", 20)}`, background: isOpen ? "rgba(0,229,255,0.04)" : "transparent" }}>
       <td style={{ padding: "8px 6px", verticalAlign: "middle", textAlign: "center" }}>
         <button onClick={onToggle} style={expandBtnStyle} title={isOpen ? "Свернуть" : "Заказ: жизненный цикл + платежи"}>
           {isOpen ? "▾" : "▸"}
@@ -419,7 +415,7 @@ function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reloa
     </tr>
     {isOpen && (
       <tr>
-        <td colSpan={24} style={{ padding: "14px 20px", background: C.surface, borderBottom: `1px solid ${C.line}33` }}>
+        <td colSpan={24} style={{ padding: "14px 20px", background: C.surface, borderBottom: `1px solid ${soft("line", 20)}` }}>
           <PurchaseDetailPanel it={it} cabinetId={cabinetId} reload={reload} />
         </td>
       </tr>
@@ -721,7 +717,7 @@ function PurchaseDetailPanel({ it, cabinetId, reload }) {
             </thead>
             <tbody>
               {pays.map((pp) => (
-                <tr key={pp.id} style={{ borderBottom: `1px solid ${C.line}33` }}>
+                <tr key={pp.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
                   <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{pp.due_dt}</td>
                   <td style={payTdR}><strong style={{ color: C.neg }}>{money(pp.amount)}</strong></td>
                   <td style={payTdR}>{pp.ratio != null ? (pp.ratio * 100).toFixed(0) + "%" : "—"}</td>
@@ -918,7 +914,7 @@ const cellInput = {
 // что клетку можно кликнуть и поправить (read-only расчётные клетки — без подсветки).
 const cellBtn = {
   background: "rgba(0,229,255,0.06)", border: "none",
-  borderLeft: `2px solid ${C.accent}55`, borderRadius: 0,
+  borderLeft: `2px solid ${soft("accent", 33)}`, borderRadius: 0,
   cursor: "pointer", color: C.ink, fontFamily: "inherit", fontSize: 12.5,
   fontVariantNumeric: "tabular-nums", padding: "2px 6px", textAlign: "right",
   width: "100%", transition: "background 0.12s",
