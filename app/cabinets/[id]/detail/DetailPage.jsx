@@ -118,11 +118,14 @@ function DetailInner({ cabinetId }) {
   const period = data.period || {};
   // Кнопка «назад» — туда, откуда вероятнее всего пришли. Если в URL есть ref=rnp,
   // возвращаем в РНП с тем же периодом; иначе — в «Сводку по товарам».
+  const ref = sp.get("ref");
   const periodQs = dateFrom || dateTo
     ? "?" + new URLSearchParams(Object.fromEntries([dateFrom && ["from", dateFrom], dateTo && ["to", dateTo]].filter(Boolean))).toString()
     : "";
-  const backHref = `/cabinets/${cabinetId}/summary` + periodQs;
-  const backLabel = "← К сводке по товарам";
+  const backHref = ref === "rnp"
+    ? `/cabinets/${cabinetId}/rnp` + periodQs
+    : `/cabinets/${cabinetId}/summary` + periodQs;
+  const backLabel = ref === "rnp" ? "← В РНП" : "← К сводке по товарам";
 
   return (
     <main style={{ width: "100%", margin: 0, padding: "20px 18px", fontFamily: FONT, color: C.ink }}>

@@ -18,6 +18,7 @@ const MENU = [
   {
     label: "Сводка по товарам", icon: "📦", groupBase: "/summary",
     items: [
+      { href: "/rnp", label: "РНП (пульс)" },
       { href: "/summary", label: "По товарам" },
       { href: "/orders", label: "Заказы" },
       { href: "/geo", label: "География" },
@@ -31,10 +32,9 @@ const MENU = [
   {
     label: "Товары", icon: "🏷️", groupBase: "/items",
     items: [
-      { href: "/catalog", label: "Справочник товаров" },
       { href: "/items", label: "Себестоимость" },
       { href: "/mp-stock", label: "Остатки на МП" },
-      { href: "/ff-stock", label: "Остатки склад/ФФ" },
+      { href: "/inventory", label: "Остатки склад/ФФ" },
       { href: "/move", label: "Перемещение" },
     ],
   },
