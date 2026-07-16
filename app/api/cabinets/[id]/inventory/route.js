@@ -1,19 +1,21 @@
 // /api/cabinets/[id]/inventory — остатки склада/ФФ (маршрут: закупка → завершить → склад).
 //
-// GET → { items, totals }
+// GET → { items, totals, locations, shipments }
 //   items: наименование, qty, себест. (unit_cost = «себест. до МП»), сумма (qty×unit_cost),
 //          категория, привязанный артикул МП (platform/nm_id/product_id/sku_name/im_url).
 //          Если артикул привязан — имя/фото подтягиваются из wb_articles/ozon_products
 //          (богаче, чем сохранённое при привязке).
-// POST { action } → link_sku | unlink_sku | update_qty
+//   shipments: последние 50 отгрузок (журнал списаний на МП) — дата/товар/qty/МП/примечание.
+// POST { action } → add | locations | shipment | link_sku | unlink_sku | update_qty | update_field
 //
-// Привязка артикула (link_sku) → создаёт/обновляет cost_override с unit_cost
-// (effective_from = completed_at или сегодня) → себестоимость потечёт в
-// P&L/юнитку/mp-stock автоматически (единый источник cost_overrides, AGENTS.md).
+// Привязка артикула (link_sku) — только для отображения имени/фото на складе.
+// ⚠ unit_cost НЕ утекает в cost_overrides (решение 2026-07-16): складская
+// себестоимость — внутренняя цифра партии (для баланса склада), независима от
+// страницы «Себестоимость» (/items). Общая себестоимость для P&L/юнитки
+// заводится отдельно на /items.
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { upsertCostOverride } from "@/lib/finItems.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,7 +85,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   });
 
   const totals = { items: items.length, qty: qtyTotal, sum: round2(sumCost), linked };
-  return NextResponse.json({ items, totals, locations });
+
+  // Журнал отгрузок (для секции «История отгрузок» снизу страницы). JOIN с
+  // ff_inventory для имени товара; строки с удалённым товаром тоже покажем
+  // (LEFT JOIN) — чтобы не потерять историю, но item_name может быть «(удалён)».
+  const shipments = await tenantQuery(
+    `SELECT s.id, s.ff_inventory_id, s.qty, s.platform, s.ship_dt, s.note,
+            s.created_at,
+            COALESCE(f.internal_name, f.sku_name, '(скрыто)') AS item_name
+     FROM tenant.ff_shipments s
+     LEFT JOIN tenant.ff_inventory f ON f.id = s.ff_inventory_id AND f.cabinet_id = s.cabinet_id
+     ORDER BY s.ship_dt DESC, s.id DESC
+     LIMIT 50`
+  );
+
+  return NextResponse.json({ items, totals, locations, shipments });
 });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
@@ -150,6 +166,65 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     return NextResponse.json({ error: `unknown locations op: ${op}` }, { status: 400 });
   }
 
+  // Отгрузка со склада/ФФ на маркетплейс (списание): add / delete.
+  // Без id позиции не требуется для add (нужен ff_inventory_id), поэтому блок
+  // ДО общей проверки id. Атомарность: INSERT отгрузки + UPDATE остатка в одной
+  // tenant-транзакции (withTenant). Нельзя списать больше, чем есть в остатке.
+  if (b.action === "shipment") {
+    const op = b.op;
+    if (op === "add") {
+      const ffId = Number(b.ff_inventory_id);
+      const qty = Number(b.qty);
+      const platform = b.platform === "wb" ? "wb" : b.platform === "ozon" ? "ozon" : null;
+      const shipDt = (b.ship_dt || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+      if (!ffId) return NextResponse.json({ error: "ff_inventory_id required" }, { status: 400 });
+      if (!platform) return NextResponse.json({ error: "platform wb|ozon required" }, { status: 400 });
+      if (!Number.isFinite(qty) || qty < 1 || !Number.isInteger(qty)) {
+        return NextResponse.json({ error: "qty must be integer >= 1" }, { status: 400 });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(shipDt)) {
+        return NextResponse.json({ error: "ship_dt must be YYYY-MM-DD" }, { status: 400 });
+      }
+      // Проверка остатка атомарно с обновлением: WHERE qty >= $qty гарантирует,
+      // что нельзя списать больше имеющегося (0 строк затронуто → ошибка).
+      const upd = await tenantQuery(
+        `UPDATE tenant.ff_inventory
+         SET qty = qty - $1, updated_at = now()
+         WHERE id = $2 AND qty >= $1
+         RETURNING qty`,
+        [qty, ffId]
+      );
+      if (!upd.length) {
+        return NextResponse.json({ error: "недостаточно остатка (или строка не найдена)" }, { status: 400 });
+      }
+      await tenantQuery(
+        `INSERT INTO tenant.ff_shipments (cabinet_id, ff_inventory_id, qty, platform, ship_dt, note)
+         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5)
+         RETURNING id`,
+        [ffId, qty, platform, shipDt, (b.note || "").trim() || null]
+      );
+      return NextResponse.json({ ok: true, op: "add", new_qty: upd[0].qty });
+    }
+    if (op === "delete") {
+      const sid = Number(b.id);
+      if (!sid) return NextResponse.json({ error: "id (отгрузки) required" }, { status: 400 });
+      // Прочитать отгрузку → вернуть qty в остаток → удалить отгрузку.
+      const rows = await tenantQuery(
+        `SELECT ff_inventory_id, qty FROM tenant.ff_shipments WHERE id = $1`,
+        [sid]
+      );
+      if (!rows.length) return NextResponse.json({ error: "отгрузка не найдена" }, { status: 404 });
+      const { ff_inventory_id, qty } = rows[0];
+      await tenantQuery(
+        `UPDATE tenant.ff_inventory SET qty = qty + $1, updated_at = now() WHERE id = $2`,
+        [qty, ff_inventory_id]
+      );
+      await tenantQuery(`DELETE FROM tenant.ff_shipments WHERE id = $1`, [sid]);
+      return NextResponse.json({ ok: true, op: "delete", restored_qty: qty });
+    }
+    return NextResponse.json({ error: `unknown shipment op: ${op}` }, { status: 400 });
+  }
+
   const id = Number(b.id);
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
@@ -190,19 +265,10 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     );
     if (!rows.length) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
 
-    // Создать/обновить cost_override → себестоимость потечёт в P&L/юнитку/mp-stock.
-    const cost = rows[0].unit_cost;
-    const effectiveFrom = rows[0].completed_at || new Date().toISOString().slice(0, 10);
-    if (cost != null && cost > 0) {
-      await upsertCostOverride({
-        platform,
-        nm_id: platform === "wb" ? Number(nm_id) : null,
-        product_id: platform === "ozon" ? Number(product_id) : null,
-        cost,
-        effective_from: effectiveFrom,
-        note: `со склада/ФФ (партия→${id})`,
-      });
-    }
+    // ⚠ cost_override НЕ пишем (решение 2026-07-16): складская unit_cost — это
+    // внутренняя цифра партии (для баланса склада), она НЕ должна утекать в общую
+    // себестоимость. Себестоимость для P&L/юнитки/Сводки заводится ОТДЕЛЬНО на
+    // странице «Себестоимость» (/items). Склад и items — независимы.
     return NextResponse.json({ ok: true, sku_name: skuName, im_url: imUrl });
   }
 
@@ -255,17 +321,9 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       `UPDATE tenant.ff_inventory SET ${field} = $1, updated_at = now() WHERE id = $2`,
       [val, id]
     );
-    // unit_cost + привязанный артикул → обновляем cost_override.
-    if (field === "unit_cost" && cur.platform && val != null && val > 0) {
-      await upsertCostOverride({
-        platform: cur.platform,
-        nm_id: cur.platform === "wb" ? Number(cur.nm_id) : null,
-        product_id: cur.platform === "ozon" ? Number(cur.product_id) : null,
-        cost: val,
-        effective_from: cur.completed_at || new Date().toISOString().slice(0, 10),
-        note: `со склада/ФФ (правка себест.)`,
-      });
-    }
+    // ⚠ cost_override НЕ пишем (решение 2026-07-16): правка unit_cost на складе
+    // меняет только складскую цифру (для баланса), не общую себестоимость.
+    // См. комментарий в link_sku выше.
     return NextResponse.json({ ok: true });
   }
 
