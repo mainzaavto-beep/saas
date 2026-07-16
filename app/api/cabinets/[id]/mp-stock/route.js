@@ -79,7 +79,8 @@ async function resolveStockDate(db, dateParam) {
     const r = await db.prepare("SELECT MAX(date) AS d FROM daily_stock WHERE date <= ?").get(dateParam);
     if (r?.d) return r.d;
   }
-  return await db.prepare("SELECT MAX(date) AS d FROM daily_stock").get()?.d || null;
+  const r2 = await db.prepare("SELECT MAX(date) AS d FROM daily_stock").get();
+  return r2?.d || null;
 }
 
 async function collectWB(dateParam) {
@@ -87,7 +88,7 @@ async function collectWB(dateParam) {
   const date = await resolveStockDate(db, dateParam);
   if (!date) return { date: null, items: [], byWarehouse: [] };
 
-  const items = await db.prepare(
+  const items = (await db.prepare(
     `SELECT st.nm_id AS sku,
             COALESCE(a.name, CAST(st.nm_id AS TEXT)) AS name,
             COALESCE(a.brand, '') AS brand,
@@ -97,9 +98,9 @@ async function collectWB(dateParam) {
             st.in_way_to,
             st.in_way_from,
             COALESCE(co.cost, 0) AS cost,
-            ROUND(st.quantity_full * COALESCE(co.cost, 0), 2) AS value_cost,
+            ROUND((st.quantity_full * COALESCE(co.cost, 0))::numeric, 2) AS value_cost,
             COALESCE(m.price, 0) AS price,
-            ROUND(st.quantity_full * COALESCE(m.price, 0), 2) AS value_retail
+            ROUND((st.quantity_full * COALESCE(m.price, 0))::numeric, 2) AS value_retail
      FROM (
        SELECT nm_id,
               SUM(quantity)      AS quantity,
@@ -116,11 +117,15 @@ async function collectWB(dateParam) {
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
      LEFT JOIN (
-       SELECT nm_id, price FROM daily_metrics
-       WHERE date = (SELECT MAX(date) FROM daily_metrics)
+       -- Розничная цена WB = цена продавца со скидкой (price_seller × (1 − discount/100)).
+       -- Берём из wb_prices (свежий прайс), а НЕ из daily_metrics.price —
+       -- последняя не наполняется сборщиком и даёт 0.
+       SELECT nm_id,
+              ROUND((price_seller * (1 - COALESCE(discount, 0) / 100.0))::numeric, 0) AS price
+       FROM wb_prices
      ) m ON m.nm_id = st.nm_id
      ORDER BY value_cost DESC`
-  ).all(date).map((it) => ({ ...it, platform: "wb", article: String(it.sku) }));
+  ).all(date)).map((it) => ({ ...it, platform: "wb", article: String(it.sku) }));
 
   const byWarehouse = await db.prepare(
     `SELECT warehouse,
@@ -144,7 +149,7 @@ async function collectOzon(dateParam) {
   const date = await resolveStockDate(db, dateParam);
   if (!date) return { date: null, items: [], byWarehouse: [] };
 
-  const items = await db.prepare(
+  const items = (await db.prepare(
     `SELECT st.product_id AS sku,
             COALESCE(MAX(p.name), MAX(p.offer_id), CAST(st.product_id AS TEXT)) AS name,
             COALESCE(MAX(p.brand), '') AS brand,
@@ -157,9 +162,9 @@ async function collectOzon(dateParam) {
             0 AS in_way_to,
             0 AS in_way_from,
             COALESCE(co.cost, 0) AS cost,
-            ROUND(st.fbo_present * COALESCE(co.cost, 0), 2) AS value_cost,
+            ROUND((st.fbo_present * COALESCE(co.cost, 0))::numeric, 2) AS value_cost,
             COALESCE(MAX(p.price), 0) AS price,
-            ROUND(st.fbo_present * COALESCE(MAX(p.price), 0), 2) AS value_retail
+            ROUND((st.fbo_present * COALESCE(MAX(p.price), 0))::numeric, 2) AS value_retail
      FROM (
        SELECT product_id,
               SUM(fbo_present)  AS fbo_present,
@@ -175,7 +180,7 @@ async function collectOzon(dateParam) {
      ) co ON true
      GROUP BY st.product_id, st.fbo_present, st.fbo_reserved, co.cost
      ORDER BY value_cost DESC`
-  ).all(date).map((it) => ({
+  ).all(date)).map((it) => ({
     ...it,
     platform: "ozon",
     article: it.offer_id || String(it.sku),

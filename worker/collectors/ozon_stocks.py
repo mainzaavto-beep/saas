@@ -4,6 +4,10 @@ SaaS-сборщик ОСТАТКОВ Ozon FBO → tenant.ozon_daily_stock.
 /v2/analytics/stock_on_warehouses. Грабля #135: новые имена полей API 2026
 (free_to_sell_amount, reserved_amount). fbo_defect в новом API нет → NULL.
 sku→product_id через PG. Токен из env. Без Google Sheets.
+
+⚠️ Отказоустойчивость (симметрично wb_stocks #141): при недоступности Ozon API
+collector завершается УСПЕШНО (exit 0) с предупреждением, не валивая весь
+saas-stocks.service.
 """
 import os
 import sys
@@ -14,23 +18,28 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
-from ozon_client import OzonClient
+from ozon_client import OzonClient, OzonError
 
 
 def collect():
     today = date.today().isoformat()
     print(f"[ozon_stocks] снимок остатков на {today}", flush=True)
     db_pg.init()
-    cli = OzonClient()
 
     sku2pid = {}
     for r in db_pg.query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL"):
         if r["fbo_sku"] is not None:
             sku2pid[int(r["fbo_sku"])] = int(r["product_id"])
 
+    cli = OzonClient()
     rows = []
     n_orphans = 0
-    for r in cli.iter_stock():
+    try:
+        stock_iter = cli.iter_stock()
+    except OzonError as e:
+        print(f"[ozon_stocks] ПРОПУСК: Ozon API недоступен ({e}), снимок не записан (exit 0)", flush=True)
+        return 0
+    for r in stock_iter:
         sku = r.get("sku") or r.get("product_id")
         wh = r.get("warehouse_name") or r.get("warehouse")
         if sku is None or not wh:
@@ -63,3 +72,4 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     os.environ["NO_PROXY"] = "*"
     collect()
+

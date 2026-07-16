@@ -28,10 +28,12 @@ function sqlSafe(v, maxLen = 200) {
 //    S = M × R           (Остаток оплаты ₽ = курс АВАНСА × остаток¥)
 //    V = P × U           (Цена за ед ₽)
 //    W = R × U + N       (Сумма ₽ оплаченная)
-//    Z = W + X + Y       (ИТОГО; X и Y — ₽ за ПАРТИЮ целиком)
-//    AA = Z / O          (Себестоимость за ед → unit_cost)
+//    Z = W + (X + Y) × O (ИТОГО; X и Y — ₽ ЗА ЕДИНИЦУ, ×O = за партию)
+//    AA = Z / O          (Себестоимость за ед → unit_cost = W/O + X + Y)
 //  L=prepay_yuan, M=prepay_rate, O=qty, P=unit_cost_yuan, U=exchange_rate,
-//  X=logistics_rub_per_unit (на ед), Y=logistics_rub (на партию).
+//  X=logistics_rub_per_unit (Логист. до МСК, ₽/ед), Y=logistics_rub (Логист.
+//  МСК→ФФ, ₽/ед). Решение 2026-07-15: X и Y оба «за ед» (раньше код считал
+//  их «за партию» и не умножал на O → AA занижался на величину логистики).
 // =====================================================================
 function computeExcel(input) {
   const L = numOr(input.prepay_yuan) || 0;
@@ -48,7 +50,8 @@ function computeExcel(input) {
   const S = M * R;
   const V = hasQty ? P * U : null;
   const W = R * U + N;
-  const Z = W + X + Y;
+  // X и Y — за единицу; за партию = (X+Y)×O.
+  const Z = hasQty ? W + (X + Y) * O : W + X + Y;
   const unitCost = hasQty ? Z / O : null;
   return {
     N: round2(N), Q: hasQty ? round2(Q) : null, R: round2(R), S: round2(S),
@@ -80,44 +83,74 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const statusQ = url.searchParams.get("status") || "";
   const categoryQ = url.searchParams.get("category") || "";
   const qQ = url.searchParams.get("q") || "";
+  const archivedQ = url.searchParams.get("archived") || "";
 
-  const conds = ["deleted_at IS NULL"];
-  const params = [];
-  let pi = 0;
-  if (fromQ && /^\d{4}-\d{2}$/.test(fromQ)) { conds.push(`COALESCE(delivery_dt, order_dt, date) >= $${++pi}`); params.push(fromQ); }
-  if (toQ && /^\d{4}-\d{2}$/.test(toQ)) { conds.push(`COALESCE(delivery_dt, order_dt, date) <= $${++pi}`); params.push(toQ); }
-  if (supplierQ) { conds.push(`supplier_name = $${++pi}`); params.push(supplierQ); }
-  if (vendorQ === "__null__") conds.push("(supplier IS NULL OR supplier = '')");
-  else if (vendorQ) { conds.push(`supplier = $${++pi}`); params.push(vendorQ); }
-  if (statusQ === "__null__") conds.push("status IS NULL");
-  else if (statusQ) { conds.push(`status = $${++pi}`); params.push(statusQ); }
-  if (categoryQ === "__null__") conds.push("category IS NULL");
-  else if (categoryQ) { conds.push(`category = $${++pi}`); params.push(categoryQ); }
-  if (qQ) { conds.push(`(supplier_name ILIKE $${++pi} OR CAST(nm_id AS TEXT) ILIKE $${++pi} OR order_no ILIKE $${++pi})`); params.push(`%${qQ}%`, `%${qQ}%`, `%${qQ}%`); }
-  const where = conds.join(" AND ");
+  // Условия фильтров как [sql-фрагмент, [params...], tag].
+  // tag нужен, чтобы facet-запросы могли исключить фильтр по СВОЕМУ полю
+  // (чтобы count в выпадающем списке был осмысленным), корректно пересобрав
+  // нумерацию $N и массив params под оставшиеся условия.
+  // Раньше тут был баг (инцидент 2026-07-15): facet-запросы собирали WHERE из
+  // строк с уже-пронумерованными $1..$N, но выполнялись БЕЗ params → при
+  // комбинации 2+ фильтров падало «there is no parameter $1» и весь GET отдавал 0.
+  // archived: по умолчанию (без ?archived=1) показываем только активные закупки
+  // (завершённые→склад скрыты). ?archived=1 — показать архивные.
+  const base = ["deleted_at IS NULL", archivedQ === "1" ? "archived = true" : "archived = false"];
+  const filters = [];
+  if (fromQ && /^\d{4}-\d{2}$/.test(fromQ)) filters.push(["COALESCE(delivery_dt, order_dt, date) >= ?", [fromQ], "date"]);
+  if (toQ && /^\d{4}-\d{2}$/.test(toQ)) filters.push(["COALESCE(delivery_dt, order_dt, date) <= ?", [toQ], "date"]);
+  if (supplierQ) filters.push(["supplier_name = ?", [supplierQ], "supplier"]);
+  if (vendorQ === "__null__") filters.push(["(supplier IS NULL OR supplier = '')", [], "vendor"]);
+  else if (vendorQ) filters.push(["supplier = ?", [vendorQ], "vendor"]);
+  if (statusQ === "__null__") filters.push(["status IS NULL", [], "status"]);
+  else if (statusQ) filters.push(["status = ?", [statusQ], "status"]);
+  if (categoryQ === "__null__") filters.push(["category IS NULL", [], "category"]);
+  else if (categoryQ) filters.push(["category = ?", [categoryQ], "category"]);
+  if (qQ) filters.push(["(supplier_name ILIKE ? OR CAST(nm_id AS TEXT) ILIKE ? OR order_no ILIKE ?)", [`%${qQ}%`, `%${qQ}%`, `%${qQ}%`], "q"]);
 
+  // Сборка WHERE с пронумерованными $N из активных условий + matching params.
+  // Каждое условие может содержать несколько '?' (напр. qQ → 3 ILIKE). params
+  // и нумерация $N собираются параллельно, в порядке условий.
+  function buildWhere(excludeTag) {
+    const use = filters.filter((f) => f[2] !== excludeTag);
+    const conds = [...base, ...use.map((f) => f[0])];
+    const params = [];
+    const sqlParts = conds.map((cond) =>
+      cond.replace(/\?/g, () => `$${params.push(undefined)}`)  // счётчик через длину
+    );
+    // params сейчас = массив undefined нужной длины; реальные значения в порядке условий.
+    const realVals = [];
+    for (const f of use) realVals.push(...f[1]);
+    // realVals.length должен совпадать с кол-вом '?' (и undefined в params).
+    return { sql: sqlParts.join(" AND "), params: realVals };
+  }
+
+  const mainWhere = buildWhere(null);
   const items = await tenantQuery(
-    `SELECT ${SELECT_COLS} FROM tenant.purchases WHERE ${where}
+    `SELECT ${SELECT_COLS} FROM tenant.purchases WHERE ${mainWhere.sql}
      ORDER BY COALESCE(delivery_dt, order_dt, date) DESC NULLS LAST, supplier_name`,
-    params
+    mainWhere.params
   );
 
-  // Фасеты (без фильтра по своему полю — count осмысленный).
-  const whereNoSup = conds.filter((c) => !c.includes("supplier_name")).join(" AND ");
-  const whereNoStat = conds.filter((c) => !c.includes("status")).join(" AND ");
-  const whereNoCat = conds.filter((c) => !c.includes("category")).join(" AND ");
-  const whereNoVendor = conds.filter((c) => !c.includes("supplier =") && !c.includes("supplier IS NULL")).join(" AND ");
+  // Фасеты: исключаем фильтр по своему полю → count по всем остальным активным фильтрам.
+  const wSup = buildWhere("supplier");
+  const wVendor = buildWhere("vendor");
+  const wStat = buildWhere("status");
+  const wCat = buildWhere("category");
   const suppliers = await tenantQuery(
-    `SELECT supplier_name, COUNT(*) AS n FROM tenant.purchases WHERE ${whereNoSup} GROUP BY supplier_name ORDER BY n DESC`
+    `SELECT supplier_name, COUNT(*) AS n FROM tenant.purchases WHERE ${wSup.sql} GROUP BY supplier_name ORDER BY n DESC`,
+    wSup.params
   );
   const vendors = await tenantQuery(
-    `SELECT COALESCE(supplier, '') AS v, COUNT(*) AS n FROM tenant.purchases WHERE ${whereNoVendor} GROUP BY 1 ORDER BY n DESC`
+    `SELECT COALESCE(supplier, '') AS v, COUNT(*) AS n FROM tenant.purchases WHERE ${wVendor.sql} GROUP BY 1 ORDER BY n DESC`,
+    wVendor.params
   );
   const statuses = await tenantQuery(
-    `SELECT COALESCE(status, '') AS s, COUNT(*) AS n FROM tenant.purchases WHERE ${whereNoStat} GROUP BY 1 ORDER BY n DESC`
+    `SELECT COALESCE(status, '') AS s, COUNT(*) AS n FROM tenant.purchases WHERE ${wStat.sql} GROUP BY 1 ORDER BY n DESC`,
+    wStat.params
   );
   const categories = await tenantQuery(
-    `SELECT COALESCE(category, '') AS c, COUNT(*) AS n FROM tenant.purchases WHERE ${whereNoCat} GROUP BY 1 ORDER BY n DESC`
+    `SELECT COALESCE(category, '') AS c, COUNT(*) AS n FROM tenant.purchases WHERE ${wCat.sql} GROUP BY 1 ORDER BY n DESC`,
+    wCat.params
   );
 
   // Метаданные nm_id (фото/имя) из tenant.wb_articles.
@@ -176,6 +209,47 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
 export const POST = withCabinet(async (req, { cabinet }) => {
   const b = await req.json();
+
+  // Завершить закупку → скопировать партию в склад (ff_inventory) + archived=true.
+  // Маршрут: закупка → «Завершить → склад» → товар в остатках склада (скрыт из
+  // активных закупок). Себестоимость AA = «себест. до МП».
+  if (b.action === "complete_to_stock") {
+    if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
+    const cur = (await tenantQuery(
+      `SELECT id, supplier_name, qty, unit_cost, category, nm_id, delivery_dt, archived,
+              prepay_yuan, prepay_rate, unit_cost_yuan, exchange_rate,
+              logistics_yuan, logistics_rub, logistics_rub_per_unit
+       FROM tenant.purchases WHERE id = $1 AND deleted_at IS NULL`, [Number(b.id)]
+    ))[0];
+    if (!cur) return NextResponse.json({ error: `партия id=${b.id} не найдена` }, { status: 404 });
+    if (cur.archived) return NextResponse.json({ error: "партия уже завершена" }, { status: 400 });
+
+    const f = computeExcel(cur);
+    const unitCost = f.unitCost;
+    const completedAt = cur.delivery_dt || new Date().toISOString().slice(0, 10);
+
+    // (а) пометить закупку архивной
+    await tenantQuery(`UPDATE tenant.purchases SET archived = true WHERE id = $1`, [Number(b.id)]);
+    // (б) копировать в склад (idempotent: если уже есть строка с этим purchase_id — не дублируем)
+    const exists = await tenantQuery(
+      `SELECT id FROM tenant.ff_inventory WHERE purchase_id = $1 AND archived_at IS NULL`, [Number(b.id)]
+    );
+    let invId;
+    if (exists.length) {
+      invId = exists[0].id;
+    } else {
+      const ins = await tenantQuery(
+        `INSERT INTO tenant.ff_inventory
+           (cabinet_id, purchase_id, internal_name, qty, unit_cost, category, nm_id, completed_at)
+         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [Number(b.id), cur.supplier_name, Number(cur.qty) || 0, unitCost, cur.category || null,
+         cur.nm_id || null, completedAt]
+      );
+      invId = ins[0]?.id;
+    }
+    return NextResponse.json({ ok: true, inventory_id: invId, unit_cost: unitCost });
+  }
+
   if (b.id) {
     // UPDATE — PATCH-семантика (merge поверх текущей строки).
     const cur = (await tenantQuery(`SELECT * FROM tenant.purchases WHERE id = $1 AND deleted_at IS NULL`, [Number(b.id)]))[0];
@@ -190,12 +264,20 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     });
     const unitCost = calcM.unitCost;
 
+    // Подхват даты доставки при переводе на этап «arrived»:
+    // если frontend явно не прислал delivery_dt и в строке его ещё нет —
+    // ставим сегодняшнюю дату. (Решение 2026-07-15; arrived → delivery_dt = сегодня.)
+    if (b.lifecycle_status === "arrived" && b.delivery_dt === undefined && !cur.delivery_dt) {
+      b.delivery_dt = new Date().toISOString().slice(0, 10);
+    }
+
     const sets = [];
     const vals = [];
     for (const k of ["nm_id","supplier_name","date","supplier","order_dt","delivery_dt",
       "status","order_no","unit_cost_est","total_amount","plan_order_dt","plan_ship_dt",
       "plan_arrival_dt","lifecycle_status","photo_url","source_country","ship_dt",
-      "prepay_yuan","prepay_rate","logistics_rub_per_unit","pay_status","note","category"]) {
+      "prepay_yuan","prepay_rate","unit_cost_yuan","logistics_yuan","exchange_rate",
+      "logistics_rub_per_unit","logistics_rub","pay_status","note","category"]) {
       if (b[k] !== undefined) { sets.push(`${k} = $${sets.length + 1}`); vals.push(b[k] === "" ? null : b[k]); }
     }
     // qty + unit_cost (формульный) всегда пересчитываем.
@@ -216,7 +298,8 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   for (const k of ["nm_id","supplier_name","qty","date","supplier","order_dt","delivery_dt",
     "status","order_no","unit_cost_est","total_amount","plan_order_dt","plan_ship_dt",
     "plan_arrival_dt","lifecycle_status","photo_url","source_country","ship_dt",
-    "prepay_yuan","prepay_rate","logistics_rub_per_unit","pay_status","note","category"]) {
+    "prepay_yuan","prepay_rate","unit_cost_yuan","logistics_yuan","exchange_rate",
+    "logistics_rub_per_unit","logistics_rub","pay_status","note","category"]) {
     if (b[k] !== undefined) {
       cols.push(k);
       vals.push(b[k] === "" ? null : b[k]);
