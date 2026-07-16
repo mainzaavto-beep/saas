@@ -79,7 +79,11 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   if (b.api_creds && Object.keys(b.api_creds).length > 0) {
     const masterKey = process.env.SAAS_CRED_MASTER_KEY;
     if (masterKey) {
-      const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), masterKey]);
+      // ::text — серверный cast bytea→text даёт hex-форму ('\xc30d...'), совместимый
+      // с text-колонкой. Без cast node-pg шлёт сырой bytea-буфер → PG валидирует его
+      // как UTF-8 и падает «invalid byte sequence ... 0xc3 0x0d». См. _init_owner.py
+      // (там шифрование SQL-side, потому и работает). Формат = формату cabinet #1.
+      const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2)::text AS enc`, [JSON.stringify(b.api_creds), masterKey]);
       apiCredsEnc = encRows[0]?.enc;
     }
   }
@@ -140,7 +144,7 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   if (b.api_creds) {
     const encKey = process.env.SAAS_CRED_MASTER_KEY;
     if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
-    const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [JSON.stringify(b.api_creds), encKey]);
+    const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2)::text AS enc`, [JSON.stringify(b.api_creds), encKey]);
     const apiCredsEnc = encRows[0]?.enc;
     const apiMeta = {};
     for (const [mp, creds] of Object.entries(b.api_creds)) {

@@ -99,7 +99,7 @@ order_costs → metrics → prices → stocks (зависимости по FK).
 | Таймер | Когда | Что делает |
 |---|---|---|
 | `saas-worker` | 05:15, 09:00, 12:00, 17:00 | основной сбор 14 сборщиков (−2 дня..сегодня) |
-| `saas-stocks` | 05:00 | снимок остатков |
+| `saas-stocks` | 08:00 | снимок остатков (с 05:00 с 2026-07-15: WB рано утром уходит в 429 и отдаёт неполные склады) |
 | `saas-metrics30m` | каждые 30 мин | 30-мин снапшоты воронки WB |
 | `saas-backfill` | 07:00, 10:30, 14:00, 19:00 | прогон очереди onboarding-jobs (75 дней) |
 | `saas-backup` | 03:00 | дамп PG |
@@ -140,6 +140,12 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   Формула СПП нетривиальна — править осторожно.
 - **Налоги** (УСН/НДС): `lib/tax.js` (`normalizeTaxMode`). Хранятся per-shop
   в `auth.shops.tax_mode`.
+- **Себестоимость закупки** (формулы «Себес товара», `/fin-purchases`,
+  `computeExcel` в `app/api/cabinets/[id]/purchases/route.js`):
+  `N=L×M, Q=O×P, R=Q−L, S=M×R, V=P×U, W=R×U+N, Z=W+(X+Y)×O, AA=Z/O`.
+  **X и Y — обе «за единицу»** (с 2026-07-15): X=«Логист. до МСК/ед», Y=«Логист.
+  МСК→ФФ/ед». Раньше код считал их «за партию» (без ×O) → AA занижался. Колонки
+  БД: `logistics_rub_per_unit` (X), `logistics_rub` (Y) — имена не переименовывали.
 
 ### ⚠️ Себестоимость — ЕДИНЫЙ источник `tenant.cost_overrides` (с 2026-07-14)
 
@@ -160,6 +166,47 @@ LEFT JOIN LATERAL (
 Хелперы: `WB_COST_JOIN(outAlias, skuExpr, dateExpr)` / `OZON_COST_JOIN(...)` в `lib/finItems.js`.
 `order_costs.cost` (per-заказ) — пересчитан под override (миграция 013), для истории
 использовать как есть.
+
+### 🆕 Маршрут «Закупки → Склад/ФФ» (с 2026-07-15)
+
+Рабочий процесс движения товара: партия закупки → завершить → остаток склада/ФФ →
+привязка артикула МП → себестоимость течёт в расчёты.
+
+**Таблицы (миграции 014, 015, 017):**
+- `tenant.ff_inventory` — остатки склада/ФФ. Колонки: `cabinet_id, id, purchase_id`
+  (ссылка-источник), `internal_name, qty, unit_cost` (себест. «до МП», ₽/ед), `category,
+  platform, nm_id, product_id, sku_name, im_url, location_id` (ссылка на место),
+  `completed_at, archived_at`. RLS. `location_type` оставлен как back-compat, но НЕ
+  используется (тип берётся из места через `location_id`).
+- `tenant.stock_ff_locations` — справочник мест хранения (переиспользована из старой
+  ff-stock-модели). Колонки: `name, address, loc_type` ('stock'|'ff').
+- `tenant.purchases` — добавлена колонка `archived BOOLEAN` (завершённые закупки скрыты
+  из активных). Поле `location_type` в ff_inventory — back-compat (не трогать).
+
+**Маршрут:**
+1. На странице «Закупки» (`/fin-purchases`) — кнопка **«✓↧ склад»** в строке партии.
+   → `POST /api/cabinets/[id]/purchases {action:"complete_to_stock", id}` копирует
+   партию в `ff_inventory` (qty, unit_cost=AA, category) + ставит `purchases.archived=true`.
+2. На странице «Остатки склад/ФФ» (`/inventory`) — позиция появляется. Можно:
+   править qty/себест/категорию/имя inline, загрузить фото (data-URL, если нет артикула),
+   выбрать место (`location_id`), привязать артикул МП.
+3. **Привязка артикула** (`POST /api/cabinets/[id]/inventory {action:"link_sku"}`):
+   выбираешь МП + nm_id/product_id → имя/фото подтягиваются из `wb_articles`/`ozon_products`
+   + создаётся `cost_override` (effective_from = completed_at) → себестоимость **автоматически
+   течёт в P&L, юнит-экономику, остатки на МП**.
+4. Управление местами — кнопка «📍 Места» (`action:"locations"` op add/rename/delete).
+5. Завершённые (archived) закупки скрыты из активных; чекбокс «архивные» показывает их.
+
+**API `/api/cabinets/[id]/inventory`:** GET → `{items, totals, locations}`;
+POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `update_qty`,
+`update_field` (internal_name/category/unit_cost/im_url/location_id), `locations` (CRUD мест).
+
+**Что НЕ ведётся:** авто-списание продажами (склад = накопитель приходов; списание —
+будущая задача). Старая ломаная `/ff-stock` (snapshots-модель) не тронута, не используется.
+
+**Удалено (миграция 016):** «Справочник товаров» — страница `/catalog`, API, `lib/catalogDb.js`,
+таблицы `products_catalog` / `products_catalog_skus`. Привязка артикулов делается теперь
+напрямую на остатках склада/ФФ. Бэкап кода: `/opt/agentsDB/backups/catalog_removed_*/`.
 
 ## Правила работы с кодом
 
@@ -198,3 +245,75 @@ LEFT JOIN LATERAL (
 - `grep -rn 'fetch("[^"]*\${' app/cabinets/` → пусто (D3).
 - `grep -rn 'JOIN cogs\|FROM cogs\|c\.cost' app/ lib/` → пусто (нет чтения cogs).
 - `grep -rn 'datetime(' app/api/` → пусто (D5).
+
+### ⚠️ Дополнительные грабли, найденные 2026-07-15
+
+7. **D7 (Rules of Hooks):** `useMemo`/`useEffect` — ВСЕГДА ДО ранних `return` в
+   клиентском компоненте. `if (loading) return ...; const x = useMemo(...)` ✗
+   (число хуков меняется между рендерами → client-side exception). Решение:
+   хуки в самом верху, данные с fallback (`data?.items || []`).
+8. **D8 (ROUND в PG):** `ROUND(double_precision, 2)` НЕ существует в PG —
+   `ROUND` принимает `numeric`. Решение: `ROUND((expr)::numeric, 2)`. Ловили на
+   `/mp-stock` (`ROUND(qty*price, 2)` → ошибка). Проверка:
+   `grep -rn 'ROUND([^)]*),' app/ | grep -v '::numeric'`.
+9. **D9 (dangling `$N` в facet-запросах):** если API строит WHERE с `$1..$N` для
+   основного запроса + переиспользует те же фрагменты для facet-запросов, но БЕЗ
+   params → `there is no parameter $1`. Ловили на `/purchases`. Решение: единый
+   `buildWhere(excludeTag)` с пересборкой `$N`+params для каждого запроса.
+10. **D10 (action без id):** если POST-роут проверяет `if (!b.id) return error`
+    ДО блока `action:"something"` (где id не нужен, напр. CRUD мест) → action
+    всегда падает с «id required». action-блоки без id — ДО проверки id.
+11. **Сборщик `wb_stocks` и rate-limit (инцидент 2026-07-14):** endpoint
+    `supplier/stocks` WB уходит в жёсткий 429, особенно рано утром. Раньше
+    `RuntimeError` после 5 попыток валил весь `saas-stocks.service` (вместе с
+    успешным ozon). Теперь `wb_stocks`/`ozon_stocks` при недоступности WB API
+    завершаются `exit 0` с предупреждением (мягкая деградация). Проверка фолла:
+    `python3 -c "import worker.collectors.wb_stocks as m; m._fetch=lambda:None; m.collect()"`.
+12. **WB цена для остатков:** `wb_daily_metrics.price` НЕ наполняется сборщиком
+    (пустая). Розничную цену WB брать из `wb_prices` (`price_seller × (1 − discount/100)`).
+    Ловили на `/mp-stock` (сумма реализации WB = 0).
+13. **D11 (pgp_sym_encrypt → text-колонка):** `pgp_sym_encrypt()` возвращает
+    **бинарный `bytea`**. Колонки `api_creds_enc` — **`text`**. Если в Node-роуте
+    написать `SELECT pgp_sym_encrypt($1,$2) AS enc` (без `::text`), node-pg получает
+    **Buffer** и при записи обратно в text-колонку шлёт его бинарным параметром →
+    PG валидирует сырые байты как UTF-8 → `invalid byte sequence ... 0xc3 0x0d`.
+    Блокировало онбординг всех новых клиентов (cabinet #1 работал лишь потому,
+    что `worker/_init_owner.py` шифрует SQL-side, где сервер сам кастует bytea→text
+    в hex-форму `\xc30d...`). **Фикс:** всегда `pgp_sym_encrypt($1,$2)::text AS enc`
+    — серверный cast даёт hex-строку, совместимую с text-колонкой И со стороной
+    чтения `pgp_sym_decrypt(%s::bytea, %s)`. Round-trip идентичен формату cabinet #1,
+    миграция НЕ нужна. Проверка: `grep -rn 'pgp_sym_encrypt' app/ lib/ | grep -v '::text'`
+    → должно быть пусто. Латентно тот же баг был в `settings/route.js` (mpstats).
+14. **D12 (путаница Ozon Seller Api-Key vs Performance Secret при вводе):** в поле
+    «Api-Key» формы /settings клиент вставил 82-символьный **Performance
+    Client-Secret** (префикс `Vsds-…`) вместо 36-символьного **Seller Api-Key**
+    (UUID `xxxxxxxx-xxxx-…`). Форма и маппинг корректны (проверено round-trip и
+    пересохранением на cabinet #1) — ошибка на стороне копирования/автозаполнения.
+    Симптом: `Ozon API 400 [3]: Invalid Api-Key`. При новом онбординге Ozon стоит
+    проверять длину/формат Api-Key (≠36 или начинается с `Vsds-` → предупреждение).
+
+---
+
+## 📍 Точка останова (2026-07-15, вечер)
+
+**Сделано в сессии:**
+- ✅ **Фикс критического бага онбординга** — `pgp_sym_encrypt()::text` в 3 местах
+  (`app/api/cabinets/[id]/shops/route.js` POST:86 + PUT:147, `app/api/cabinets/[id]/settings/route.js`
+  PUT:36). Раньше новые кабинеты не могли сохранить API-ключи (`0xc3 0x0d`).
+  Билд + рестарт `saas` сделаны (HTTP 200 на :3200). Бэкапы в `/opt/agentsDB/backups/*20260715_185810.bak`.
+- ✅ **Onboarding cabinet 1008 (SexMara, Ozon)** завершён: shop #4 создан с корректными
+  ключами (после исправления путаницы Seller-key/Perf-secret), backfill job #6 за 75 дней
+  (2026-05-01 → 2026-07-14) выполнен `--drain-queue` → `done`. В `tenant.ozon_*` легло:
+  products 220, orders 774, sales 774, finance_report 3699, order_costs 832.
+- ✅ На cabinet #1 shop #2 пересохранены creds (теперь имеет собственный shop-level
+  `api_creds_enc`, раньше был на cabinet-fallback) — сбор не нарушен.
+
+**Дальше:**
+- Ежедневный сбор cabinet 1008 идёт стандартным таймером `saas-worker` (05:15/09:00/12:00/17:00).
+- (Опц.) Добавить в форму /settings валидацию поля Ozon Api-Key: ≠36 симв или префикс `Vsds-` → предупреждение (урок D12). Ждёт решения хозяина.
+- Грязных правок в `git status` нет — коммитить route.js + AGENTS.md или нет, решает хозяин.
+
+**Состояние:**
+- `saas.service` — ✅ боевой (next start :3200, ребилд 2026-07-15 ~19:00).
+- Воркеры/таймеры — ✅ боевые, правок `.py` не было.
+- `cabinet #1` — ✅ боевой. `cabinet #1008` — ✅ собран, активен. `cabinet #1001/#1002` — provisioning (тестовые, без ключей).

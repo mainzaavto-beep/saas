@@ -30,7 +30,10 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
   if (b.mpstats_token !== undefined && b.mpstats_token !== "" && !b.mpstats_token.startsWith("•")) {
     const encKey = process.env.SAAS_CRED_MASTER_KEY;
     if (encKey) {
-      const encRows = await query(`SELECT pgp_sym_encrypt($1, $2) AS enc`, [b.mpstats_token, encKey]);
+      // ::text — серверный cast bytea→text в hex-форму ('\xc30d...'), совместимый с
+      // приёмником to_json($N::text). Без cast node-pg шлёт сырой bytea-буфер в text
+      // → «invalid byte sequence for encoding "UTF8"». Тот же root cause, что в shops/route.js.
+      const encRows = await query(`SELECT pgp_sym_encrypt($1, $2)::text AS enc`, [b.mpstats_token, encKey]);
       // Храним зашифрованный ключ + флаг в external_keys.
       sets.push(`external_keys = COALESCE(external_keys, '{}'::jsonb) || jsonb_build_object('has_mpstats', true, 'mpstats_enc', to_json($${++i}::text))`);
       vals.push(encRows[0]?.enc?.toString() || "");
