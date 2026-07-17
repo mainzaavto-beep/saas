@@ -22,7 +22,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   const items = await tenantQuery(
     `SELECT id, period, category, amount, note, status, counterparty, op_date,
-            domain, source, included_in_cogs, created_at, updated_at
+            domain, source, included_in_cogs, recorded_by, created_at, updated_at
      FROM tenant.opex WHERE ${conds.join(" AND ")}
      ORDER BY period DESC, category, op_date DESC NULLS LAST`,
     params
@@ -32,10 +32,19 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     `SELECT category, COUNT(*) AS n, COALESCE(SUM(amount),0) AS total
      FROM tenant.opex WHERE status = 'active' GROUP BY category ORDER BY total DESC`
   );
+  // Totals. by_category/by_domain — для совместимости с мобильным приложением
+  // «ФинКонтроль» (PieChart в History питается totals.by_category). Формат как в facets.
+  const byCategory = categories.map((c) => ({ category: c.category, count: Number(c.n) || 0, total: Number(c.total) || 0 }));
   // Totals
   let total = 0;
   for (const it of items) total += Number(it.amount) || 0;
-  return NextResponse.json({ items, totals: { count: items.length, total: round2(total) }, facets: { categories } });
+  return NextResponse.json({
+    items,
+    totals: { count: items.length, total: round2(total), by_category: byCategory, by_domain: [] },
+    categories: categories.map((c) => c.category),
+    domains: [],
+    facets: { categories },
+  });
 });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
@@ -44,7 +53,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   const ph = ["current_setting('app.cabinet_id')::bigint"];
   const vals = [];
   for (const k of ["period","category","amount","note","status","counterparty","op_date",
-    "domain","source","included_in_cogs"]) {
+    "domain","source","included_in_cogs","recorded_by"]) {
     if (b[k] !== undefined) {
       cols.push(k);
       vals.push(b[k] === "" ? null : b[k]);
@@ -54,13 +63,13 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   if (b.id) {
     const sets = cols.slice(1).map((c, i) => `${c} = $${i + 1}`).join(", ");
     await tenantQuery(`UPDATE tenant.opex SET ${sets}, updated_at = now() WHERE id = $${vals.length + 1}`, [...vals, Number(b.id)]);
-    return NextResponse.json({ ok: true, id: Number(b.id) });
+    return NextResponse.json({ ok: true, id: Number(b.id), action: "update" });
   }
   const rows = await tenantQuery(
     `INSERT INTO tenant.opex (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING id`,
     vals
   );
-  return NextResponse.json({ ok: true, id: rows[0]?.id });
+  return NextResponse.json({ ok: true, id: rows[0]?.id, action: "insert" });
 }, { requireRole: 'owner' });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
@@ -68,5 +77,5 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await tenantQuery(`UPDATE tenant.opex SET status = 'deleted', updated_at = now() WHERE id = $1`, [Number(id)]);
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, id: Number(id), action: "delete" });
 }, { requireRole: 'owner' });

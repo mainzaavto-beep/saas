@@ -54,6 +54,8 @@ const MENU = [
     ],
   },
   { href: "/alerts", label: "Оповещения", icon: "🔔" },
+  { href: "/whats-new", label: "Что нового", icon: "✨" },
+  { href: "/support", label: "Поддержка", icon: "💬" },
 ];
 
 export default async function CabinetLayout({ children, params }) {

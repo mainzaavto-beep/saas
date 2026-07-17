@@ -1,5 +1,8 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+} from "recharts";
 
 // /cabinets/[id] — Главная (Overview). Полный перенос эталона
 // data-presenter/app/page.jsx с адаптацией под мультитенантный контур.
@@ -226,14 +229,19 @@ export default function OverviewClient({ cabinetId }) {
 
       {!error && data && (
         <>
-          {/* KPI-карточки */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 22 }}>
-            <Kpi label="Выручка (продажи)" value={money(data.kpi.revenue)} accent />
-            <Kpi label="Чистая прибыль" value={money(data.kpi.grossProfit)} pos={data.kpi.grossProfit >= 0} />
-            <Kpi label="Маржа" value={pct(data.kpi.margin)} pos={data.kpi.margin >= 0} />
-            <Kpi label="К перечислению" value={money(data.kpi.netPay)} />
-            <Kpi label="Заказы" value={num(data.kpi.orders)} />
-            <Kpi label="Отмена заказов" value={pct(data.kpi.cancelRate)} pos={data.kpi.cancelRate < 20} />
+          {/* Верх: 2 колонки — слева KPI, справа график */}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 3fr)", gap: 20, marginBottom: 22, alignItems: "start" }}>
+            {/* Левая колонка — KPI-плашки */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+              <Kpi label="Заказы, ₽" value={money(data.kpi.orderRub)} />
+              <Kpi label="Выручка (продажи)" value={money(data.kpi.revenue)} accent />
+              <Kpi label="Чистая прибыль" value={money(data.kpi.grossProfit)} pos={data.kpi.grossProfit >= 0} />
+              <Kpi label="Маржа" value={pct(data.kpi.margin)} pos={data.kpi.margin >= 0} />
+              <Kpi label="К перечислению" value={money(data.kpi.netPay)} />
+              <Kpi label="Отмена заказов" value={pct(data.kpi.cancelRate)} pos={data.kpi.cancelRate < 20} />
+            </div>
+            {/* Правая колонка — график */}
+            <OverviewChart data={data.timeseries} mp={mp} />
           </div>
 
           {/* Расходы МП */}
@@ -246,7 +254,7 @@ export default function OverviewClient({ cabinetId }) {
               <MiniStat label="Штрафы" value={money(data.kpi.expensesBreakdown.penalties)} />
               <MiniStat label="Себестоимость" value={money(data.kpi.cogsSold)} />
               <MiniStat label="Реклама" value={money(data.kpi.adSpend)} />
-              <MiniStat label="УСН 6%" value={money(data.kpi.tax)} />
+              <MiniStat label={data.taxLabel || "Налог"} value={money(data.kpi.tax)} />
               <MiniStat label="Итого расходы" value={money(data.kpi.expenses + data.kpi.cogsSold + (data.kpi.adSpend||0) + (data.kpi.tax||0))} accent />
             </div>
           </Card>
@@ -382,6 +390,142 @@ const dateInputStyle = {
   padding: "6px 10px", borderRadius: 8, border: `1px solid ${C.line}`,
   background: C.surfaceAlt, fontSize: 13, fontFamily: "inherit",
 };
+
+// --- График динамики по дням с переключаемыми метриками ---
+// Конфиг метрик: key = поле в timeseries, axis L=₽ (левая ось), R=шт (правая ось).
+const CHART_METRICS = [
+  { key: "revenue",   label: "Выручка",        color: C.accent,  axis: "L", unit: "rub", token: "accent" },
+  { key: "profit",    label: "Прибыль",        color: C.pos,     axis: "L", unit: "rub", token: "pos" },
+  { key: "orders",    label: "Заказы, шт",     color: C.accent2, axis: "R", unit: "pcs", token: "accent2" },
+  { key: "orderRub",  label: "Заказы, ₽",      color: C.pink,    axis: "L", unit: "rub", token: "pink" },
+  { key: "commission",label: "Комиссия",       color: C.neg,     axis: "L", unit: "rub", token: "neg" },
+  { key: "netPay",    label: "К перечислению", color: C.warn,    axis: "L", unit: "rub", token: "warn" },
+];
+// Метрики, активные по умолчанию.
+const DEFAULT_ACTIVE = { revenue: true, profit: true, orders: true };
+
+function OverviewChart({ data, mp }) {
+  // D7: хук — в самом верху, до ранних return.
+  const [active, setActive] = useState(DEFAULT_ACTIVE);
+  const toggle = (key) => {
+    // Не даём выключить все — оставляем хотя бы одну активную.
+    const next = { ...active, [key]: !active[key] };
+    const cnt = Object.values(next).filter(Boolean).length;
+    if (cnt === 0) return;
+    setActive(next);
+  };
+
+  const chartData = useMemo(() => {
+    if (!data || !data.length) return [];
+    return data.map((d) => ({ ...d, label: (d.date || "").slice(5) }));
+  }, [data]);
+
+  const activeMetrics = CHART_METRICS.filter((m) => active[m.key]);
+  const hasRub = activeMetrics.some((m) => m.axis === "L");
+  const hasPcs = activeMetrics.some((m) => m.axis === "R");
+
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14,
+      padding: "14px 16px 10px", minHeight: 320,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.ink }}>Динамика по дням</h2>
+        <span style={{ fontSize: 11, color: C.faint }}>
+          {mp === "wb" ? "WB" : mp === "ozon" ? "Ozon" : "WB + Ozon"}
+        </span>
+      </div>
+
+      {/* Чекбоксы-пилюли метрик */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        {CHART_METRICS.map((m) => {
+          const on = !!active[m.key];
+          return (
+            <button key={m.key} onClick={() => toggle(m.key)} title={on ? "Скрыть" : "Показать"}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px",
+                borderRadius: 16, fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                border: `1px solid ${on ? m.color : C.line}`,
+                background: on ? soft(m.token, 12) : "transparent",
+                color: on ? m.color : C.faint,
+              }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: on ? m.color : C.faint, flexShrink: 0 }} />
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {chartData.length === 0 ? (
+        <div style={{ height: 260, display: "grid", placeItems: "center", color: C.faint, fontSize: 13 }}>
+          Нет данных за период
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={280}>
+          <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+            <CartesianGrid stroke={C.line} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="label" stroke={C.faint} fontSize={10} tickMargin={6} minTickGap={16} />
+            {hasRub && (
+              <YAxis yAxisId="L" stroke={C.accent} fontSize={11} width={52}
+                tickFormatter={(v) => fmtCompact(v)} />
+            )}
+            {hasPcs && (
+              <YAxis yAxisId="R" orientation="right" stroke={C.accent2} fontSize={11} width={36}
+                tickFormatter={(v) => fmtCompact(v)} />
+            )}
+            <Tooltip content={<ChartTip />} />
+            {activeMetrics.map((m) => (
+              <Line key={m.key} yAxisId={m.axis} type="monotone" dataKey={m.key} name={m.label}
+                stroke={m.color} strokeWidth={m.key === "revenue" ? 2.2 : 1.9} dot={false}
+                connectNulls />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+      <div style={{ fontSize: 11, color: C.faint, marginTop: 6, lineHeight: 1.45 }}>
+        Прибыль — маржинальная (выручка минус комиссия/логистика/эквайринг/лояльность, без себестоимости и налога).
+        {" "}Отметьте показатели выше, чтобы добавить их на график.
+        {mp !== "wb" && " Для Ozon линия прибыли недоступна — показаны заказы и выручка."}
+      </div>
+    </div>
+  );
+}
+
+// Тултип: показывает активные метрики с правильным форматом (₽ или шт).
+function ChartTip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8,
+      padding: "8px 10px", fontSize: 12, color: C.ink, boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{label}</div>
+      {payload.map((p) => {
+        const m = CHART_METRICS.find((x) => x.key === p.dataKey);
+        if (!m) return null;
+        const value = m.unit === "rub" ? money(p.value) : num(p.value) + " шт";
+        return <Row key={p.dataKey} color={p.color} label={m.label} value={value} />;
+      })}
+    </div>
+  );
+}
+function Row({ color, label, value }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />
+      <span style={{ color: C.muted }}>{label}</span>
+      <span style={{ marginLeft: "auto", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+    </div>
+  );
+}
+// Компактный формат оси: 1.2M / 950K / 320.
+function fmtCompact(v) {
+  if (v == null) return "";
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (a >= 1e3) return Math.round(v / 1e3) + "K";
+  return String(Math.round(v));
+}
 
 function Centered({ children }) {
   return <div style={{ minHeight: "50vh", display: "grid", placeItems: "center", color: C.muted, fontFamily: FONT, padding: 20, textAlign: "center" }}>{children}</div>;

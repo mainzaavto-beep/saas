@@ -207,7 +207,7 @@ export default function OpexPage({ cabinetId }) {
     setVoiceBusy(true);
     setVoiceErr(null);
     try {
-      const r = await fetch(`/api/cabinets/${cabinetId}/opex`, {
+      const r = await fetch(`/api/cabinets/${cabinetId}/voice-expense`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, domain: fDomain }),
