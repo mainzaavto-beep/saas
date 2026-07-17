@@ -62,7 +62,7 @@ export default function CalendarPage({ cabinetId }) {
         <strong>План платежей</strong> — агрегат всех источников по неделям: прошедшие =
         ФАКТ (bank_transactions), будущие = ПЛАН. План-расход разбит по категориям:
         <strong> Закуп</strong> (purchase_plan/payments), <strong>OPEX</strong> (постоянные),
-        <strong> Налог</strong> (УСН 6% + НДС 5% от выручки), <strong>Рекл</strong> (прогноз).
+        <strong> Налог</strong> (УСН + НДС по режиму магазина; УСН от выручки без НДС), <strong>Рекл</strong> (прогноз).
         План-доход = поступления от продаж (сдвиг +1 мес на выплаты МП) + авто-поступления из ДДС.
         Нарастающий баланс; недели кассового разрыва подсвечены ⚠️. Считается в финансовом
         агенте (<code>fin/payment_plan.py</code>, engine=python); при его недоступности —
@@ -136,7 +136,7 @@ export default function CalendarPage({ cabinetId }) {
               <th style={thR}>План −</th>
               <th style={thR} title="Расходы на закупку товара">Закуп</th>
               <th style={thR} title="Постоянные расходы (OPEX)">OPEX</th>
-              <th style={thR} title="Налоги (УСН 6% + НДС 5%)">Налог</th>
+              <th style={thR} title="Налоги (УСН + НДС по режиму магазина)">Налог</th>
               <th style={thR} title="Реклама (прогноз)">Рекл</th>
               <th style={thR}>Net</th>
               <th style={thR}>Баланс</th>

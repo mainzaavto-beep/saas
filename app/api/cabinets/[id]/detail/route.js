@@ -12,7 +12,7 @@ import {
   wbFinancePeriod, wbFinanceByDay, wbUnitCost,
 } from "@/lib/wbMetrics.js";
 import { ozOrderCostsAggregate } from "@/lib/ozonMetrics.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { calcTotalTax, normalizeTaxMode, describeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -114,6 +114,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     if (!result.product) {
       return NextResponse.json({ error: `товар ${nm} не найден` }, { status: 404 });
     }
+    result.taxLabel = describeTaxMode(taxMode, { short: true });
     return NextResponse.json(result);
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
@@ -283,7 +284,10 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
     const dayCost = (fd && daySold != null) ? Math.round(((unitCost ?? 0) * daySold) * 100) / 100 : null;
     const dayAdSp = Math.round(((e.spend || 0) + (ru.spend || 0) + (cl.spend || 0)) * 100) / 100;
     const dayProfit = (fd && dayRevenue != null)
-      ? Math.round((dayRevenue - (fd.commission || 0) - (fd.acquiring || 0) - (fd.logistics || 0) - (fd.loyalty || 0) - (dayCost || 0) - dayAdSp - calcUsnTax(taxMode, dayRevenue)) * 100) / 100
+      ? Math.round((dayRevenue - (fd.commission || 0) - (fd.acquiring || 0) - (fd.logistics || 0) - (fd.loyalty || 0) - (dayCost || 0) - dayAdSp
+          - calcTotalTax(taxMode, dayRevenue,
+              (fd.commission || 0) + (fd.acquiring || 0) + (fd.logistics || 0) + (fd.loyalty || 0) + (dayCost || 0) + dayAdSp
+            ).total) * 100) / 100
       : null;
     const ordersTotal = ordersCountByDate.has(date) ? ordersCountByDate.get(date) : null;
     const clicksTotal = m.clicks ?? null;
@@ -351,9 +355,9 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   const salesRub = fin.salesRub;
   const costRub = Math.round(((unitCost ?? 0) * sold) * 100) / 100;
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
-  // Налог: для УСН Доходы−Расходы нужны расходы за период.
+  // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
   const wbExpenses = (fin.commission || 0) + (fin.acquiring || 0) + (fin.logistics || 0) + costRub + adSp;
-  const tax = calcUsnTax(taxMode, salesRub, wbExpenses);
+  const tax = calcTotalTax(taxMode, salesRub, wbExpenses).total;
   totals.revenue = salesRub; totals.cost = costRub;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
   totals.acquiring = fin.acquiring; totals.loyalty = 0;
@@ -526,7 +530,10 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     const rev = revenueByDay.has(date) ? revenueByDay.get(date) : null;
     const grossDay = profitByDay.has(date) ? profitByDay.get(date) : null;
     const adDay = m.ad_spend ?? 0;
-    const taxDay = rev != null ? calcUsnTax(taxMode, rev) : 0;
+    // Расходы дня для базы УСН = (выручка − grossDay) + реклама. grossDay уже
+    // содержит комиссию/логистику/себест (profitGross), значит rev−grossDay ≈ расходы.
+    const dayExpenses = rev != null ? Math.max(0, rev - (grossDay ?? 0)) + adDay : 0;
+    const taxDay = rev != null ? calcTotalTax(taxMode, rev, dayExpenses).total : 0;
     const profit = grossDay != null ? Math.round((grossDay - adDay - taxDay) * 100) / 100 : null;
     const fb = fbHistNm.get(date);
     const ratingNm = fb ? fb.rating : null;
@@ -580,11 +587,11 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   for (const k of ["ad_spend", "ad_views", "ad_clicks", "ad_orders", "orders_sum"]) {
     totals[k] = Math.round(totals[k] * 100) / 100;
   }
-  // Налог: для УСН Доходы−Расходы расходы = (выручка − profitGross) + реклама.
+  // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
   // profitGross = выручка − комиссия − логистика − себестоимость (уже вычтены).
   const ozRevenue = totals.revenue || 0;
   const ozExpenses = Math.max(0, ozRevenue - (totals.profitGross || 0)) + (totals.ad_spend || 0);
-  totals.tax = calcUsnTax(taxMode, ozRevenue, ozExpenses);
+  totals.tax = calcTotalTax(taxMode, ozRevenue, ozExpenses).total;
   totals.profit = Math.round(((totals.profitGross || 0) - (totals.ad_spend || 0) - totals.tax) * 100) / 100;
 
   return {

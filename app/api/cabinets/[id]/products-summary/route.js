@@ -7,7 +7,7 @@ import {
 import {
   ozOrderCostsByProduct, ozAdSpend, calcOperatingProfit as ozCalcProfit,
 } from "@/lib/ozonMetrics.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -379,7 +379,7 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
     // лояльность + себестоимость + реклама (хранение не привязано к SKU).
     const itemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
-    const tax = calcUsnTax(taxMode, salesRub, itemExpenses);
+    const tax = calcTotalTax(taxMode, salesRub, itemExpenses).total;
     // ЧИСТАЯ прибыль по SKU = выручка − все расходы. Хранение сюда НЕ входит —
     // оно не привязано к товару (№27), показывается в плитке «Кабинетные расходы».
     const profitClean = round2(
@@ -574,7 +574,7 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
     // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
     // лояльность + себестоимость + реклама.
     const ozItemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
-    const tax = calcUsnTax(taxMode, salesRub, ozItemExpenses);
+    const tax = calcTotalTax(taxMode, salesRub, ozItemExpenses).total;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
     // profitClean = ОПЕРАЦИОННАЯ прибыль (правка 2026-06-26): та же формула, что в

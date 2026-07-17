@@ -7,24 +7,30 @@ import { DatabaseSync, tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { calcWB, calcOzon } from "@/lib/unit.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
+import { statusMap } from "@/lib/finItems.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Конвертировать tax_mode {type,rate,vat} в ставки для calcWB/calcOzon.
-// usnRate = rate/100 (доля). vatRate = vat/100 (доля); 0 → без НДС.
+// usnRate = rate/100 (доля). vatRate — ВЫДЕЛЕНИЕ «изнутри» цены с НДС:
+//   vat/(100+vat) (для 5% → 5/105). Это совпадает с дефолтом TAX.VAT_RATE в lib/unit.js.
+//   (Раньше было vat/100 = начисление сверху — ломало базу НДС/УСН, урок D14.)
 function taxRates(taxMode) {
   const tm = normalizeTaxMode(taxMode);
-  return { usnRate: tm.rate / 100, vatRate: tm.vat / 100 };
+  return { usnRate: tm.rate / 100, vatRate: tm.vat / (100 + tm.vat) };
 }
 
 export const GET = withCabinet(async (req, { cabinet }) => {
   try {
+    const url = new URL(req.url);
+    // ?includeInactive=1 — показать и inactive (по умолчанию фильтруется только active).
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
     const mps = cabinet.marketplaces || ["wb", "ozon"];
     const wbRates = taxRates(cabinet.shopTax?.wb);
     const ozRates = taxRates(cabinet.shopTax?.ozon);
-    const wbItems = mps.includes("wb") ? await computeWB(wbRates) : [];
-    const ozonItems = mps.includes("ozon") ? await computeOzon(ozRates) : [];
+    const wbItems = mps.includes("wb") ? await computeWB(wbRates, { includeInactive }) : [];
+    const ozonItems = mps.includes("ozon") ? await computeOzon(ozRates, { includeInactive }) : [];
     const items = [...wbItems, ...ozonItems];
     const categories = [...new Set(items.map((i) => i.category).filter(Boolean))].sort();
 
@@ -107,7 +113,7 @@ async function loadManual(platform) {
 }
 
 // ---------- WB ----------
-async function computeWB(rates = {}) {
+async function computeWB(rates = {}, { includeInactive = false } = {}) {
   const db = new DatabaseSync("wb", { readOnly: true });
   const salesRows = await db.prepare(
     `SELECT nm_id, MAX(sa_name) AS art,
@@ -153,6 +159,9 @@ async function computeWB(rates = {}) {
     sppAuto[r.nm_id] = r.spp;
   }
   const manual = await loadManual("wb");
+  // Статус SKU (active|inactive) — единый источник tenant.item_status с fallback "active"
+  // (как на странице «Себестоимость» /items). По умолчанию юнитка показывает только active.
+  const stat = await statusMap();
 
   const result = [];
   for (const s of salesRows) {
@@ -170,6 +179,7 @@ async function computeWB(rates = {}) {
     r.category = subjects[nm] || null;
     if (imgs[nm]) r.im_url = imgs[nm];
     r.draft = !input.priceWb && !input.priceSeller;
+    r.status = stat[`wb|${nm}|0`] || "active";
     result.push(r);
   }
 
@@ -203,9 +213,7 @@ async function computeWB(rates = {}) {
     .filter((nm) => !usedNm.has(nm)
       && prices[nm]
       && prices[nm].priceSeller != null
-      && prices[nm].priceSeller > 0
-      && prices[nm].discount != null
-      && prices[nm].discount > 0);
+      && prices[nm].priceSeller > 0);
   for (const nm of activeNoSales) {
     const subject = subjects[nm] || null;
     const name = names[nm] || String(nm);
@@ -227,13 +235,14 @@ async function computeWB(rates = {}) {
     if (imgs[nm]) r.im_url = imgs[nm];
     r.draft = false;
     r.estimated = true; // выкуп/комиссия — оценка
+    r.status = stat[`wb|${nm}|0`] || "active";
     result.push(r);
   }
-  return result;
+  return includeInactive ? result : result.filter((r) => r.status === "active");
 }
 
 // ---------- Ozon ----------
-async function computeOzon(rates = {}) {
+async function computeOzon(rates = {}, { includeInactive = false } = {}) {
   const db = new DatabaseSync("ozon", { readOnly: true });
   const products = {};
   for (const r of await db.prepare(
@@ -258,6 +267,8 @@ async function computeOzon(rates = {}) {
      ORDER BY product_id, effective_from DESC`
   ).all()) cogs[r.product_id] = r.cost > 0 ? r.cost : null;
   const manual = await loadManual("ozon");
+  // Статус SKU — см. computeWB.
+  const stat = await statusMap();
 
   // Бустинг Ozon — MAX(current_boost) на последнюю дату.
   const boostByPid = {};
@@ -284,6 +295,7 @@ async function computeOzon(rates = {}) {
     r.category = p.category || null;
     if (p.im_url) r.im_url = p.im_url;
     r.draft = !input.priceOzon;
+    r.status = stat[`ozon|0|${pid}`] || "active";
     result.push(r);
     usedIds.add(String(pid));
   }
@@ -307,7 +319,8 @@ async function computeOzon(rates = {}) {
     r.category = p.category || null;
     if (p.im_url) r.im_url = p.im_url;
     r.draft = !input.priceOzon;
+    r.status = stat[`ozon|0|${pid}`] || "active";
     result.push(r);
   }
-  return result;
+  return includeInactive ? result : result.filter((r) => r.status === "active");
 }

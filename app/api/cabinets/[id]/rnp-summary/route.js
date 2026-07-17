@@ -7,7 +7,7 @@ import {
 import {
   ozOrderCostsByProduct, ozAdSpend,
 } from "@/lib/ozonMetrics.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
 import { tenantQuery } from "@/lib/db.js";
 
 export const runtime = "nodejs";
@@ -352,7 +352,7 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
     const adSp = round2(d.spend || 0);
     // Себестоимость партии = unitCost × продано за период (тот же канон, что /products-summary).
     const costRub = round2((unitCost[nm] ?? 0) * (soldAll[nm] || 0));
-    const tax = calcUsnTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp);
+    const tax = calcTotalTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp).total;
     const profitClean = round2(salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
@@ -498,7 +498,7 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) 
     const loyalty = round2(f.loyalty || 0);
     const costRub = round2(f.cost || 0);
     const adSp = round2(d.spend || 0);
-    const tax = calcUsnTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp);
+    const tax = calcTotalTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp).total;
     const profitClean = round2(salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;

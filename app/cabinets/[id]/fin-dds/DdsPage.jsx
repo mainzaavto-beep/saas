@@ -376,7 +376,7 @@ function DraftModal({ data, loading, err, checked, setChecked, draftItemKey, onA
           <button onClick={onClose} style={miniBtn}>✕</button>
         </div>
         <div style={{ ...alertStyle, marginBottom: 12, fontSize: 11 }}>
-          Поступления от WB/Ozon (факт выплат), налоги (УСН 6% + НДС 5% от выручки),
+          Поступления от WB/Ozon (факт выплат), налоги (УСН + НДС по режиму магазина),
           оплаты по закупкам и регулярные OPEX — собираются автоматически. Отметьте
           нужное → «Применить» запишет в <code>dds_movements</code> со статусом
           <strong> planned</strong> (черновик). Уже существующие строки отмечены серым.

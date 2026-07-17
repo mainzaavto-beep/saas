@@ -3,7 +3,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,7 +64,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         commission: Math.round(commission * 100) / 100,
         logistics: Math.round(logistics * 100) / 100,
         acquiring: Math.round(acquiring * 100) / 100,
-        tax: calcUsnTax(wbTax, price, unitExpenses),
+        tax: calcTotalTax(wbTax, price, unitExpenses).total,
         profit: Math.round(profit * 100) / 100,
         margin: price > 0 ? Math.round((profit / price) * 10000) / 100 : 0,
       });
@@ -114,7 +114,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         commission: Math.round(commission * 100) / 100,
         logistics: Math.round(logistics * 100) / 100,
         acquiring: Math.round(acquiring * 100) / 100,
-        tax: calcUsnTax(ozonTax, price, unitExpenses),
+        tax: calcTotalTax(ozonTax, price, unitExpenses).total,
         profit: Math.round(profit * 100) / 100,
         margin: price > 0 ? Math.round((profit / price) * 10000) / 100 : 0,
       });
