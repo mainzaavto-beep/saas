@@ -48,13 +48,14 @@ PG_SUPER = {
 PY = sys.executable
 
 # Списки SaaS-сборщиков по маркетплейсу (модули в worker/collectors/). Порядок важен:
-# catalog → orders → finance → order_costs (зависит от finance) → metrics → prices → stocks.
+# catalog → orders → finance → order_costs + cabinet_costs (зависят от finance) → metrics → prices → stocks.
 # ⚠️ Принцип SaaS: НИКАКИХ Google Sheets — все данные только в PostgreSQL.
 WB_COLLECTORS = [
     "wb_catalog",
     "wb_orders",
     "wb_finance",
     "wb_order_costs",
+    "wb_cabinet_costs",
     "wb_metrics",
     "wb_ads",
     "wb_prices",

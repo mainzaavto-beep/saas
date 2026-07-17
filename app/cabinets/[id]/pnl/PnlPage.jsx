@@ -23,7 +23,7 @@ const moneyShort = (n) => {
 
 // Строки P&L: kind → h0=главный итог, h1=подытог, sub=расход, plain=прочее.
 // field — ключ в total для подстановки значения.
-const ROWS = [
+const buildRows = (taxLabel) => [
   { label: "Выручка (брутто)", field: "sales", color: C.pos, kind: "plain", showPct: true },
   { label: "Возвраты", field: "returns", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Выручка (нетто)", field: "netSales", color: C.pos, kind: "h1", showPct: false },
@@ -32,9 +32,17 @@ const ROWS = [
   { label: "Комиссия МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Эквайринг", field: "acquiring", negate: true, color: C.neg, kind: "sub", showPct: true },
+  // Кабинетные расходы (№27/№28) — WB не привязывает их к SKU; вычитаются из чистой.
   { label: "Хранение", field: "storage", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "УСН 6%", field: "tax", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Продвижение WB", field: "promotion", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Подписки", field: "subscription", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Штрафы", field: "penalty", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Удержания прочие", field: "deductionOther", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: taxLabel || "Налог", field: "tax", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "ЧИСТАЯ ПРИБЫЛЬ", field: "netProfit", kind: "h0", showPct: false },
+  // Прочие доходы WB (возмещения ПВЗ/перевозки + сторно «Баллы за отзывы») — приток,
+  // не входит в P&L-каскад, показываем справочно под чистой прибылью.
+  { label: "в т.ч. прочие доходы WB", field: "otherIncome", color: C.pos, kind: "plain", showPct: false },
 ];
 
 const valOf = (row, total) => {
@@ -133,7 +141,7 @@ export default function PnlPage({ cabinetId }) {
                 </tr>
               </thead>
               <tbody>
-                {ROWS.map((row, ri) => {
+                {buildRows(data.taxLabel).map((row, ri) => {
                   const v = valOf(row, data.total);
                   const isTotal = row.kind === "h0" || row.kind === "h1";
                   const big = row.kind === "h0";
@@ -197,8 +205,10 @@ export default function PnlPage({ cabinetId }) {
 
           <div style={{ marginTop: 14, fontSize: 12, color: C.faint, lineHeight: 1.6 }}>
             Диапазон: {data.from} — {data.to}.
-            Налоги: УСН «доходы» 6% от выручки. «% выр.» — доля строки от выручки (нетто), только без разбивки.
-            Хранение не входит в per-SKU прибыль (контракт №27) — показано отдельной строкой.
+            Налоги: {data.taxLabel || "УСН по режиму магазина"} — УСН от выручки без НДС, НДС выделяется из цены. «% выр.» — доля строки от выручки (нетто), только без разбивки.
+            Кабинетные расходы (хранение/продвижение/подписки/штрафы) не привязаны к SKU
+            (контракт №27) — показаны отдельными строками и вычитаются из чистой прибыли.
+            «Прочие доходы WB» (возмещения + сторно «Баллы за отзывы») — приток, не входит в P&L-каскад.
           </div>
 
           {/* По маркетплейсам — только без разбивки (при разбивке per-segment WB/Ozon не считаем) */}

@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { calcTotalTax, normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +22,12 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
   // WB P&L — из finance_report (диапазон по rr_dt).
   if (mps.includes("wb")) {
     const db = new DatabaseSync("wb", { readOnly: true });
+    // Кабинетные расходы (№27/№28) — не привязаны к SKU, считаются по типу операции
+    // и bonus_type_name. Маппинг тот же, что в сборщике wb_cabinet_costs.py:
+    //   Удержание скрывает разные услуги (gotcha #148): Продвижение / Подписка /
+    //   Баллы за отзывы (возврат аванса) / утилизация — разделяем по bonus_type.
+    //   Возмещения (перевозка/ПВЗ) и сторно отзывов = приток → в «Прочие доходы WB».
+    //   Суммы берём в нативном знаке WB (возмещения/сторно отрицательны).
     const f = await db.prepare(
       `SELECT
          SUM(CASE WHEN supplier_oper_name='Продажа' THEN retail_amount ELSE 0 END) AS sales,
@@ -30,8 +36,23 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
          SUM(CASE WHEN supplier_oper_name='Возврат' THEN ppvz_for_pay ELSE 0 END) AS forPayReturns,
          SUM(acquiring_fee) AS acquiring,
          SUM(delivery_rub)  AS logistics,
-         SUM(ABS(CASE WHEN supplier_oper_name='Хранение' THEN additional_payment ELSE 0 END)) AS storage,
-         SUM(CASE WHEN supplier_oper_name='Продажа' THEN quantity ELSE 0 END) AS qtySold
+         SUM(CASE WHEN supplier_oper_name='Хранение' THEN storage_fee ELSE 0 END) AS storage,
+         SUM(CASE WHEN supplier_oper_name='Удержание'
+                       AND bonus_type_name LIKE '%Продвижение%'
+                  THEN deduction ELSE 0 END) AS promotion,
+         SUM(CASE WHEN supplier_oper_name='Удержание'
+                       AND (bonus_type_name LIKE '%Джем%' OR bonus_type_name LIKE '%Premium Plus%')
+                  THEN deduction ELSE 0 END) AS subscription,
+         SUM(CASE WHEN supplier_oper_name='Штраф' THEN penalty ELSE 0 END) AS penalty,
+         SUM(CASE WHEN supplier_oper_name='Удержание'
+                       AND bonus_type_name LIKE '%утилиз%'
+                  THEN deduction ELSE 0 END) AS deductionOther,
+         SUM(CASE WHEN supplier_oper_name='Удержание'
+                       AND bonus_type_name LIKE '%Баллы за отзывы%'
+                  THEN deduction ELSE 0 END) AS reviewsStorno,
+         SUM(CASE WHEN supplier_oper_name LIKE 'Возмещение издержек по перевозке%'
+                       OR supplier_oper_name LIKE 'Возмещение за выдачу%'
+                  THEN ppvz_vw ELSE 0 END) AS refunds
        FROM finance_report
        WHERE rr_dt >= ? AND rr_dt <= ?`
     ).get(fromTs, te);
@@ -57,9 +78,21 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
     const logistics = Number(f.logistics) || 0;
     const acquiring = Number(f.acquiring) || 0;
     const storage = Number(f.storage) || 0;
-    // Налог: для УСН Доходы−Расходы расходы = себест + комиссия + логистика + эквайринг + хранение.
+    // Кабинетные расходы (№27): WB не привязывает их к SKU.
+    const promotion = Number(f.promotion) || 0;
+    const subscription = Number(f.subscription) || 0;
+    const penalty = Number(f.penalty) || 0;
+    const deductionOther = Number(f.deductionOther) || 0;
+    // Прочие доходы WB = возмещения (перевозка/ПВЗ) + сторно «Баллы за отзывы».
+    // WB хранит их отрицательными (приток продавцу) → берём модуль для строки «доход».
+    const otherIncome = Math.abs((Number(f.refunds) || 0) + (Number(f.reviewsStorno) || 0));
+    // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
+    // Кабинетные расходы в базу УСН не включаем (они не уменьшают налоговую базу по
+    // нашей модели — это платные услуги/подписки, см. обсуждение с хозяином).
     const wbExpenses = costRub + commission + logistics + acquiring + storage;
-    const tax = calcUsnTax(wbTax, netSales, wbExpenses);
+    const wbTaxCalc = calcTotalTax(wbTax, netSales, wbExpenses);
+    const tax = wbTaxCalc.total;
+    const vat = wbTaxCalc.vat;
 
     wb = {
       sales,
@@ -70,9 +103,19 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
       logistics,
       acquiring,
       storage,
+      promotion,
+      subscription,
+      penalty,
+      deductionOther,
+      otherIncome,
       tax,
+      vat,
+      // grossProfit — валовая маржа по SKU (без кабинетных расходов), не менялся.
       grossProfit: netSales - costRub - commission - logistics - acquiring,
-      netProfit: netSales - costRub - commission - logistics - acquiring - storage - tax,
+      // netProfit теперь реально ниже: вычитаем все кабинетные расходы.
+      // otherIncome не входит в каскад (показывается отдельной строкой под чистой).
+      netProfit: netSales - costRub - commission - logistics - acquiring
+        - storage - promotion - subscription - penalty - deductionOther - tax,
       qtySold: Number(f.qtySold) || 0,
       forPay: (Number(f.forPaySales) || 0) - Math.abs(Number(f.forPayReturns) || 0),
     };
@@ -100,9 +143,13 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
     const commission = Number(f.commission) || 0;
     const logistics = Number(f.logistics) || 0;
     const acquiring = Number(f.acquiring) || 0;
-    // Налог: для УСН Доходы−Расходы расходы = себест + комиссия + логистика + эквайринг.
+    // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
     const ozExpenses = costRub + commission + logistics + acquiring;
-    const tax = calcUsnTax(ozonTax, sales, ozExpenses);
+    const ozTaxCalc = calcTotalTax(ozonTax, sales, ozExpenses);
+    const tax = ozTaxCalc.total;
+    const vat = ozTaxCalc.vat;
+    // grossProfit = выручка − себест − комиссия − логистика − эквайринг (до налога).
+    const grossProfit = sales - costRub - commission - logistics - acquiring;
 
     ozon = {
       sales,
@@ -113,16 +160,25 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
       logistics,
       acquiring,
       storage: 0,
+      // Кабинетные расходы Ozon: источник order_costs их не даёт (нет данных
+      // о подписках/штрафах в этой таблице) — вне текущей задачи, держим 0.
+      promotion: 0,
+      subscription: 0,
+      penalty: 0,
+      deductionOther: 0,
+      otherIncome: 0,
       tax,
-      grossProfit: sales - costRub - commission - logistics - acquiring,
-      netProfit: Number(f.profit) || 0,
+      vat,
+      grossProfit,
+      // netProfit = grossProfit − налог (раньше брали f.profit из БД, без вычета налога).
+      netProfit: grossProfit - tax,
       qtySold: Number(f.qtySold) || 0,
       forPay: 0,
     };
   }
 
   // Объединение WB + Ozon.
-  const total = { sales: 0, returns: 0, netSales: 0, cost: 0, commission: 0, logistics: 0, acquiring: 0, storage: 0, tax: 0, grossProfit: 0, netProfit: 0, qtySold: 0, forPay: 0 };
+  const total = { sales: 0, returns: 0, netSales: 0, cost: 0, commission: 0, logistics: 0, acquiring: 0, storage: 0, promotion: 0, subscription: 0, penalty: 0, deductionOther: 0, otherIncome: 0, tax: 0, vat: 0, grossProfit: 0, netProfit: 0, qtySold: 0, forPay: 0 };
   for (const mp of [wb, ozon]) {
     if (!mp) continue;
     for (const k of Object.keys(total)) total[k] += mp[k] || 0;
@@ -205,5 +261,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     }
   }
 
-  return NextResponse.json({ from, to, breakdown, period: periodQ, total, wb, ozon, segments });
+  return NextResponse.json({ from, to, breakdown, period: periodQ, total, wb, ozon, segments,
+    taxLabel: describeCombinedTaxMode(cabinet.shopTax, { short: true }),
+  });
 });

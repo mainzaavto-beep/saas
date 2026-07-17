@@ -5,16 +5,17 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
   wbFinancePeriod, wbOrdersCount, wbCancelCount, wbAdTotal, wbSold,
+  wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay,
 } from "@/lib/wbMetrics.js";
-import { ozOrderCostsAggregate, ozAdSpend } from "@/lib/ozonMetrics.js";
-import { calcUsnTax, normalizeTaxMode } from "@/lib/tax.js";
+import { ozOrderCostsAggregate, ozAdSpend, ozOrdersByDay } from "@/lib/ozonMetrics.js";
+import { calcTotalTax, normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const zeroKpi = () => ({
   revenue: 0, sold: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
-  costRub: 0, adSp: 0, tax: 0, profit: 0, orders: 0, cancelCnt: 0,
+  costRub: 0, adSp: 0, tax: 0, profit: 0, orders: 0, cancelCnt: 0, orderRub: 0,
   netPay: 0, storage: 0,
 });
 
@@ -54,16 +55,25 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   k.netPay = forPaySales - Math.abs(forPayReturns);
 
   k.storage = (await db.prepare(
-    `SELECT COALESCE(SUM(ABS(additional_payment)),0) AS v FROM finance_report
+    `SELECT COALESCE(SUM(storage_fee),0) AS v FROM finance_report
      WHERE supplier_oper_name = 'Хранение' AND rr_dt >= ? AND rr_dt <= ?`
   ).get(from, toEnd)).v || 0;
 
   k.orders = await wbOrdersCount(db, { from, to });
   k.cancelCnt = await wbCancelCount(db, { from, to });
+  // Сумма заказов в рублях (price_with_disc по не отменённым) — цена со скидкой
+  // продавца, БЕЗ СПП. Это стандартная «сумма заказов» в отчётах МП. Отличается
+  // от salesRub (фактические продажи по finance_report): часть заказов
+  // отменяется/не выкупается, поэтому orderRub >= salesRub обычно.
+  k.orderRub = (await db.prepare(
+    `SELECT COALESCE(SUM(price_with_disc),0) AS v FROM orders
+     WHERE is_cancel = 0 AND order_dt >= ? AND order_dt <= ?`
+  ).get(from, toEnd)).v || 0;
 
-  // Налог: для УСН Доходы−Расходы нужны расходы.
+  // Налог: УСН (база = выручка без НДС) + НДС (выделение из цены). profit вычитает total.
   const expenses = k.commission + k.acquiring + k.logistics + k.costRub + k.adSp + k.storage;
-  k.tax = calcUsnTax(taxMode, k.revenue, expenses);
+  const tot = calcTotalTax(taxMode, k.revenue, expenses);
+  k.tax = tot.total;
   k.profit = Math.round(
     (k.revenue - k.commission - k.acquiring - k.logistics - k.costRub - k.adSp - k.tax) * 100
   ) / 100;
@@ -98,10 +108,15 @@ async function collectOzon(db, from, to, toEnd, taxMode) {
     `SELECT COUNT(*) AS c FROM orders
      WHERE is_cancel = 1 AND substr(order_dt,1,10) >= ? AND substr(order_dt,1,10) <= ?`
   ).get(from, to)).c || 0;
+  // Сумма заказов в рублях (price по не отменённым).
+  k.orderRub = (await db.prepare(
+    `SELECT COALESCE(SUM(price),0) AS v FROM orders
+     WHERE is_cancel = 0 AND substr(order_dt,1,10) >= ? AND substr(order_dt,1,10) <= ?`
+  ).get(from, to)).v || 0;
 
-  // Налог: для УСН Доходы−Расходы нужны расходы.
+  // Налог: УСН (база = выручка без НДС) + НДС (выделение из цены). profit вычитает total.
   const expenses = k.commission + k.acquiring + k.logistics + k.loyalty + k.costRub + k.adSp;
-  k.tax = calcUsnTax(taxMode, k.revenue, expenses);
+  k.tax = calcTotalTax(taxMode, k.revenue, expenses).total;
   k.profit = Math.round(
     (k.revenue - k.commission - k.acquiring - k.logistics - k.loyalty
       - k.costRub - k.adSp - k.tax) * 100
@@ -188,7 +203,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         const costRub = (lmCost[f.nm_id] || 0) * (f.qty || 0);
         const itemExpenses = (f.commission || 0) + (f.acquiring || 0)
           + (lmLogMap[f.nm_id] || 0) + (lmAdMap[f.nm_id] || 0) + costRub;
-        const tax = calcUsnTax(wbTax, rev, itemExpenses);
+        const tax = calcTotalTax(wbTax, rev, itemExpenses).total;
         const profit = rev - itemExpenses - tax;
         return { nm_id: f.nm_id, name: lmName[f.nm_id] || String(f.nm_id),
                  profit: Math.round(profit * 100) / 100 };
@@ -242,6 +257,80 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     ).get(from, toEnd)).c || 0;
   }
 
+  // --- Временной ряд для графика на Главной (по дням). ---
+  // WB: выручка, маржинальная прибыль (sales − commission − acquiring − logistics −
+  //   loyalty; БЕЗ себестоимости/рекламы/налога — их нет в finance_report по дням),
+  //   заказы (шт), сумма заказов (₽), комиссия, к перечислению (for_pay Продажа−Возврат).
+  // Ozon: заказы, выручка, комиссия (per-day прибыли/перечисления нет в данных).
+  //   Склеиваем по дате WB + Ozon, сортируем по возрасту.
+  const TS_KEYS = ["revenue", "profit", "orders", "orderRub", "commission", "netPay"];
+  const tsByDate = new Map(); // date -> {revenue, profit, ...}
+  const tsSet = (d, patch) => {
+    if (!tsByDate.has(d)) {
+      const o = {}; for (const k of TS_KEYS) o[k] = 0; tsByDate.set(d, o);
+    }
+    const o = tsByDate.get(d);
+    for (const key of Object.keys(patch)) o[key] = (o[key] || 0) + (patch[key] || 0);
+  };
+  if (mp !== "ozon" && mps.includes('wb')) {
+    const db = new DatabaseSync('wb', { readOnly: true });
+    const fin = await wbFinanceByDay(db, { from, to });
+    for (const [key, v] of fin) {
+      const d = key.split("|")[1];
+      const profit = (v.salesRub || 0) - (v.commission || 0) - (v.acquiring || 0)
+        - (v.logistics || 0) - (v.loyalty || 0);
+      tsSet(d, {
+        revenue: v.salesRub || 0,
+        commission: v.commission || 0,
+        profit,
+      });
+    }
+    const ord = await wbOrdersByDay(db, { from, to });
+    for (const [key, c] of ord) tsSet(key.split("|")[1], { orders: c });
+    // Сумма заказов ₽ (price_with_disc) по дням.
+    const ordRub = await wbOrderRubByDay(db, { from, to });
+    for (const [key, s] of ordRub) tsSet(key.split("|")[1], { orderRub: s });
+    // К перечислению (ppvz_for_pay) по дням: Продажа(+), Возврат(−).
+    for (const r of await db.prepare(
+      `SELECT substr(rr_dt,1,10) AS d,
+              SUM(CASE WHEN supplier_oper_name='Продажа' THEN ppvz_for_pay
+                       WHEN supplier_oper_name='Возврат'  THEN -ABS(ppvz_for_pay)
+                       ELSE 0 END) AS net
+       FROM finance_report
+       WHERE supplier_oper_name IN ('Продажа','Возврат')
+         AND rr_dt >= ? AND rr_dt <= ?
+       GROUP BY substr(rr_dt,1,10)`
+    ).all(from, toEnd)) {
+      tsSet(r.d, { netPay: r.net || 0 });
+    }
+  }
+  if (mp !== "wb" && mps.includes('ozon')) {
+    const db = new DatabaseSync('ozon', { readOnly: true });
+    const ord = await ozOrdersByDay(db, { from, to });
+    for (const [key, c] of ord) tsSet(key.split("|")[1], { orders: c });
+    // Ozon: выручка + комиссия per-day из order_costs (cost_value_retail, commission).
+    // Прибыль/перечисление по дням не считаем (нет данных per-day).
+    for (const r of await db.prepare(
+      `SELECT substr(COALESCE(sale_dt, return_dt),1,10) AS d,
+              SUM(CASE WHEN is_return=0 THEN cost_value_retail ELSE 0 END) AS rev,
+              SUM(CASE WHEN is_return=0 THEN commission ELSE 0 END) AS com
+       FROM order_costs
+       WHERE COALESCE(sale_dt, return_dt) IS NOT NULL
+         AND substr(COALESCE(sale_dt, return_dt),1,10) >= ?
+         AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?
+       GROUP BY substr(COALESCE(sale_dt, return_dt),1,10)`
+    ).all(from, to)) {
+      tsSet(r.d, { revenue: r.rev || 0, commission: r.com || 0 });
+    }
+  }
+  const timeseries = [...tsByDate.entries()]
+    .map(([date, v]) => {
+      const o = { date };
+      for (const k of TS_KEYS) o[k] = Math.round((v[k] || 0) * 100) / 100;
+      return o;
+    })
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
   return NextResponse.json({
     period: { from, to },
     mp,
@@ -261,9 +350,12 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         penalties: 0,
       },
       orders: k.orders,
+      orderRub: Math.round(k.orderRub * 100) / 100,
       cancelRate,
       sold: k.sold,
     },
     alerts: { lossMakers, lowStock, noCogsCount },
+    timeseries,
+    taxLabel: describeCombinedTaxMode(cabinet.shopTax, { short: true }),
   });
 });
