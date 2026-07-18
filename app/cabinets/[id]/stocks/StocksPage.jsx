@@ -27,10 +27,11 @@ const fmtFullLong = (iso) => {
 };
 
 const TABS = [
-  { id: "warehouses", label: "Склады", icon: "🏭" },
-  { id: "oos",        label: "Индексы OOS", icon: "📉" },
-  { id: "dynamics",   label: "Динамика", icon: "📈" },
-  { id: "finances",   label: "Финансы", icon: "💰" },
+  { id: "warehouses",  label: "Склады", icon: "🏭" },
+  { id: "oos",         label: "Индексы OOS", icon: "📉" },
+  { id: "dynamics",    label: "Динамика", icon: "📈" },
+  { id: "finances",    label: "Финансы", icon: "💰" },
+  { id: "efficiency",  label: "Эффективность", icon: "⚡" },
 ];
 const VEL_OPTIONS = [7, 14, 30, 60];
 
@@ -42,6 +43,61 @@ const OOS_META = {
   ok:        { label: "Норма",        color: "pos",   icon: "🟢" },
   no_sales:  { label: "Нет продаж",   color: "faint", icon: "⚪" },
 };
+// Приоритет статуса для сортировки (совпадает с OOS_ORDER в route.js):
+// out → critical → low → ok → no_sales.
+const OOS_ORDER = { out: 0, critical: 1, low: 2, ok: 3, no_sales: 4 };
+
+// ── Сортировка колонок (кликабельные заголовки таблиц) ──────────────────
+// useSort хранит выбранную колонку и направление. apply(rows, spec) возвращает
+// отсортированную копию. spec — карта «ключ колонки → функция-геттер значения».
+// null/undefined трактуются как «большое» (проваливаются вниз при asc, вверх при desc).
+const NULL_BIG = Number.POSITIVE_INFINITY;
+function cmpVal(a, b) {
+  // null/undefined трактуются как «большое» (проваливаются вниз при asc).
+  const av = a == null ? NULL_BIG : a;
+  const bv = b == null ? NULL_BIG : b;
+  if (typeof av === "string" || typeof bv === "string") {
+    return String(av).localeCompare(String(bv), "ru");
+  }
+  return av < bv ? -1 : av > bv ? 1 : 0;
+}
+function useSort(initialKey, initialDir = "desc") {
+  const [s, setS] = useState({ key: initialKey, dir: initialDir });
+  const toggle = (key) =>
+    setS((cur) =>
+      cur.key === key
+        ? { key, dir: cur.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: initialDir }
+    );
+  const apply = (rows, spec) => {
+    if (!s.key || !spec[s.key]) return rows;
+    const getter = spec[s.key];
+    const mul = s.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => mul * cmpVal(getter(a), getter(b)));
+  };
+  return { sort: s, toggle, apply };
+}
+// Кликабельный <th> со стрелкой ▲/▼/‖. baseStyle — thLeft/thR (выравнивание).
+function SortTh({ colKey, sort, toggle, baseStyle, children }) {
+  const active = sort.key === colKey;
+  const icon = active ? (sort.dir === "asc" ? " ▲" : " ▼") : " ↕";
+  return (
+    <th
+      style={{
+        ...baseStyle,
+        cursor: "pointer",
+        userSelect: "none",
+        whiteSpace: "nowrap",
+        color: active ? C.ink : undefined,
+      }}
+      onClick={() => toggle(colKey)}
+      title="Сортировка: клик меняет направление"
+    >
+      {children}
+      <span style={{ fontSize: 9, color: active ? C.accent : C.faint, fontWeight: 700 }}>{icon}</span>
+    </th>
+  );
+}
 
 export default function StocksPage({ cabinetId }) {
   const [data, setData] = useState(null);
@@ -143,6 +199,13 @@ export default function StocksPage({ cabinetId }) {
       {tab === "finances" && (
         <FinancesTable rows={whF} />
       )}
+      {tab === "efficiency" && (
+        <EfficiencyView
+          byWarehouse={data?.efficiency?.byWarehouse || []}
+          byCluster={data?.efficiency?.byCluster || []}
+          realloc={data?.efficiency?.realloc || []}
+        />
+      )}
     </div>
   );
 }
@@ -152,23 +215,34 @@ export default function StocksPage({ cabinetId }) {
 // =====================================================================
 function WarehousesTable({ rows, totalFull }) {
   const maxFull = Math.max(...rows.map((r) => r.quantity_full || 0), 1);
+  const { sort, toggle, apply } = useSort("quantity_full", "desc");
+  const sorted = apply(rows, {
+    platform:     (r) => r.platform,
+    warehouse:    (r) => r.warehouse,
+    quantity:     (r) => r.quantity,
+    quantity_full:(r) => r.quantity_full,
+    items:        (r) => r.items,
+    share_pct:    (r) => r.share_pct,
+    value_cost:   (r) => r.value_cost,
+    value_retail: (r) => r.value_retail,
+  });
   return (
     <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
-            <th style={thLeft}>МП</th>
-            <th style={thLeft}>Склад</th>
-            <th style={thR}>Остаток (шт)</th>
-            <th style={thR}>Полный</th>
-            <th style={thLeft}>Товаров</th>
-            <th style={{ ...thLeft, width: 140 }}>Доля</th>
-            <th style={thR}>Σ себест.</th>
-            <th style={thR}>Σ реализация</th>
+            <SortTh colKey="platform"     sort={sort} toggle={toggle} baseStyle={thLeft}>МП</SortTh>
+            <SortTh colKey="warehouse"    sort={sort} toggle={toggle} baseStyle={thLeft}>Склад</SortTh>
+            <SortTh colKey="quantity"     sort={sort} toggle={toggle} baseStyle={thR}>Остаток (шт)</SortTh>
+            <SortTh colKey="quantity_full"sort={sort} toggle={toggle} baseStyle={thR}>Полный</SortTh>
+            <SortTh colKey="items"        sort={sort} toggle={toggle} baseStyle={thR}>Товаров</SortTh>
+            <SortTh colKey="share_pct"    sort={sort} toggle={toggle} baseStyle={{ ...thLeft, width: 140 }}>Доля</SortTh>
+            <SortTh colKey="value_cost"   sort={sort} toggle={toggle} baseStyle={thR}>Σ себест.</SortTh>
+            <SortTh colKey="value_retail" sort={sort} toggle={toggle} baseStyle={thR}>Σ реализация</SortTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
+          {sorted.map((r, i) => (
             <tr key={`${r.platform}-${r.warehouse}-${i}`} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
               <td style={tdLeft}><MpBadge platform={r.platform} /></td>
               <td style={tdLeft}>{r.warehouse}</td>
@@ -191,7 +265,7 @@ function WarehousesTable({ rows, totalFull }) {
               <td style={tdRight}>{money(r.value_retail)}</td>
             </tr>
           ))}
-          {rows.length === 0 && (
+          {sorted.length === 0 && (
             <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.muted }}>
               Нет данных по складам для выбранного фильтра.
             </td></tr>
@@ -206,6 +280,17 @@ function WarehousesTable({ rows, totalFull }) {
 //  Вкладка 2: индексы OOS
 // =====================================================================
 function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
+  // Дефолт: days_to_oos asc (критичные сверху). Статус сортируется по приоритету (OOS_ORDER).
+  const { sort, toggle, apply } = useSort("days_to_oos", "asc");
+  const sorted = apply(items, {
+    name:         (it) => it.name,
+    platform:     (it) => it.platform,
+    quantity_full:(it) => it.quantity_full,
+    velocity:     (it) => it.velocity,
+    days_to_oos:  (it) => it.days_to_oos,
+    status:       (it) => (OOS_ORDER[it.status] != null ? OOS_ORDER[it.status] : 9),
+    value_cost:   (it) => it.value_cost,
+  });
   return (
     <>
       <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -219,27 +304,27 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
         )}
       </div>
       <div style={{ fontSize: 12, color: C.faint, marginBottom: 8 }}>
-        Сортировка по срочности: сначала критичные (скоро закончится), затем норма, в конце — без продаж.
+        Кликайте на заголовки колонок для сортировки (▲/▼). По умолчанию — по срочности (дней до OOS, критичные сверху).
         Оборачиваемость = средние продажи/день за {vel} дн.
       </div>
       <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
-              <th style={thLeft}>Товар</th>
-              <th style={thLeft}>МП</th>
-              <th style={thR}>Остаток</th>
-              <th style={thR}>Продаж/день</th>
-              <th style={thR}>Дней до OOS</th>
-              <th style={thLeft}>Статус</th>
-              <th style={thR}>Заморожено ₽</th>
+              <SortTh colKey="name"          sort={sort} toggle={toggle} baseStyle={thLeft}>Товар</SortTh>
+              <SortTh colKey="platform"      sort={sort} toggle={toggle} baseStyle={thLeft}>МП</SortTh>
+              <SortTh colKey="quantity_full" sort={sort} toggle={toggle} baseStyle={thR}>Остаток</SortTh>
+              <SortTh colKey="velocity"      sort={sort} toggle={toggle} baseStyle={thR}>Продаж/день</SortTh>
+              <SortTh colKey="days_to_oos"   sort={sort} toggle={toggle} baseStyle={thR}>Дней до OOS</SortTh>
+              <SortTh colKey="status"        sort={sort} toggle={toggle} baseStyle={thLeft}>Статус</SortTh>
+              <SortTh colKey="value_cost"    sort={sort} toggle={toggle} baseStyle={thR}>Заморожено ₽</SortTh>
             </tr>
           </thead>
           <tbody>
-            {items.map((it, i) => (
+            {sorted.map((it, i) => (
               <OosRow key={`${it.platform}-${it.sku}-${i}`} it={it} />
             ))}
-            {items.length === 0 && (
+            {sorted.length === 0 && (
               <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: C.muted }}>
                 Нет товаров по фильтру.
               </td></tr>
@@ -342,20 +427,29 @@ function DynamicsChart({ dynamics, wbTooShort, mp }) {
 //  Вкладка 4: финансы по складам
 // =====================================================================
 function FinancesTable({ rows }) {
-  const sorted = [...rows].sort((a, b) => (b.value_cost || 0) - (a.value_cost || 0));
-  const totalCost = sorted.reduce((a, r) => a + (r.value_cost || 0), 0);
-  const totalRetail = sorted.reduce((a, r) => a + (r.value_retail || 0), 0);
+  // Итоги считаем от исходных rows (не зависят от порядка сортировки).
+  const totalCost = rows.reduce((a, r) => a + (r.value_cost || 0), 0);
+  const totalRetail = rows.reduce((a, r) => a + (r.value_retail || 0), 0);
+  const { sort, toggle, apply } = useSort("value_cost", "desc");
+  const sorted = apply(rows, {
+    platform:     (r) => r.platform,
+    warehouse:    (r) => r.warehouse,
+    value_cost:   (r) => r.value_cost,
+    value_retail: (r) => r.value_retail,
+    margin:       (r) => (r.value_retail || 0) - (r.value_cost || 0),
+    share_cap:    (r) => totalCost > 0 ? ((r.value_cost || 0) * 100) / totalCost : 0,
+  });
   return (
     <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
-            <th style={thLeft}>МП</th>
-            <th style={thLeft}>Склад</th>
-            <th style={thR}>Σ себест.</th>
-            <th style={thR}>Σ реализация</th>
-            <th style={thR}>Потенц. маржа</th>
-            <th style={thR}>Доля капитала</th>
+            <SortTh colKey="platform"     sort={sort} toggle={toggle} baseStyle={thLeft}>МП</SortTh>
+            <SortTh colKey="warehouse"    sort={sort} toggle={toggle} baseStyle={thLeft}>Склад</SortTh>
+            <SortTh colKey="value_cost"   sort={sort} toggle={toggle} baseStyle={thR}>Σ себест.</SortTh>
+            <SortTh colKey="value_retail" sort={sort} toggle={toggle} baseStyle={thR}>Σ реализация</SortTh>
+            <SortTh colKey="margin"       sort={sort} toggle={toggle} baseStyle={thR}>Потенц. маржа</SortTh>
+            <SortTh colKey="share_cap"    sort={sort} toggle={toggle} baseStyle={thR}>Доля капитала</SortTh>
           </tr>
         </thead>
         <tbody>
@@ -392,6 +486,242 @@ function FinancesTable({ rows }) {
         )}
       </table>
     </div>
+  );
+}
+
+// =====================================================================
+//  Вкладка 5: Эффективность складов (оборачиваемость + локальность + рекомендации)
+// =====================================================================
+function EfficiencyView({ byWarehouse, byCluster, realloc }) {
+  const [showRealloc, setShowRealloc] = useState(false);
+  return (
+    <>
+      <div style={{ ...alertStyle, marginBottom: 12, borderLeft: `3px solid ${C.accent}` }}>
+        <strong>⚡ Эффективность складов</strong> — где товар работает лучше всего.
+        Метрики: <b>оборачиваемость</b> (на сколько дней хватит остатка при текущей скорости
+        продаж), <b>локальность</b> (доля продаж в свой кластер — дешевле логистика),
+        <b> продажи</b> и доля в выручке. Грузите склады с высокой оборачиваемостью и
+        локальностью.
+        <br />
+        <span style={{ fontSize: 11, color: C.faint }}>
+          ⚠ Оборачиваемость — аппроксимация: текущий остаток ÷ скорость продаж за окно (истории снимков мало).
+          Локальность — по 7 укрупнённым кластерам WB (regionName).
+        </span>
+      </div>
+
+      {/* KPI по кластерам */}
+      {byCluster.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "16px 0 8px" }}>🗺️ По кластерам</div>
+          <ClusterKpi clusters={byCluster} />
+        </>
+      )}
+
+      {/* Таблица складов */}
+      <div style={{ fontSize: 13, fontWeight: 700, margin: "20px 0 8px" }}>🏭 По складам</div>
+      <EfficiencyTable rows={byWarehouse} />
+
+      {/* Сворачиваемый блок рекомендаций к перемещению */}
+      <div style={{ marginTop: 20, borderTop: `1px solid ${C.line}`, paddingTop: 16 }}>
+        <button onClick={() => setShowRealloc((v) => !v)} style={{
+          background: "transparent", border: "none", cursor: "pointer", padding: 0,
+          fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.accent,
+        }}>
+          {showRealloc ? "▼" : "▶"} Рекомендации к перемещению ({realloc.length})
+        </button>
+        <span style={{ marginLeft: 10, fontSize: 12, color: C.faint }}>
+          куда логично перевезти с неэффективных складов (оформляется в ЛК, через API нельзя)
+        </span>
+        {showRealloc && (
+          <div style={{ marginTop: 12 }}>
+            <ReallocTable rows={realloc} embedded />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function ClusterKpi({ clusters }) {
+  const top = [...clusters].sort((a, b) => (b.sales_rub || 0) - (a.sales_rub || 0)).slice(0, 4);
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+      {top.map((c) => (
+        <div key={c.cluster} style={{
+          background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10,
+          padding: "10px 14px", flex: "1 1 180px", minWidth: 160,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, marginBottom: 4 }}>{c.cluster}</div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{money(c.sales_rub)}</div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <span>доля {c.share_pct}%</span>
+            <span>складов: {c.wh_count}</span>
+            <span style={{ color: C.pos }}>
+              оборот {c.avg_turnover_days == null ? "—" : Math.round(c.avg_turnover_days) + "д"}
+            </span>
+            <span style={{ color: C.accent2 }}>
+              лок. {c.avg_local_pct == null ? "—" : c.avg_local_pct + "%"}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EfficiencyTable({ rows }) {
+  const { sort, toggle, apply } = useSort("sales_rub", "desc");
+  const sorted = apply(rows, {
+    warehouse:      (r) => r.warehouse,
+    cluster:        (r) => r.cluster,
+    qty:            (r) => r.qty,
+    value_cost:     (r) => r.value_cost,
+    sales_qty:      (r) => r.sales_qty,
+    sales_rub:      (r) => r.sales_rub,
+    share_pct:      (r) => r.share_pct,
+    turnover_days:  (r) => r.turnover_days,
+    local_pct:      (r) => r.local_pct,
+  });
+  return (
+    <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
+            <SortTh colKey="warehouse"     sort={sort} toggle={toggle} baseStyle={thLeft}>Склад</SortTh>
+            <SortTh colKey="cluster"       sort={sort} toggle={toggle} baseStyle={thLeft}>Кластер</SortTh>
+            <SortTh colKey="qty"           sort={sort} toggle={toggle} baseStyle={thR}>Остаток (шт)</SortTh>
+            <SortTh colKey="value_cost"    sort={sort} toggle={toggle} baseStyle={thR}>Σ себест.</SortTh>
+            <SortTh colKey="sales_qty"     sort={sort} toggle={toggle} baseStyle={thR}>Продажи (шт)</SortTh>
+            <SortTh colKey="sales_rub"     sort={sort} toggle={toggle} baseStyle={thR}>Продажи (₽)</SortTh>
+            <SortTh colKey="share_pct"     sort={sort} toggle={toggle} baseStyle={thR}>Доля выручки</SortTh>
+            <SortTh colKey="turnover_days" sort={sort} toggle={toggle} baseStyle={thR}>Оборач. (дн)</SortTh>
+            <SortTh colKey="local_pct"     sort={sort} toggle={toggle} baseStyle={thR}>Локал. %</SortTh>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((r, i) => {
+            const tdColor = r.turnover_days == null ? C.faint
+              : r.turnover_days < 7 ? C.neg
+              : r.turnover_days < 30 ? C.warn : C.pos;
+            const locColor = r.local_pct == null ? C.faint
+              : r.local_pct >= 30 ? C.pos : r.local_pct >= 10 ? C.warn : C.faint;
+            return (
+              <tr key={`${r.warehouse}-${i}`} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
+                <td style={tdLeft}>{r.warehouse}</td>
+                <td style={{ ...tdLeft, fontSize: 11, color: C.muted }}>{r.cluster || "—"}</td>
+                <td style={tdRight}>{num(r.qty)}</td>
+                <td style={{ ...tdRight, color: C.neg }}>{money(r.value_cost)}</td>
+                <td style={tdRight}>{num(r.sales_qty)}</td>
+                <td style={{ ...tdRight, fontWeight: 700 }}>{money(r.sales_rub)}</td>
+                <td style={tdRight}>{r.share_pct}%</td>
+                <td style={{ ...tdRight, fontWeight: 700, color: tdColor }}>
+                  {r.turnover_days == null ? "—" : (r.turnover_days === 0 ? "распродан" : Math.round(r.turnover_days))}
+                </td>
+                <td style={{ ...tdRight, color: locColor, fontWeight: 600 }}>
+                  {r.local_pct == null ? "—" : r.local_pct + "%"}
+                </td>
+              </tr>
+            );
+          })}
+          {sorted.length === 0 && (
+            <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.muted }}>
+              Нет данных по складам за выбранный период.
+            </td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// =====================================================================
+//  Блок рекомендаций к перемещению (вложен в «Эффективность» или отдельно)
+// =====================================================================
+const LK_URL = "https://seller.wildberries.ru/suppliers-mutual-settlements";  // ЛК → раздел перевозок
+function ReallocTable({ rows, embedded }) {
+  // ⚠ useSort ВЫЗЫВАЕТСЯ ДО раннего return — иначе нарушится Rules of Hooks
+  // (урок D7): число хуков не должно зависеть от данных.
+  const { sort, toggle, apply } = useSort("days_to_oos", "asc");
+  const list = rows || [];
+  const sorted = apply(list, {
+    name:           (r) => r.name,
+    from_warehouse: (r) => r.from_warehouse,
+    to_warehouse:   (r) => r.to_warehouse,
+    qty_to_move:    (r) => r.qty_to_move,
+    box_tariff_rub: (r) => r.box_tariff_rub,
+    pallet_tariff_rub:(r) => r.pallet_tariff_rub,
+    days_to_oos:    (r) => r.days_to_oos,
+  });
+  if (list.length === 0) {
+    return (
+      <>
+        {!embedded && (
+          <div style={{ ...alertStyle, marginBottom: 12 }}>
+            <strong>ℹ️ Перемещение остатков между складами WB через API недоступно.</strong>{" "}
+            Оформляйте перевозку вручную в ЛК продавца. Сейчас нет товаров, подходящих
+            под рекомендацию (нужен избыток на одном складе и дефицит на другом при
+            наличии тарифа между ними).
+          </div>
+        )}
+        <Centered>Нет рекомендаций по перевозке для текущих остатков.</Centered>
+      </>
+    );
+  }
+  return (
+    <>
+      {!embedded && (
+        <div style={{ ...alertStyle, marginBottom: 12, borderLeft: `3px solid ${C.accent}` }}>
+          <strong>ℹ️ Перемещение остатков между складами WB через API недоступно.</strong>{" "}
+          Оформляйте перевозку вручную в{" "}
+          <a href={LK_URL} target="_blank" rel="noopener noreferrer"
+             style={{ color: C.accent, textDecoration: "underline" }}>ЛК продавца →</a>.
+          <br />
+          Рекомендации ниже — про <em>выравнивание распределения</em> (где избыток, где
+          дефицит). Тариф — за коробку 0–1500 г; точное число коробок и стоимость
+          прикиньте по габаритам товара в ЛК.
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: C.faint, marginBottom: 8 }}>
+        Кликайте на заголовки колонок для сортировки (▲/▼). По умолчанию — по срочности (дней до OOS).
+      </div>
+      <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
+              <SortTh colKey="name"             sort={sort} toggle={toggle} baseStyle={thLeft}>Товар</SortTh>
+              <SortTh colKey="from_warehouse"   sort={sort} toggle={toggle} baseStyle={thLeft}>Из склада</SortTh>
+              <SortTh colKey="to_warehouse"     sort={sort} toggle={toggle} baseStyle={thLeft}>На склад</SortTh>
+              <SortTh colKey="qty_to_move"      sort={sort} toggle={toggle} baseStyle={thR}>Кол-во</SortTh>
+              <SortTh colKey="box_tariff_rub"   sort={sort} toggle={toggle} baseStyle={thR}>Тариф/коробку</SortTh>
+              <SortTh colKey="pallet_tariff_rub"sort={sort} toggle={toggle} baseStyle={thR}>Палета</SortTh>
+              <SortTh colKey="days_to_oos"      sort={sort} toggle={toggle} baseStyle={thR}>Дней до OOS</SortTh>
+              <th style={thLeft}>Причина</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r, i) => (
+              <tr key={`${r.nm_id}-${r.from_warehouse}-${r.to_warehouse}-${i}`}
+                  style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
+                <td style={tdLeft}>
+                  <div>{r.name || "—"}</div>
+                  <div style={{ fontSize: 11, color: C.faint }}>{r.nm_id}{r.category ? ` · ${r.category}` : ""}</div>
+                </td>
+                <td style={tdLeft}>{r.from_warehouse}</td>
+                <td style={{ ...tdLeft, fontWeight: 600, color: C.accent }}>{r.to_warehouse}</td>
+                <td style={{ ...tdRight, fontWeight: 700 }}>{num(r.qty_to_move)} шт</td>
+                <td style={tdRight}>{r.box_tariff_rub != null ? money(r.box_tariff_rub) : "—"}</td>
+                <td style={tdRight}>{r.pallet_tariff_rub != null ? money(r.pallet_tariff_rub) : "—"}</td>
+                <td style={{ ...tdRight, fontWeight: 700,
+                  color: r.days_to_oos == null ? C.faint : (r.days_to_oos < 14 ? C.neg : r.days_to_oos < 30 ? C.warn : C.pos) }}>
+                  {r.days_to_oos == null ? "—" : num(r.days_to_oos)}
+                </td>
+                <td style={{ ...tdLeft, fontSize: 12, color: C.muted, maxWidth: 320 }}>{r.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

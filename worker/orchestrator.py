@@ -60,6 +60,7 @@ WB_COLLECTORS = [
     "wb_ads",
     "wb_prices",
     "wb_stocks",
+    "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
 ]
 OZON_COLLECTORS = [
     "ozon_catalog",

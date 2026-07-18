@@ -49,6 +49,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       .map((it) => enrichOos(it))
       .sort(oosSort);
 
+    // Эффективность складов WB (вкладка «Эффективность»): оборачиваемость,
+    // локальность, продажи по складам + кластерные агрегаты + рекомендации.
+    // Только WB (Ozon — единый склад FBO, не применимо).
+    const efficiency = await buildWarehouseEfficiency(vel);
+
     // Мёртвый капитал = Σ себест. товаров без продаж (velocity=0) с остатком > 0.
     const deadCapital = round2(
       itemsWithStatus
@@ -85,6 +90,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // Вкладка 4 + KPI
       totals,
       deadCapital,
+      // Вкладка 5: эффективность складов (byWarehouse/byCluster) + рекомендации (только WB)
+      efficiency,
       categories: [...new Set(allItems.map((i) => i.category).filter(Boolean))].sort(),
     });
   } catch (e) {
@@ -188,7 +195,7 @@ async function collectWB(vel) {
             SUM(orders) AS ord,
             COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
      FROM daily_metrics
-     WHERE date >= current_date - ?
+     WHERE date >= current_date - ?::int
      GROUP BY nm_id`
   ).all(vel);
   const velBySku = {};
@@ -229,10 +236,10 @@ async function byWarehouseWB(db, date) {
   const totalFull = Number(totalRow?.t) || 0;
 
   const rows = await db.prepare(
-    `SELECT w.warehouse,
-            w.quantity,
-            w.quantity_full,
-            w.items,
+    `SELECT s.warehouse,
+            s.quantity,
+            s.quantity_full,
+            s.items,
             w.value_cost,
             w.value_retail
      FROM (
@@ -259,7 +266,7 @@ async function byWarehouseWB(db, date) {
        ) m ON m.nm_id = st.nm_id
        WHERE st.warehouse = s.warehouse AND st.date = ?
      ) w ON true
-     ORDER BY w.quantity_full DESC NULLS LAST`
+     ORDER BY s.quantity_full DESC NULLS LAST`
   ).all(date, date, date);
 
   return rows.map((r) => ({
@@ -322,7 +329,7 @@ async function collectOzon(vel) {
             SUM(orders) AS ord,
             COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
      FROM daily_metrics
-     WHERE date >= current_date - ?
+     WHERE date >= current_date - ?::int
      GROUP BY product_id`
   ).all(vel);
   const velBySku = {};
@@ -362,7 +369,7 @@ async function byWarehouseOzon(db, date) {
             s.quantity_full,
             s.items,
             ROUND(SUM(st.fbo_present * COALESCE(co.cost, 0))::numeric, 2) AS value_cost,
-            ROUND(SUM(st.fbo_present * COALESCE(MAX(p.price), 0))::numeric, 2) AS value_retail
+            ROUND(SUM(st.fbo_present * COALESCE(pp.price, 0))::numeric, 2) AS value_retail
      FROM (
        SELECT warehouse,
               SUM(fbo_present - fbo_reserved) AS quantity,
@@ -371,7 +378,10 @@ async function byWarehouseOzon(db, date) {
        FROM daily_stock WHERE date = ? GROUP BY warehouse
      ) s
      LEFT JOIN daily_stock st ON st.warehouse = s.warehouse AND st.date = ?
-     LEFT JOIN products p ON p.product_id = st.product_id
+     LEFT JOIN LATERAL (
+       -- MAX(price) per product_id вынесен в подзапрос (внешний SUM по складу).
+       SELECT product_id, MAX(price) AS price FROM products GROUP BY product_id
+     ) pp ON pp.product_id = st.product_id
      LEFT JOIN LATERAL (
        SELECT cost FROM tenant.cost_overrides
        WHERE product_id = st.product_id AND platform = 'ozon'
@@ -399,3 +409,360 @@ async function resolveStockDate(db) {
   const r = await db.prepare("SELECT MAX(date) AS d FROM daily_stock").get();
   return r?.d || null;
 }
+
+// =====================================================================
+//  Эффективность складов WB (вкладка «Эффективность складов»).
+//
+//  Метрики по каждому складу (только WB; Ozon — единый склад FBO, не применимо):
+//    • Остаток (шт + себест. ₽) — из daily_stock на свежую дату.
+//    • Продажи (шт + ₽) — из wb_sales.warehouse_name за период vel.
+//    • Доля склада в выручке — продажи склада / Σ продаж.
+//    • Оборачиваемость (дни) — остаток / (продажи/день). Аппроксимация days_to_oos:
+//      при текущей скорости продаж за vel дней, сегодняшнего остатка хватит на N
+//      дней. Строгая оборачиваемость периода невозможна — мало истории снимков (3 шт).
+//    • Локальность % — доля продаж, где кластер покупателя (= cluster okrug_name)
+//      совпадает с кластером склада (= region). Карта region_to_cluster согласует
+//      8 раздельных ФО покупателя с 7 укрупнёнными кластерами складов.
+//
+//  Агрегаты по кластерам (byCluster): Σ остатков, Σ продаж, средние оборачиваемость
+//  и локальность. Отвечает на «в каком кластере концентрируется выручка».
+//
+//  ⚠️ Терминологическая грабля (зафиксирована в миграции 026): regionName склада
+//  (7 укрупнённых) ≠ okrug_name покупателя (8 раздельных ФО). region_to_cluster
+//  решает это; без карты local_pct считался бы некорректно.
+// =====================================================================
+async function buildWarehouseEfficiency(vel) {
+  const db = new DatabaseSync("wb", { readOnly: true });
+
+  // 1) Остатки по складам на свежую дату + кластер + себест.
+  const stockByWh = await db.prepare(
+    `SELECT COALESCE(w.name, st.warehouse) AS warehouse,
+            w.region AS cluster,
+            SUM(st.quantity_full) AS qty,
+            ROUND(SUM(st.quantity_full * COALESCE(co.cost, 0))::numeric, 2) AS value_cost
+     FROM daily_stock st
+     CROSS JOIN (SELECT MAX(date) AS d FROM daily_stock) s_max
+     LEFT JOIN shared.wb_warehouses w ON w.id = st.warehouse_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = st.nm_id AND platform = 'wb'
+         AND effective_from <= COALESCE(st.date, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
+     WHERE st.date = s_max.d
+     GROUP BY COALESCE(w.name, st.warehouse), w.region`
+  ).all();
+
+  // 2) Продажи по складам за vel дней + локальные продажи.
+  // Локальность: cluster покупателя (= cluster of okrug_name или region_name через
+  // region_to_cluster) совпадает с cluster склада (= wh.region через wb_warehouses).
+  // СНГ: при пустом okrug_name берём region_name (там субъект СНГ). Карта содержит
+  // оба типа ключей — okrug_name (для РФ) и субъект (для СНГ). Двойной LEFT JOIN:
+  // сначала пытаемся по okrug_name, если пусто — по region_name.
+  //
+  // ⚠ Мэтчинг склада: wb_sales.warehouse_name часто РАСХОДИТСЯ с wb_warehouses.name
+  // (WB отдаёт разные имена в разных API: «Самара (Новосемейкино)» vs «Новосемейкино»,
+  // «СПБ Шушары» vs «Склад СПБ Шушары Московское»). Точный JOIN теряет ~18% выручки.
+  // Решение: LATERAL с приоритетом — точное совпадение, иначе подстрока (LIMIT 1).
+  // Это связывает кластер склада с продажами, где бы он ни фигурировал под другим именем.
+  const salesByWh = await db.prepare(
+    `SELECT s.warehouse_name AS warehouse,
+            wh_l.region AS cluster,
+            COUNT(*) AS sales_qty,
+            COALESCE(SUM(s.for_pay), 0) AS sales_rub,
+            COUNT(*) FILTER (
+              WHERE COALESCE(rtc_ok.cluster, rtc_reg.cluster) = wh_l.region
+            ) AS local_qty
+     FROM sales s
+     LEFT JOIN shared.region_to_cluster rtc_ok
+       ON rtc_ok.region = s.okrug_name
+     LEFT JOIN shared.region_to_cluster rtc_reg
+       ON rtc_reg.region = s.region_name AND (s.okrug_name IS NULL OR s.okrug_name = '')
+     LEFT JOIN LATERAL (
+       SELECT region FROM shared.wb_warehouses
+       WHERE name = s.warehouse_name                       -- 1) точное совпадение
+          OR s.warehouse_name ILIKE '%' || name || '%'      -- 2) склад внутри имени продажи
+          OR name ILIKE '%' || s.warehouse_name || '%'      -- 3) имя продажи внутри склада
+       ORDER BY (name = s.warehouse_name) DESC, updated_at DESC
+       LIMIT 1
+     ) wh_l ON true
+     WHERE s.last_change_dt::date >= current_date - ?::int
+       AND s.warehouse_name IS NOT NULL AND s.warehouse_name <> ''
+     GROUP BY s.warehouse_name, wh_l.region`
+  ).all(vel);
+
+  // 3) Сшиваем остатки и продажи по имени склада, считаем производные метрики.
+  // Кластер берём из остатков (если есть), иначе из продаж (LATERAL-мэтчинг).
+  const salesMap = new Map();
+  let totalSalesRub = 0;
+  for (const s of salesByWh) {
+    salesMap.set(s.warehouse, s);
+    totalSalesRub += Number(s.sales_rub) || 0;
+  }
+  const byWarehouse = [];
+  for (const st of stockByWh) {
+    const sa = salesMap.get(st.warehouse) || {};
+    const qty = Number(st.qty) || 0;
+    const valueCost = Number(st.value_cost) || 0;
+    const salesQty = Number(sa.sales_qty) || 0;
+    const salesRub = Number(sa.sales_rub) || 0;
+    const localQty = Number(sa.local_qty) || 0;
+    const cluster = st.cluster || sa.cluster || null;
+    // Оборачиваемость: остаток / (продажи/день). При vel дней окна: продажи/день = salesQty/vel.
+    const turnoverDays = salesQty > 0 ? qty / (salesQty / vel) : null;
+    const localPct = salesQty > 0 ? round2((localQty * 100) / salesQty) : null;
+    byWarehouse.push({
+      warehouse: st.warehouse,
+      cluster,
+      qty,
+      value_cost: round2(valueCost),
+      sales_qty: salesQty,
+      sales_rub: round2(salesRub),
+      share_pct: totalSalesRub > 0 ? round2((salesRub * 100) / totalSalesRub) : 0,
+      turnover_days: turnoverDays == null ? null : round2(turnoverDays),
+      local_pct: localPct,
+    });
+  }
+  // Склады с продажами, но без остатка (товар уже распродан) — добавим отдельно.
+  for (const sa of salesByWh) {
+    if (stockByWh.some((s) => s.warehouse === sa.warehouse)) continue;
+    const salesQty = Number(sa.sales_qty) || 0;
+    const salesRub = Number(sa.sales_rub) || 0;
+    const localQty = Number(sa.local_qty) || 0;
+    byWarehouse.push({
+      warehouse: sa.warehouse,
+      cluster: sa.cluster || null,
+      qty: 0,
+      value_cost: 0,
+      sales_qty: salesQty,
+      sales_rub: round2(salesRub),
+      share_pct: totalSalesRub > 0 ? round2((salesRub * 100) / totalSalesRub) : 0,
+      turnover_days: 0,  // остатка нет → 0 дней
+      local_pct: salesQty > 0 ? round2((localQty * 100) / salesQty) : null,
+    });
+  }
+
+  // 4) Агрегаты по кластерам.
+  const clusterMap = new Map();
+  for (const w of byWarehouse) {
+    const key = w.cluster || "Прочее";
+    if (!clusterMap.has(key)) {
+      clusterMap.set(key, { cluster: key, wh_count: 0, qty: 0, value_cost: 0, sales_qty: 0, sales_rub: 0, local_qty: 0, _turnover_sum: 0, _turnover_n: 0, _local_sum: 0, _local_n: 0 });
+    }
+    const c = clusterMap.get(key);
+    c.wh_count += 1;
+    c.qty += w.qty;
+    c.value_cost += w.value_cost;
+    c.sales_qty += w.sales_qty;
+    c.sales_rub += w.sales_rub;
+    c.local_qty += Math.round((w.local_pct == null ? 0 : (w.local_pct / 100) * w.sales_qty));
+    if (w.turnover_days != null) { c._turnover_sum += w.turnover_days; c._turnover_n += 1; }
+    if (w.local_pct != null) { c._local_sum += w.local_pct; c._local_n += 1; }
+  }
+  const byCluster = [...clusterMap.values()].map((c) => ({
+    cluster: c.cluster,
+    wh_count: c.wh_count,
+    qty: c.qty,
+    value_cost: round2(c.value_cost),
+    sales_qty: c.sales_qty,
+    sales_rub: round2(c.sales_rub),
+    share_pct: totalSalesRub > 0 ? round2((c.sales_rub * 100) / totalSalesRub) : 0,
+    avg_turnover_days: c._turnover_n > 0 ? round2(c._turnover_sum / c._turnover_n) : null,
+    avg_local_pct: c._local_n > 0 ? round2(c._local_sum / c._local_n) : null,
+  })).sort((a, b) => (b.sales_rub || 0) - (a.sales_rub || 0));
+
+  // 5) Рекомендации по перевозке (старая логика, переиспользуем) — блок внутри вкладки.
+  const realloc = await buildReallocRecommendations(vel);
+
+  return { byWarehouse, byCluster, realloc };
+}
+
+
+//    • tenant.wb_daily_stock — остатки по складам (с warehouse_id, миграция 025)
+//    • tenant.wb_daily_metrics.orders — velocity (продаж/день) по nm_id
+//    • shared.wb_warehouses — справочник складов (id→name)
+//    • shared.wb_transit_tariffs — тарифы (transit→dest, boxTariff, palletTariff)
+//
+//  Алгоритм (детерминированный, без ML):
+//    Для каждого nm_id с velocity>0 — распределение остатка по складам. Кандидат
+//    на перевозку = пара (from, to) где: from-склад держит избыток (≥40% от
+//    total SKU), to-склад того же SKU имеет дефицит (qty ≤ 7 дней по доле velocity
+//    от общего), И между ними есть тариф (transit=from.name, dest=to.name).
+//    Кол-во к перевозке = половина избытка from (упрощённо; габаритов товара
+//    нет — реальный коробочный расчёт невозможен). Тариф = boxTariff[0].value
+//    (диапазон 0–1500г, базовый).
+//
+//  ⚠️ Допущения (явно в UI): WB не отдаёт regional velocity → рекомендация про
+//  ВЫРАВНИВАНИЕ распределения, не про «где купят быстрее». Тариф — за коробку
+//  0–1500г; кол-во коробок селлер считает сам.
+// =====================================================================
+async function buildReallocRecommendations(vel) {
+  const db = new DatabaseSync("wb", { readOnly: true });
+
+  // Полные пути shared.* — convertSql их не трогает (negative lookbehind на точку).
+  // Один запрос: разворот nm × warehouse + velocity + маппинг имени + тариф-пары.
+  const rows = await db.prepare(
+    `WITH
+      -- Последняя дата снимка остатков WB.
+      s_max AS (SELECT MAX(date) AS d FROM daily_stock),
+      -- Остатки по (nm, warehouse) на свежую дату + имя склада из справочника.
+      sk AS (
+        SELECT st.nm_id,
+               st.warehouse            AS wh_from_name,
+               COALESCE(wfw.name, st.warehouse) AS wh_from_canon,
+               st.warehouse_id         AS wh_from_id,
+               SUM(st.quantity_full)   AS qty_from
+        FROM daily_stock st
+        CROSS JOIN s_max
+        LEFT JOIN shared.wb_warehouses wfw ON wfw.id = st.warehouse_id
+        WHERE st.date = s_max.d
+        GROUP BY st.nm_id, st.warehouse, st.warehouse_id, wfw.name
+      ),
+      -- velocity по nm_id (как в collectWB: SUM(orders)/дни-с-продажами).
+      vel AS (
+        SELECT nm_id,
+               SUM(orders) AS ord,
+               COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
+        FROM daily_metrics
+        WHERE date >= current_date - ?::int
+        GROUP BY nm_id
+      ),
+      -- Тотал по SKU + сколько складов + distribute target per wh.
+      sku_totals AS (
+        SELECT nm_id,
+               SUM(qty_from) AS qty_total,
+               COUNT(*)      AS wh_count
+        FROM sk GROUP BY nm_id
+      )
+    SELECT
+        sk.nm_id,
+        COALESCE(a.name, CAST(sk.nm_id AS TEXT)) AS name,
+        COALESCE(a.subject, '') AS category,
+        sk.wh_from_id,
+        sk.wh_from_canon                       AS from_warehouse,
+        t.tar_dest_canon                       AS to_warehouse,
+        sk.qty_from,
+        st_total.qty_total,
+        v.ord, v.days,
+        t.pallet_tariff,
+        t.box_first_value                      AS box_tariff_rub
+    FROM sk
+    JOIN sku_totals st_total ON st_total.nm_id = sk.nm_id
+    LEFT JOIN vel v ON v.nm_id = sk.nm_id
+    LEFT JOIN articles a ON a.nm_id = sk.nm_id
+    -- JOIN к тарифам: from — транзитный источник (canon-имя), dest — все прочие
+    -- склады того же SKU (декартово по парам тарифа, конкретный dest выберем ниже).
+    JOIN LATERAL (
+      SELECT tt.transit_warehouse_name      AS tar_src,
+             tt.destination_warehouse_name  AS tar_dest_raw,
+             wtd.name                       AS tar_dest_canon,
+             tt.pallet_tariff,
+             -- boxTariff = [{from,to,value}...]; берём value первой записи (0–1500г).
+             (tt.box_tariff->0->>'value')::numeric AS box_first_value
+      FROM shared.wb_transit_tariffs tt
+      LEFT JOIN shared.wb_warehouses wtd ON wtd.name = tt.destination_warehouse_name
+      WHERE tt.transit_warehouse_name = sk.wh_from_canon
+    ) t ON true
+    WHERE v.days > 0                              -- только продающиеся товары
+      AND st_total.qty_total > 0
+      -- Избыток на from-складе: ≥40% остатка SKU ИЛИ (на 1 складе >60% при wh_count>1)
+      AND (sk.qty_from * 100.0 / st_total.qty_total >= 40
+           OR (st_total.wh_count > 1 AND sk.qty_from * 100.0 / st_total.qty_total > 60))
+    ORDER BY sk.qty_from DESC`
+  ).all(vel);
+
+  // Фильтрация в JS: оставляем только пары, где dest — реальный склад этого SKU
+  // (с дефицитом), и расчёт финальных полей. SQL дал все тариф-направления от
+  // from-склада; тут мэтчим на склады SKU из того же набора.
+  // Строим карту: nm_id → Set каноничных имён складов этого SKU.
+  const skuWh = new Map();
+  for (const r of rows) {
+    if (!skuWh.has(r.nm_id)) skuWh.set(r.nm_id, new Set());
+    skuWh.get(r.nm_id).add(r.wh_from_canon);
+  }
+
+  // Карта дефицита: для каждого SKU — какие склады (canon) НЕ присутствуют
+  // (= qty 0, явный дефицит). Это кандидаты-назначения.
+  // normalizeWh() убирает суффикс «: Питание» и пр. — WB в тарифах даёт
+  // по 2 записи на склад (обычный + поставочный), физически это один склад.
+  // Без нормализации каждая пара плодит дубли («Рязань (Тюшевское)» и «...: Питание»).
+  const normalizeWh = (name) => (name || "").replace(/\s*:\s*Питание\s*$/i, "").trim();
+
+  const recs = [];
+  const seen = new Set();  // дедуп (nm, from, to_normalized)
+  for (const r of rows) {
+    const whSet = skuWh.get(r.nm_id);
+    const dest = r.to_warehouse;
+    if (!dest || !whSet) continue;
+    const destNorm = normalizeWh(dest);
+    if (!destNorm) continue;
+    // Назначение должно быть складом, где этого SKU НЕТ (дефицит).
+    // Сравниваем по нормализованному имени — иначе «Волгоград» vs «Волгоград: Питание»
+    // прошло бы как разные склады, хотя физически один.
+    const whSetNorm = new Set([...whSet].map(normalizeWh));
+    if (whSetNorm.has(destNorm)) continue;
+    // Не везти «к самому себе» (имя-двойник без id).
+    if (destNorm === normalizeWh(r.from_warehouse)) continue;
+
+    const key = `${r.nm_id}|${normalizeWh(r.from_warehouse)}|${destNorm}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const vel = (Number(r.days) || 0) > 0 ? (Number(r.ord) || 0) / Number(r.days) : 0;
+    const qtyFrom = Number(r.qty_from) || 0;
+    const qtyTotal = Number(r.qty_total) || 0;
+
+    // ── Фильтр «не истощай источник» (правило хозяина, 2026-07-18) ──────
+    // Если на складе-источнике ≤ 4 шт И при текущей velocity он протянет ≤ 8 дней —
+    // везти с него НЕЛЬЗЯ (источник сам на грани OOS). velocity=0 (нет продаж) →
+    // «протянет бесконечно» → фильтр пропускает (неходовой товар, излишек по времени).
+    // ⚠ WB не отдаёт regional velocity — берем общую по SKU как аппроксимацию
+    // (предполагаем равномерное распределение продаж). Реально days_to_oos_склада
+    // может быть меньше у более «ходовых» складов — это ограничение данных WB.
+    const SOURCE_QTY_CAP = 4;
+    const SOURCE_DAY_CAP = 8;
+    if (qtyFrom <= SOURCE_QTY_CAP && vel > 0) {
+      const sourceDays = qtyFrom / vel;
+      if (sourceDays <= SOURCE_DAY_CAP) continue;  // истощаемый источник — пропускаем
+    }
+
+    // Кол-во к перевозке = половина избытка from, но не меньше 1 и не больше
+    // избытка сверх 30% (чтобы не обобрать склад-источник в ноль).
+    const excess = Math.max(0, qtyFrom - qtyTotal * 0.3);
+    const qtyToMove = Math.max(1, Math.round(excess / 2));
+    // Дней до OOS по всему SKU (приоритизация).
+    const daysToOos = vel > 0 ? qtyTotal / vel : null;
+    const boxTariff = r.box_tariff_rub != null ? Number(r.box_tariff_rub) : null;
+    const palletTariff = r.pallet_tariff != null ? Number(r.pallet_tariff) : null;
+
+    // Причина (человекочитаемо).
+    const fromSharePct = qtyTotal > 0 ? Math.round((qtyFrom * 100) / qtyTotal) : 0;
+    let reason = `На «${r.from_warehouse}» ${fromSharePct}% остатка SKU, на «${destNorm}» — 0.`;
+    if (daysToOos != null) {
+      reason += ` Запас всего SKU ~${Math.round(daysToOos)} дн.`;
+    }
+
+    recs.push({
+      nm_id: Number(r.nm_id),
+      name: r.name,
+      category: r.category,
+      from_warehouse: r.from_warehouse,
+      to_warehouse: destNorm,
+      qty_to_move: qtyToMove,
+      box_tariff_rub: boxTariff,
+      pallet_tariff_rub: palletTariff,
+      days_to_oos: daysToOos == null ? null : round2(daysToOos),
+      reason,
+    });
+  }
+  // Сортировка: критичные (days_to_oos мал) первыми; null (нет продаж по окну) — в конец.
+  recs.sort((a, b) => {
+    const da = a.days_to_oos == null ? Infinity : a.days_to_oos;
+    const db = b.days_to_oos == null ? Infinity : b.days_to_oos;
+    if (da !== db) return da - db;
+    return (b.qty_to_move || 0) - (a.qty_to_move || 0);
+  });
+  // Потолок, чтобы не раздувать список (UI всё равно показывает всё, но API — разумно).
+  return recs.slice(0, 50);
+}
+

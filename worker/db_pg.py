@@ -363,7 +363,11 @@ def upsert_finance_many(rows):
     return len(rows)
 
 
-_STOCK_COLS = ["nm_id", "date", "warehouse", "quantity", "quantity_full", "in_way_to", "in_way_from"]
+_STOCK_COLS = ["nm_id", "date", "warehouse", "warehouse_id", "quantity", "quantity_full", "in_way_to", "in_way_from"]
+# warehouse_id добавлен (миграция 025): сборщик wb_stocks получает warehouseId
+# из API, но раньше не сохранял. Нужен для надёжного маппинга stocks↔shared.wb_warehouses
+# (по именам совпадение только 45%, по id — 84%+; кросс-чек 2026-07-18). Колонка
+# NULLable — старые строки (до правки сборщика) остаются NULL, маппинг падает на имя.
 
 
 def upsert_stock_many(rows):
@@ -791,4 +795,102 @@ def upsert_ozon_daily(product_id, date, **fields):
             f"ON CONFLICT (cabinet_id, product_id, date) DO UPDATE SET {upd}",
             vals,
         )
+
+
+# =====================================================================
+#  shared.* — глобальные справочники (без cabinet_id, без RLS).
+#  Склады WB и тарифы перевозок едины для всех кабинетов. Пишет сборщик
+#  wb_references (таймер saas-references, 1×/неделю). Читают: route.js
+#  (stocks) для построения рекомендаций по перевозке.
+#
+#  ВНИМАНИЕ: эти хелперы НЕ используют _cabinet_id()/get_connection() —
+#  те выставляют GUC app.cabinet_id и заворачивают в tenant-RLS. Shared.*
+#  таблицам RLS не нужен, а _cabinet_id() и вовсе рейзит RuntimeError при
+#  отсутствии env. Здесь — отдельный контекст без GUC-сетапа.
+# =====================================================================
+@contextmanager
+def get_shared_connection():
+    """Подключение к PG БЕЗ выставления app.cabinet_id — для записи в shared.*.
+    Сборщик wb_references запускается отдельным таймером (не через orchestrator
+    per-cabinet loop), поэтому cabinet_id тут не нужен и не должен мешать."""
+    conn = psycopg.connect(_DSN, autocommit=False, row_factory=dict_row)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def upsert_shared_wb_warehouses(rows):
+    """Batch-upsert справочника складов WB в shared.wb_warehouses.
+    rows: [{id, name, address, work_time, is_active, is_transit_active, region}].
+    region (кластер) может прийти пустым для части складов — ON CONFLICT не затирает
+    существующее значение через COALESCE (если новый ответ WB не содержит region
+    для склада, сохраняем старый). Перезаписывает остальные поля — справочник
+    сервисный, обновляем целиком."""
+    if not rows:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    cols = ["id", "name", "address", "work_time", "is_active", "is_transit_active", "region"]
+    placeholders = ", ".join(["%s"] * (len(cols) + 1))
+    # region, is_active, is_transit_active обновляем через COALESCE — stocks-report
+    # (первичный источник) не отдаёт активность, а /warehouses не отдаёт регион.
+    # COALESCE сохраняет существующее значение, если новый ответ WB пуст.
+    coalesce_cols = {"region", "is_active", "is_transit_active", "address", "work_time"}
+    upd_parts = []
+    for c in cols[1:]:
+        if c in coalesce_cols:
+            upd_parts.append(f"{c}=COALESCE(EXCLUDED.{c}, shared.wb_warehouses.{c})")
+        else:
+            upd_parts.append(f"{c}=EXCLUDED.{c}")
+    upd_parts.append("updated_at=EXCLUDED.updated_at")
+    upd = ", ".join(upd_parts)
+    sql = (
+        f"INSERT INTO shared.wb_warehouses ({', '.join(cols)}, updated_at) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (id) DO UPDATE SET {upd}"
+    )
+    batch = [[r.get(c) for c in cols] + [now] for r in rows]
+    with get_shared_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+    return len(rows)
+
+
+def upsert_shared_wb_transit_tariffs(rows):
+    """Batch-upsert тарифов перевозок в shared.wb_transit_tariffs.
+    rows: [{transit_warehouse_name, destination_warehouse_name, active_from,
+            box_tariff(JSON-serializable), pallet_tariff}].
+    box_tariff конвертируется в JSONB через psycopg (передаём как json.dumps)."""
+    if not rows:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    cols = ["transit_warehouse_name", "destination_warehouse_name",
+            "active_from", "box_tariff", "pallet_tariff"]
+    placeholders = ", ".join(["%s"] * (len(cols) + 1))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols + ["updated_at"])
+    sql = (
+        f"INSERT INTO shared.wb_transit_tariffs ({', '.join(cols)}, updated_at) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (transit_warehouse_name, destination_warehouse_name) DO UPDATE SET {upd}"
+    )
+    batch = []
+    for r in rows:
+        box = r.get("box_tariff")
+        box_val = json.dumps(box) if isinstance(box, (list, dict)) else box
+        batch.append([
+            r.get("transit_warehouse_name"),
+            r.get("destination_warehouse_name"),
+            r.get("active_from"),
+            box_val,
+            r.get("pallet_tariff"),
+            now,
+        ])
+    with get_shared_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+    return len(rows)
 

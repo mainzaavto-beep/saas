@@ -120,6 +120,7 @@ def collect():
         # полный остаток = склад + в пути к клиенту + в пути от клиента.
         rows.append({
             "nm_id": nm, "date": today, "warehouse": wh,
+            "warehouse_id": s.get("warehouseId"),  # для маппинга к shared.wb_warehouses (миграция 025)
             "quantity": qty,
             "quantity_full": qty + in_to + in_from,
             "in_way_to": in_to,
