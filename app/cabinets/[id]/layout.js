@@ -36,6 +36,7 @@ const MENU = [
       { href: "/items", label: "Себестоимость" },
       { href: "/mp-stock", label: "Остатки на МП" },
       { href: "/inventory", label: "Остатки склад/ФФ" },
+      { href: "/shipments", label: "Отгрузки" },
       { href: "/move", label: "Перемещение" },
     ],
   },

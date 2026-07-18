@@ -6,13 +6,18 @@ import { C, soft } from "@/lib/palette.js";
 // Накопитель приходов: партии, завершённые на закупках (кнопка «Завершить → склад»),
 // попадают сюда со своей себестоимостью AA = «себест. до МП» (внутренняя цифра партии
 // для баланса склада). Кол-во можно править.
-// Привязка артикула МП (WB/Ozon + nm_id/product_id) — только для имени/фото со склада.
+// Привязка артикулов МП — только для имени/фото со склада. С 2026-07-18 у одной
+// позиции может быть НЕСКОЛЬКО артикулов (WB + Ozon, разные nm_id/product_id):
+// товар физически один, но продаётся под разными карточками/на разных МП. Primary
+// (для имени/фото строки) = первый добавленный (по created_at).
 // ⚠ С 2026-07-16 склад НЕ пишет в cost_overrides: складская себестоимость независима
 // от страницы «Себестоимость» (/items) и не влияет на P&L/юнитку.
 //
-// Источник: GET /api/cabinets/[id]/inventory → { items, totals }.
+// Источник: GET /api/cabinets/[id]/inventory → { items(…skus[]), totals }.
 // Запись: POST link_sku / unlink_sku / update_qty.
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { ShipmentFormModal } from "../shipments/ShipmentFormModal.jsx";
+import Link from "next/link";
 
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
@@ -27,6 +32,7 @@ export default function InventoryPage({ cabinetId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showLocs, setShowLocs] = useState(false);
   const [showShip, setShowShip] = useState(false); // модалка «+ Отгрузка»
+  const [shipPreset, setShipPreset] = useState(null); // presetItem при вызове из строки
   const [category, setCategory] = useState(""); // фильтр по категории
   const [locationId, setLocationId] = useState(""); // фильтр по конкретному месту
 
@@ -41,6 +47,12 @@ export default function InventoryPage({ cabinetId }) {
   }, [cabinetId]);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // Открыть форму отгрузки с предзаполненной первой строкой (вызов кнопкой 📦 из Row).
+  const openShipWithPreset = useCallback((item) => {
+    setShipPreset(item);
+    setShowShip(true);
+  }, []);
 
   // Хуки useMemo — ДО ранних return (Rules of Hooks: хуки всегда безусловны
   // и в одном порядке на каждом рендере). Поэтому items берём с fallback на [].
@@ -62,14 +74,14 @@ export default function InventoryPage({ cabinetId }) {
     ),
     [items, category, locationId]
   );
-  const shipments = data?.shipments || [];
   // Totals по отфильтрованному списку (KPI/итог пересчитываются по фильтру).
   const totals = useMemo(() => {
     let qty = 0, sum = 0, linked = 0;
     for (const it of filtered) {
       qty += Number(it.qty) || 0;
       sum += (Number(it.qty) || 0) * (Number(it.unit_cost) || 0);
-      if (it.platform) linked++;
+      // «привязана к МП» = есть хоть одна привязка в skus[] (с 2026-07-18 мультисвязка).
+      if ((it.skus?.length || 0) > 0) linked++;
     }
     return { items: filtered.length, qty, sum: Math.round(sum * 100) / 100, linked };
   }, [filtered]);
@@ -92,7 +104,7 @@ export default function InventoryPage({ cabinetId }) {
 
       <div style={{ ...alertStyle, marginBottom: 14 }}>
         <strong>Склад/ФФ</strong> — приходы от завершённых закупок + ручные позиции. Себестоимость = «себест. до МП» (внутренняя цифра партии для баланса склада).
-        Привяжите артикул маркетплейса — подтянется имя/фото с МП. Складская себестоимость <strong>не зависит</strong> от страницы «Себестоимость» и не влияет на P&L (она заводится отдельно).
+        К позиции можно привязать <strong>несколько артикулов</strong> разных маркетплейсов (1 товар = много SKU): имя и фото строки — от первого (primary). Складская себестоимость <strong>не зависит</strong> от страницы «Себестоимость» и не влияет на P&L (она заводится отдельно).
         Если артикула нет — загрузите фото вручную.
       </div>
 
@@ -137,11 +149,15 @@ export default function InventoryPage({ cabinetId }) {
           style={{ ...primaryBtn, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить товар"}
         </button>
-        <button onClick={() => setShowShip(true)}
+        <button onClick={() => { setShipPreset(null); setShowShip(true); }}
           style={{ ...primaryBtn, background: C.pink, color: "#0A1A1C" }}
-          title="Списать товар со склада/ФФ при отгрузке на маркетплейс">
+          title="Создать отгрузку на маркетплейс (списание со склада/ФФ)">
           📦 Отгрузка на МП
         </button>
+        <Link href={`./shipments`} style={{ ...resetBtnStyle, textDecoration: "none", display: "inline-block" }}
+          title="Все отгрузки">
+          📋 Все отгрузки
+        </Link>
       </div>
 
       {showLocs && <LocationsManager cabinetId={cabinetId} locations={locations} reload={reload} />}
@@ -149,11 +165,13 @@ export default function InventoryPage({ cabinetId }) {
       {showAdd && <AddForm cabinetId={cabinetId} locations={locations} onDone={() => { setShowAdd(false); reload(); }} />}
 
       {showShip && (
-        <ShipmentModal
+        <ShipmentFormModal
           cabinetId={cabinetId}
-          items={items}
-          onClose={() => setShowShip(false)}
-          onDone={() => { setShowShip(false); reload(); }}
+          inventoryItems={items.filter((i) => i.qty > 0)}
+          warehouses={null}
+          presetItem={shipPreset}
+          onClose={() => { setShowShip(false); setShipPreset(null); }}
+          onDone={() => { setShowShip(false); setShipPreset(null); reload(); }}
         />
       )}
 
@@ -174,7 +192,7 @@ export default function InventoryPage({ cabinetId }) {
           </thead>
           <tbody>
             {filtered.map((it) => (
-              <Row key={it.id} it={it} cabinetId={cabinetId} locations={locations} reload={reload} />
+              <Row key={it.id} it={it} cabinetId={cabinetId} locations={locations} reload={reload} onShipFromRow={openShipWithPreset} />
             ))}
             {filtered.length === 0 && (
               <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.muted }}>
@@ -199,10 +217,8 @@ export default function InventoryPage({ cabinetId }) {
         </table>
       </div>
 
-      {/* История отгрузок (журнал списаний на МП) */}
-      {shipments.length > 0 && (
-        <ShipmentsHistory cabinetId={cabinetId} shipments={shipments} reload={reload} />
-      )}
+      {/* История отгрузок переехала на отдельную страницу /shipments (с 2026-07-18).
+          Кнопка «📋 Все отгрузки» сверху ведёт туда. Создать отгрузку можно кнопкой 📦. */}
     </div>
   );
 }
@@ -210,11 +226,10 @@ export default function InventoryPage({ cabinetId }) {
 // =====================================================================
 //  Строка: товар (фото+имя inline) + кол-во + себест + сумма + категория inline + артикул
 // =====================================================================
-function Row({ it, cabinetId, locations, reload }) {
+function Row({ it, cabinetId, locations, reload, onShipFromRow }) {
   const [editingQty, setEditingQty] = useState(false);
   const [qtyText, setQtyText] = useState("");
   const [linking, setLinking] = useState(false);
-  const [shipping, setShipping] = useState(false); // модалка отгрузки из строки
 
   // Универсальный inline-post: правка любого поля через update_field.
   const saveField = async (field, value) => {
@@ -245,7 +260,7 @@ function Row({ it, cabinetId, locations, reload }) {
     } catch (e) { alert("Не сохранилось: " + e.message); }
   }
 
-  const hasSku = !!it.platform;  // артикул привязан → фото/имя тянется с МП
+  const hasSku = (it.skus?.length || 0) > 0;  // хоть одна привязка → фото/имя с МП
 
   return (
     <tr style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
@@ -316,25 +331,32 @@ function Row({ it, cabinetId, locations, reload }) {
         <InlineText value={it.category} placeholder="категория" small
           onCommit={(v) => saveField("category", v)} />
       </td>
-      {/* Артикул МП */}
+      {/* Артикул МП — список всех привязок (мультисвязка с 2026-07-18). */}
       <td style={{ padding: "8px 10px" }}>
         {hasSku ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <MpBadge platform={it.platform} />
-            <span style={{ fontSize: 12, color: C.ink }}>
-              {it.platform === "wb" ? it.nm_id : it.product_id}
-            </span>
-            <button onClick={() => setLinking(true)} style={{ ...miniBtn, color: C.faint }} title="Сменить артикул">✎</button>
-            <UnlinkBtn cabinetId={cabinetId} id={it.id} reload={reload} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 140 }}>
+            {(it.skus || []).map((s, idx) => (
+              <SkuChip
+                key={s.id ?? `${s.platform}-${s.nm_id || s.product_id}`}
+                sku={s}
+                isPrimary={idx === 0}
+                cabinetId={cabinetId}
+                reload={reload}
+              />
+            ))}
+            <button onClick={() => setLinking(true)} style={{ ...miniBtn, color: C.faint, alignSelf: "flex-start" }}
+              title="Привязать ещё один артикул (другой МП или карточку)">
+              + ещё артикул
+            </button>
           </div>
         ) : (
           <button onClick={() => setLinking(true)} style={{ ...miniBtn, color: C.pos }}>+ привязать</button>
         )}
       </td>
-      {/* Отгрузка на МП — открывает модалку с этим товаром (preset) */}
+      {/* Отгрузка на МП — открывает форму создания отгрузки с этим товаром (preset) */}
       <td style={{ padding: "8px 10px", textAlign: "center" }}>
         <button
-          onClick={() => setShipping(true)}
+          onClick={() => onShipFromRow(it)}
           disabled={it.qty <= 0}
           title={it.qty > 0 ? "Отгрузить на маркетплейс" : "Нет остатка для отгрузки"}
           style={{ ...miniBtn, color: it.qty > 0 ? C.pink : C.faint, cursor: it.qty > 0 ? "pointer" : "not-allowed" }}
@@ -346,18 +368,9 @@ function Row({ it, cabinetId, locations, reload }) {
         <LinkModal
           cabinetId={cabinetId}
           id={it.id}
-          current={it.platform ? { platform: it.platform, nm_id: it.nm_id, product_id: it.product_id } : null}
+          existingSkus={it.skus || []}
           onClose={() => setLinking(false)}
           onLinked={() => { setLinking(false); reload(); }}
-        />
-      )}
-      {shipping && (
-        <ShipmentModal
-          cabinetId={cabinetId}
-          items={[it]} /* только этот товар — preset, без выбора */
-          presetItem={it}
-          onClose={() => setShipping(false)}
-          onDone={() => { setShipping(false); reload(); }}
         />
       )}
     </tr>
@@ -476,35 +489,63 @@ function InlineNumber({ value, placeholder, fmt, onCommit, accent }) {
   );
 }
 
-// Кнопка отвязки артикула (складская привязка — только имя/фото; cost_override
-// здесь больше не создаётся с 2026-07-16, так что отвязка чистит только привязку).
-function UnlinkBtn({ cabinetId, id, reload }) {
+// Чип привязки артикула (одна строка в списке привязок позиции).
+// Показывает бейдж МП + id + метку «осн.» для primary + кнопку отвязки (по sku_link_id).
+// С 2026-07-18: одна позиция может иметь несколько чипов.
+function SkuChip({ sku, isPrimary, cabinetId, reload }) {
+  const [busy, setBusy] = useState(false);
   async function unlink() {
-    if (!confirm("Отвязать артикул МП от этой позиции? (имя/фото вернутся к ручному вводу)")) return;
+    const label = sku.platform === "wb" ? `WB ${sku.nm_id}` : `Ozon ${sku.product_id}`;
+    if (!confirm(`Отвязать артикул ${label} от позиции?`)) return;
+    setBusy(true);
     try {
       const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "unlink_sku", id }),
+        body: JSON.stringify({ action: "unlink_sku", sku_link_id: sku.id }),
       });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || "unlink failed");
       reload();
     } catch (e) { alert("Не отвязать: " + e.message); }
+    finally { setBusy(false); }
   }
-  return <button onClick={unlink} style={{ ...miniBtn, color: C.neg }} title="Отвязать артикул">✕</button>;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <MpBadge platform={sku.platform} />
+      <span style={{ fontSize: 12, color: C.ink, fontVariantNumeric: "tabular-nums" }}>
+        {sku.platform === "wb" ? sku.nm_id : sku.product_id}
+      </span>
+      {isPrimary && (0,
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4,
+          background: soft("accent", 15), color: C.accent }} title="Основной артикул (имя и фото строки от него)">осн.</span>
+      )}
+      <button onClick={unlink} disabled={busy}
+        style={{ ...miniBtn, color: C.neg, padding: "2px 7px", marginLeft: "auto" }}
+        title="Отвязать этот артикул">
+        {busy ? "⏳" : "✕"}
+      </button>
+    </div>
+  );
 }
 
 // =====================================================================
-//  Модалка привязки артикула: выбор МП + ввод nm_id/product_id
+//  Модалка привязки артикула: выбор МП + ввод nm_id/product_id.
+//  С 2026-07-18 — добавляет артикул к позиции (может быть уже привязанные).
 // =====================================================================
-function LinkModal({ cabinetId, id, current, onClose, onLinked }) {
-  const [platform, setPlatform] = useState(current?.platform || "wb");
-  const [val, setVal] = useState(current ? String(current.platform === "wb" ? current.nm_id : current.product_id) : "");
+function LinkModal({ cabinetId, id, existingSkus = [], onClose, onLinked }) {
+  const [platform, setPlatform] = useState("wb");
+  const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Список уже привязанных артикулов выбранного МП — для предупреждения о повторе.
+  const taken = existingSkus
+    .filter((s) => s.platform === platform)
+    .map((s) => String(s.platform === "wb" ? s.nm_id : s.product_id));
 
   async function save() {
     const v = parseInt(val, 10);
     if (!Number.isFinite(v) || v <= 0) { alert("Введите числовой артикул"); return; }
+    if (taken.includes(String(v))) { alert("Этот артикул уже привязан к позиции"); return; }
     setBusy(true);
     try {
       const body = { action: "link_sku", id, platform };
@@ -522,7 +563,17 @@ function LinkModal({ cabinetId, id, current, onClose, onLinked }) {
   return (
     <div style={modalBackdrop} onClick={onClose}>
       <div style={modalCard} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Привязать артикул маркетплейса</div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
+          {existingSkus.length > 0 ? "Добавить артикул маркетплейса" : "Привязать артикул маркетплейса"}
+        </div>
+        {existingSkus.length > 0 && (
+          <div style={{ fontSize: 11, color: C.faint, marginBottom: 10, padding: "6px 8px",
+            background: C.surfaceAlt, borderRadius: 6 }}>
+            Уже привязано: {existingSkus.map((s) =>
+              (s.platform === "wb" ? `WB ${s.nm_id}` : `Ozon ${s.product_id}`)
+            ).join(", ")}
+          </div>
+        )}
         <Field label="Маркетплейс">
           <select value={platform} onChange={(e) => { setPlatform(e.target.value); setVal(""); }} style={inputStyle}>
             <option value="wb">Wildberries (nm_id)</option>
@@ -538,8 +589,10 @@ function LinkModal({ cabinetId, id, current, onClose, onLinked }) {
             style={{ ...inputStyle, width: "100%" }} />
         </Field>
         <div style={{ fontSize: 11, color: C.faint, marginTop: 8 }}>
-          Привязка подтянет имя и фото карточки с маркетплейса. Складская себестоимость
-          остаётся внутренней цифрой партии и <strong>не меняет</strong> себестоимость на странице «Себестоимость».
+          Привязка подтянет имя и фото карточки с маркетплейса. Один товар можно
+          привязать к нескольким артикулам (например, WB + Ozon). Складская
+          себестоимость остаётся внутренней цифрой партии и <strong>не меняет</strong>
+          себестоимость на странице «Себестоимость».
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} style={resetBtnStyle}>Отмена</button>
@@ -551,186 +604,12 @@ function LinkModal({ cabinetId, id, current, onClose, onLinked }) {
 }
 
 // =====================================================================
-//  Модалка «Отгрузка на МП» — списание товара со склада/ФФ.
-//  Поля: выбор строки остатка (только qty>0), кол-во (≤ остатка), МП, дата, коммент.
-//  POST { action:"shipment", op:"add" } → атомарно INSERT отгрузки + UPDATE остатка.
+//  Старая модалка отгрузки (ShipmentModal) и блок «История отгрузок»
+//  (ShipmentsHistory) удалены — отгрузки переехали на отдельную страницу
+//  /shipments (с 2026-07-18). Форма создания переиспользуется: кнопка 📦
+//  здесь открывает ../shipments/ShipmentFormModal. Список документов — на /shipments.
 // =====================================================================
-function ShipmentModal({ cabinetId, items, presetItem, onClose, onDone }) {
-  // presetItem — товар фиксирован (вызов из строки таблицы), выбор не показывается.
-  // Иначе — выбор из доступных позиций (вызов по кнопке «📦 Отгрузка на МП» сверху).
-  const avail = (presetItem ? [presetItem] : items.filter((i) => i.qty > 0));
-  const [ffId, setFfId] = useState(presetItem?.id || avail[0]?.id || "");
-  const [qty, setQty] = useState("");
-  const [platform, setPlatform] = useState(presetItem?.platform || "wb");
-  const [shipDt, setShipDt] = useState(new Date().toISOString().slice(0, 10));
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  const selected = avail.find((i) => i.id === Number(ffId));
-  const maxQty = selected?.qty || 0;
-
-  async function submit() {
-    const q = parseInt(qty, 10);
-    if (!Number.isFinite(q) || q < 1) { alert("Количество должно быть целым ≥ 1"); return; }
-    if (!ffId) { alert("Выберите товар"); return; }
-    if (q > maxQty) { alert(`Недостаточно остатка. На складе: ${maxQty} шт.`); return; }
-    setBusy(true);
-    try {
-      const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "shipment", op: "add",
-          ff_inventory_id: Number(ffId), qty: q, platform, ship_dt: shipDt, note,
-        }),
-      });
-      const d = await r.json();
-      if (!r.ok || d.error) throw new Error(d.error || "отгрузка failed");
-      onDone();
-    } catch (e) { alert("Не сохранить отгрузку: " + e.message); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <div style={modalBackdrop} onClick={onClose}>
-      <div style={modalCard} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>📦 Отгрузка на маркетплейс</div>
-        {avail.length === 0 ? (
-          <div style={{ color: C.muted, fontSize: 13, padding: "12px 0" }}>
-            Нет товаров с положительным остатком для отгрузки.
-          </div>
-        ) : (
-          <>
-            {presetItem ? (
-              <Field label="Товар">
-                <div style={{ ...inputStyle, width: "100%", background: C.surfaceAlt, cursor: "default" }}>
-                  <strong>{presetItem.sku_name || presetItem.internal_name || "—"}</strong>
-                  <span style={{ color: C.faint }}> · {presetItem.qty} шт{presetItem.location_name ? ` · ${presetItem.location_name}` : ""}</span>
-                </div>
-              </Field>
-            ) : (
-              <Field label="Товар (со склада/ФФ)">
-                <select value={ffId} onChange={(e) => { setFfId(e.target.value); setQty(""); }} style={{ ...inputStyle, width: "100%" }}>
-                  {avail.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.sku_name || i.internal_name || "—"} · {i.qty} шт
-                      {i.location_name ? ` · ${i.location_name}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-            <div style={{ height: 8 }} />
-            <Field label={`Количество (доступно: ${maxQty} шт)`}>
-              <input autoFocus type="number" min={1} max={maxQty} value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-                style={{ ...inputStyle, width: "100%" }} />
-            </Field>
-            <div style={{ height: 8 }} />
-            <Field label="Маркетплейс назначения">
-              <select value={platform} onChange={(e) => setPlatform(e.target.value)} style={{ ...inputStyle, width: "100%" }}>
-                <option value="wb">Wildberries</option>
-                <option value="ozon">Ozon</option>
-              </select>
-            </Field>
-            <div style={{ height: 8 }} />
-            <Field label="Дата отгрузки">
-              <input type="date" value={shipDt} onChange={(e) => setShipDt(e.target.value)} style={{ ...inputStyle, width: "100%" }} />
-            </Field>
-            <div style={{ height: 8 }} />
-            <Field label="Комментарий (опц.)">
-              <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
-                placeholder="напр. номер партии/поставки" style={{ ...inputStyle, width: "100%" }} />
-            </Field>
-          </>
-        )}
-        <div style={{
-          fontSize: 11, color: C.faint, marginTop: 10, padding: "8px 10px",
-          background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 6,
-        }}>
-          ⚠️ Отгрузка формируется <strong>по факту отгрузки товара на маркетплейс и приёмки</strong>.
-          Количество будет списано с остатка склада/ФФ.
-        </div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-          <button onClick={onClose} style={resetBtnStyle}>Отмена</button>
-          <button onClick={submit} disabled={busy || avail.length === 0} style={primaryBtn}>{busy ? "⏳" : "Отгрузить"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// =====================================================================
-//  История отгрузок (журнал списаний). Таблица под остатками.
-//  Удаление отгрузки → возврат qty на склад (POST action:"shipment" op:"delete").
-// =====================================================================
-function ShipmentsHistory({ cabinetId, shipments, reload }) {
-  const [busyId, setBusyId] = useState(null);
-
-  async function remove(s) {
-    if (!confirm(`Отменить отгрузку "${s.item_name}" (${s.qty} шт)?\nКоличество вернётся на склад.`)) return;
-    setBusyId(s.id);
-    try {
-      const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "shipment", op: "delete", id: s.id }),
-      });
-      const d = await r.json();
-      if (!r.ok || d.error) throw new Error(d.error || "delete failed");
-      reload();
-    } catch (e) { alert("Не удалить отгрузку: " + e.message); }
-    finally { setBusyId(null); }
-  }
-
-  return (
-    <div style={{ marginTop: 24 }}>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, color: C.ink }}>
-        История отгрузок <span style={{ color: C.muted, fontWeight: 400 }}>({shipments.length})</span>
-      </div>
-      <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
-              <th style={thLeft}>Дата</th>
-              <th style={thLeft}>Товар</th>
-              <th style={thR}>Кол-во</th>
-              <th style={thLeft}>МП</th>
-              <th style={thLeft}>Комментарий</th>
-              <th style={thR}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {shipments.map((s) => (
-              <tr key={s.id} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
-                <td style={{ ...tdLeft, whiteSpace: "nowrap" }}>{s.ship_dt}</td>
-                <td style={tdLeft}>{s.item_name || "—"}</td>
-                <td style={{ ...tdRight, color: C.pink, fontWeight: 700 }}>−{num(s.qty)}</td>
-                <td style={tdLeft}>
-                  <span style={{
-                    padding: "2px 7px", borderRadius: 5, fontSize: 11, fontWeight: 700,
-                    background: s.platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
-                    color: s.platform === "wb" ? C.accent : C.pink,
-                  }}>{s.platform === "wb" ? "WB" : "Ozon"}</span>
-                </td>
-                <td style={{ ...tdLeft, color: C.faint }}>{s.note || "—"}</td>
-                <td style={tdRight}>
-                  <button onClick={() => remove(s)} disabled={busyId === s.id}
-                    style={{ ...miniBtn, color: C.neg }} title="Отменить отгрузку (вернуть qty)">
-                    {busyId === s.id ? "⏳" : "↩ Отменить"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// =====================================================================
-//  Форма ручного добавления позиции на склад
-// =====================================================================
 function AddForm({ cabinetId, locations, onDone }) {
   const [form, setForm] = useState({ internal_name: "", qty: "", unit_cost: "", category: "", im_url: "", location_id: "" });
   const [busy, setBusy] = useState(false);
@@ -836,7 +715,7 @@ function AddForm({ cabinetId, locations, onDone }) {
         </div>
       </div>
       <div style={{ fontSize: 11, color: C.faint, marginTop: 8 }}>
-        Артикул маркетплейса и фото с МП можно привязать после добавления. Если артикула нет — фото загружено выше.
+        Артикулы маркетплейсов (можно несколько) и фото с МП привязываются после добавления. Если артикула нет — фото загружено выше.
       </div>
     </div>
   );
@@ -950,7 +829,7 @@ function Header() {
     <div style={{ marginBottom: 18 }}>
       <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Остатки склад/ФФ</h1>
       <p style={{ margin: "4px 0 0", color: C.muted, fontSize: 13 }}>
-        Приходы от завершённых закупок с себестоимостью «до МП». Привязка артикула → себестоимость течёт в расчёты.
+        Приходы от завершённых закупок с себестоимостью «до МП». К позиции можно привязать несколько артикулов МП — для отображения имени/фото.
       </p>
     </div>
   );

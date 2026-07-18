@@ -2,17 +2,21 @@
 //
 // GET → { items, totals, locations, shipments }
 //   items: наименование, qty, себест. (unit_cost = «себест. до МП»), сумма (qty×unit_cost),
-//          категория, привязанный артикул МП (platform/nm_id/product_id/sku_name/im_url).
-//          Если артикул привязан — имя/фото подтягиваются из wb_articles/ozon_products
-//          (богаче, чем сохранённое при привязке).
+//          категория, привязанные артикулы МП. С 2026-07-18 у одной позиции может быть
+//          НЕСКОЛЬКО артикулов (разные МП, разные nm_id/product_id) — они в массиве
+//          skus: [{ id (sku_link_id), platform, nm_id, product_id, sku_name, im_url, created_at }, ...].
+//          Порядок — по created_at ASC: первичный (primary, для имени/фото строки) = первый.
+//          Плоские поля platform/nm_id/product_id/sku_name/im_url (от primary) оставлены
+//          для обратной совместимости с любым кодом, читающим it.platform.
+//          Имя/фото тянется из wb.articles/ozon.products (богаче кэша) одним bulk-запросом.
 //   shipments: последние 50 отгрузок (журнал списаний на МП) — дата/товар/qty/МП/примечание.
 // POST { action } → add | locations | shipment | link_sku | unlink_sku | update_qty | update_field
 //
-// Привязка артикула (link_sku) — только для отображения имени/фото на складе.
+// Привязка артикулов (link_sku) — только для отображения имени/фото на складе.
 // ⚠ unit_cost НЕ утекает в cost_overrides (решение 2026-07-16): складская
 // себестоимость — внутренняя цифра партии (для баланса склада), независима от
 // страницы «Себестоимость» (/items). Общая себестоимость для P&L/юнитки
-// заводится отдельно на /items.
+// заводится отдельно на /items. Мультисвязка (2026-07-18) этот контракт не меняет.
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
@@ -40,11 +44,42 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     `SELECT id, name, address, loc_type FROM tenant.stock_ff_locations ORDER BY loc_type, name`
   );
 
-  // Обогащение имени/фото из каталога МП (если артикул привязан) — богаче, чем
-  // сохранённое sku_name. Один bulk-запрос на МП.
+  // Привязки артикулов МП (с 2026-07-18 — мультисвязка): одна позиция ↔ много SKU.
+  // Тянем все разом и группируем по ff_inventory_id. Порядок по created_at ASC,
+  // primary (для имени/фото строки) = первый.
+  const invIds = rows.map((r) => r.id);
+  const skusByInv = {};
+  if (invIds.length) {
+    const skuRows = await tenantQuery(
+      `SELECT id, ff_inventory_id, platform, nm_id, product_id, sku_name, im_url, created_at
+       FROM tenant.ff_inventory_skus
+       WHERE ff_inventory_id = ANY($1::bigint[])
+       ORDER BY ff_inventory_id, created_at ASC, id ASC`,
+      [invIds]
+    );
+    for (const s of skuRows) {
+      const key = s.ff_inventory_id;
+      (skusByInv[key] ||= []).push({
+        id: s.id,
+        platform: s.platform,
+        nm_id: s.nm_id,
+        product_id: s.product_id,
+        sku_name: s.sku_name,
+        im_url: s.im_url,
+        created_at: s.created_at,
+      });
+    }
+  }
+
+  // Обогащение имени/фото из каталога МП (по всем привязанным артикулам сразу) —
+  // богаче, чем кэш sku_name/im_url в ff_inventory_skus. Один bulk-запрос на МП.
   const nmMeta = {}, pidMeta = {};
-  const wbIds = [...new Set(rows.filter((r) => r.platform === "wb" && r.nm_id).map((r) => r.nm_id))];
-  const ozIds = [...new Set(rows.filter((r) => r.platform === "ozon" && r.product_id).map((r) => r.product_id))];
+  const wbIds = [...new Set(
+    Object.values(skusByInv).flat().filter((s) => s.platform === "wb" && s.nm_id).map((s) => s.nm_id)
+  )];
+  const ozIds = [...new Set(
+    Object.values(skusByInv).flat().filter((s) => s.platform === "ozon" && s.product_id).map((s) => s.product_id)
+  )];
   if (wbIds.length) {
     try {
       const db = new DatabaseSync("wb", { readOnly: true });
@@ -66,21 +101,40 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   let qtyTotal = 0, sumCost = 0, linked = 0;
   const items = rows.map((r) => {
-    const meta = r.platform === "wb" ? nmMeta[r.nm_id] : (r.platform === "ozon" ? pidMeta[r.product_id] : null);
-    const name = meta?.name || r.sku_name || r.internal_name || "—";
-    const im = meta?.im_url || r.im_url || null;
+    // Массив привязок (с обогащёнными именем/фото из каталога МП).
+    const rawSkus = skusByInv[r.id] || [];
+    const skus = rawSkus.map((s) => {
+      const meta = s.platform === "wb" ? nmMeta[s.nm_id] : (s.platform === "ozon" ? pidMeta[s.product_id] : null);
+      return {
+        ...s,
+        sku_name: meta?.name || s.sku_name || null,
+        im_url: meta?.im_url || s.im_url || null,
+      };
+    });
+    const primary = skus[0] || null;
+    // Плоские поля (от primary) — обратная совместимость для it.platform/it.nm_id/...
+    // Если новой привязки нет, но есть legacy-колонки в строке (edge-case бэкпорта) — fallback.
+    const flatPlatform = primary?.platform || (r.platform ? r.platform : null);
+    const flatNmId = primary?.nm_id ?? (r.platform === "wb" ? r.nm_id : null);
+    const flatPid = primary?.product_id ?? (r.platform === "ozon" ? r.product_id : null);
+    const flatName = primary?.sku_name || r.sku_name || r.internal_name || "—";
+    const flatIm = primary?.im_url || r.im_url || null;
     const qty = Number(r.qty) || 0;
     const cost = Number(r.unit_cost) || 0;
     qtyTotal += qty;
     sumCost += qty * cost;
-    if (r.platform) linked++;
+    if (skus.length > 0) linked++;
     return {
       ...r,
       qty,
       unit_cost: cost,
       sum: round2(qty * cost),
-      sku_name: name,
-      im_url: im,
+      platform: flatPlatform,
+      nm_id: flatNmId,
+      product_id: flatPid,
+      sku_name: flatName,
+      im_url: flatIm,
+      skus,
     };
   });
 
@@ -236,6 +290,12 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     if (platform === "wb" && !nm_id) return NextResponse.json({ error: "nm_id required for wb" }, { status: 400 });
     if (platform === "ozon" && !product_id) return NextResponse.json({ error: "product_id required for ozon" }, { status: 400 });
 
+    // Проверка существования позиции склада (RLS режет по cabinet_id).
+    const inv = (await tenantQuery(
+      `SELECT id FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL`, [id]
+    ))[0];
+    if (!inv) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
+
     // Подтянуть имя/фото карточки из каталога МП (для отображения на складе).
     let skuName = null, imUrl = null;
     try {
@@ -250,35 +310,49 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       }
     } catch {}
 
-    // Записать привязку в строку остатка.
-    const rows = await tenantQuery(
-      `UPDATE tenant.ff_inventory
-       SET platform = $1,
-           nm_id = $2,
-           product_id = $3,
-           sku_name = $4,
-           im_url = $5,
-           updated_at = now()
-       WHERE id = $6
-       RETURNING unit_cost, completed_at`,
-      [platform, platform === "wb" ? Number(nm_id) : null, platform === "ozon" ? Number(product_id) : null, skuName, imUrl, id]
+    // Записать привязку в таблицу-связку (с 2026-07-18 — мультисвязка).
+    // Идемпотентно: повторная привязка того же (platform, nm_id|product_id) к той же
+    // позиции не дублирует (ON CONFLICT DO NOTHING без указания целевых колонок —
+    // срабатывает по подходящему partial unique index: uq_ff_inventory_skus_wb /
+    // uq_ff_inventory_skus_ozon). Уникальность — частичные индексы по платформе
+    // (WB по nm_id, Ozon по product_id), т.к. NULL-колонка в обычном UNIQUE не ловит
+    // дубликаты (NULL != NULL в PG).
+    const nmVal = platform === "wb" ? Number(nm_id) : null;
+    const pidVal = platform === "ozon" ? Number(product_id) : null;
+    const ins = await tenantQuery(
+      `INSERT INTO tenant.ff_inventory_skus
+         (cabinet_id, ff_inventory_id, platform, nm_id, product_id, sku_name, im_url)
+       VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, $6)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [id, platform, nmVal, pidVal, skuName, imUrl]
     );
-    if (!rows.length) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
+    // ON CONFLICT вернёт 0 строк, если привязка уже была — это не ошибка (идемпотентность).
+    const skuLinkId = ins[0]?.id || null;
 
     // ⚠ cost_override НЕ пишем (решение 2026-07-16): складская unit_cost — это
     // внутренняя цифра партии (для баланса склада), она НЕ должна утекать в общую
     // себестоимость. Себестоимость для P&L/юнитки/Сводки заводится ОТДЕЛЬНО на
     // странице «Себестоимость» (/items). Склад и items — независимы.
-    return NextResponse.json({ ok: true, sku_name: skuName, im_url: imUrl });
+    // Мультисвязка (2026-07-18) этот контракт сохраняет: привязка = только имя/фото.
+    return NextResponse.json({ ok: true, sku_link_id: skuLinkId, sku_name: skuName, im_url: imUrl });
   }
 
   if (b.action === "unlink_sku") {
-    await tenantQuery(
-      `UPDATE tenant.ff_inventory
-       SET platform = NULL, nm_id = NULL, product_id = NULL, sku_name = NULL, im_url = NULL, updated_at = now()
-       WHERE id = $1`,
-      [id]
-    );
+    // С 2026-07-18 отвязка работает с конкретной связью (sku_link_id) в ff_inventory_skus.
+    // Back-compat: если пришёл только id (ff_inventory_id) без sku_link_id — удаляем
+    // ВСЕ привязки позиции (поведение старого unlink_sku). Это нужно старым клиентам
+    // и предотвращает краш, если где-то остался старый вызов.
+    if (b.sku_link_id) {
+      await tenantQuery(
+        `DELETE FROM tenant.ff_inventory_skus WHERE id = $1`, [Number(b.sku_link_id)]
+      );
+    } else {
+      await tenantQuery(
+        `DELETE FROM tenant.ff_inventory_skus WHERE ff_inventory_id = $1`, [id]
+      );
+      console.warn(`[inventory] unlink_sku вызван без sku_link_id для ff_inventory_id=${id} — удалены все привязки (back-compat)`);
+    }
     // cost_override НЕ удаляем — он может быть нужен для истории расчётов.
     return NextResponse.json({ ok: true });
   }
@@ -291,14 +365,14 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   }
 
   // Inline-правка поля строки: internal_name | category | unit_cost | im_url.
-  // im_url правится только если артикул МП НЕ привязан (иначе фото тянется с МП —
-  // не даём перетереть). unit_cost → при привязанном артикуле обновляем cost_override.
+  // im_url правится только если у позиции НЕТ привязок к МП (если есть — фото
+  // тянется с МП для primary; не даём перетереть). cost_override НЕ пишем (2026-07-16).
   if (b.action === "update_field") {
     const field = b.field;
     const allowed = { internal_name: 1, category: 1, unit_cost: 1, im_url: 1, location_id: 1 };
     if (!allowed[field]) return NextResponse.json({ error: "field not allowed" }, { status: 400 });
     const cur = (await tenantQuery(
-      `SELECT platform, nm_id, product_id, unit_cost, completed_at FROM tenant.ff_inventory WHERE id = $1`, [id]
+      `SELECT id, unit_cost FROM tenant.ff_inventory WHERE id = $1`, [id]
     ))[0];
     if (!cur) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
 
@@ -307,8 +381,12 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       val = val === "" || val == null ? null : Number(val);
       if (val != null && (!Number.isFinite(val) || val < 0)) return NextResponse.json({ error: "unit_cost must be >= 0" }, { status: 400 });
     } else if (field === "im_url") {
-      // фото грузится только если нет привязки к МП (там фото тянется по API)
-      if (cur.platform) return NextResponse.json({ error: "фото управляется маркетплейсом (артикул привязан)" }, { status: 400 });
+      // фото грузится только если нет привязок к МП (там фото тянется по API).
+      // С 2026-07-18 проверяем наличие привязок в ff_inventory_skus (мультисвязка).
+      const hasLink = (await tenantQuery(
+        `SELECT 1 FROM tenant.ff_inventory_skus WHERE ff_inventory_id = $1 LIMIT 1`, [id]
+      )).length > 0;
+      if (hasLink) return NextResponse.json({ error: "фото управляется маркетплейсом (артикул привязан)" }, { status: 400 });
       val = val || null;
     } else if (field === "location_id") {
       // ссылка на место хранения: число или null

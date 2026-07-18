@@ -238,14 +238,37 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     if (exists.length) {
       invId = exists[0].id;
     } else {
+      // С 2026-07-18 НЕ пишем nm_id в ff_inventory (legacy-колонка, источник правды —
+      // ff_inventory_skus). Колонку оставили в INSERT ради back-compat, но значение null;
+      // привязку артикула создаём отдельным INSERT ниже (если есть nm_id закупки).
       const ins = await tenantQuery(
         `INSERT INTO tenant.ff_inventory
            (cabinet_id, purchase_id, internal_name, qty, unit_cost, category, nm_id, completed_at)
-         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [Number(b.id), cur.supplier_name, Number(cur.qty) || 0, unitCost, cur.category || null,
-         cur.nm_id || null, completedAt]
+         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, NULL, $6) RETURNING id`,
+        [Number(b.id), cur.supplier_name, Number(cur.qty) || 0, unitCost, cur.category || null, completedAt]
       );
       invId = ins[0]?.id;
+    }
+    // (в) если у закупки был nm_id (WB) — создаём привязку в ff_inventory_skus
+    // (мультисвязка с 2026-07-18: именно эта таблица — источник правды для артикулов).
+    // Идемпотентно (ON CONFLICT) — повторное завершение не дублирует. Имя/фото тянем
+    // из каталога wb.articles, если карточка там есть; иначе привязка без кэша
+    // (имя/фото подтянутся при GET из того же каталога).
+    const nmId = cur.nm_id != null ? Number(cur.nm_id) : null;
+    if (invId && nmId && Number.isFinite(nmId) && nmId > 0) {
+      let skuName = null, imUrl = null;
+      try {
+        const db = new DatabaseSync("wb", { readOnly: true });
+        const m = await db.prepare(`SELECT name, im_url FROM articles WHERE nm_id = ?`).get(nmId);
+        if (m) { skuName = m.name; imUrl = m.im_url; }
+      } catch {}
+      await tenantQuery(
+        `INSERT INTO tenant.ff_inventory_skus
+           (cabinet_id, ff_inventory_id, platform, nm_id, sku_name, im_url)
+         VALUES (current_setting('app.cabinet_id')::bigint, $1, 'wb', $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [invId, nmId, skuName, imUrl]
+      );
     }
     return NextResponse.json({ ok: true, inventory_id: invId, unit_cost: unitCost });
   }
