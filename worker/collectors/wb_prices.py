@@ -2,7 +2,14 @@
 SaaS-сборщик АКТУАЛЬНЫХ ЦЕН WB → tenant.wb_prices.
 
 discounts-prices-api /api/v2/list/goods/filter (limit/offset пагинация).
-Снимок: цена продавца ДО скидки + размер скидки % + СПП (всегда NULL — WB не отдаёт).
+Снимок: цена продавца ДО скидки (price_seller) + размер скидки % (discount) +
+ФИНАЛЬНАЯ цена покупателя на сайте (price_buyer = discountedPrice).
+
+⚠️ Про СПП (фикс 2026-07-28): WB в этом endpoint НЕ отдаёт «СПП» отдельным полем.
+Поле `discountedPrice` = уже финальная цена, что видит покупатель (скидка продавца
+договорит её до конца — на cab #1 у всех 145 товаров spp=0 по эмуляции). Поэтому
+колонку spp_auto оставляем NULL (legacy), а налоги/комиссии в lib/unit.js теперь
+считаем от price_buyer напрямую (ст. 248/346.15 НК РФ: выручка = поступления).
 Токен из env WB_TOKEN. Идемпотентно по (cabinet_id, nm_id).
 """
 import os
@@ -62,10 +69,16 @@ def collect():
             price_seller = sz0.get("price")
             if price_seller is None:
                 continue
+            # discountedPrice = финальная цена покупателя на сайте (после скидки
+            # продавца). Раньше терялось — теперь пишем в price_buyer (миграция 028).
+            # Если WB не отдал (старый товар) — None, на лету не вычисляем.
+            dprice = sz0.get("discountedPrice")
+            price_buyer = round(float(dprice)) if dprice is not None else None
             rows.append({
                 "nm_id": nm,
                 "price_seller": round(float(price_seller)),
                 "discount": int(item.get("discount") or 0),
+                "price_buyer": price_buyer,
                 "spp_auto": None,
             })
         offset += limit

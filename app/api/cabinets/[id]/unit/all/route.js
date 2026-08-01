@@ -141,10 +141,13 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
      ORDER BY nm_id, effective_from DESC`
   ).all()) cogs[r.nm_id] = r.cost > 0 ? r.cost : null;
   const prices = {};
-  for (const r of await db.prepare("SELECT nm_id, price_seller, discount FROM wb_prices").all()) {
+  for (const r of await db.prepare("SELECT nm_id, price_seller, discount, price_buyer FROM wb_prices").all()) {
     prices[r.nm_id] = {
       priceSeller: r.price_seller > 0 ? r.price_seller : null,
       discount: r.discount != null ? r.discount / 100 : null,
+      // price_buyer = финальная цена покупателя на сайте (WB API discountedPrice,
+      // фикс 2026-07-28). calcWB использует её как базу налогов, если задана.
+      priceBuy: r.price_buyer != null && r.price_buyer > 0 ? r.price_buyer : null,
     };
   }
   // SPP из daily_metrics — последнее не-NULL значение по nm_id.
@@ -172,6 +175,7 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
     if (prices[nm]) {
       if (prices[nm].priceSeller != null) input.priceSeller = prices[nm].priceSeller;
       if (prices[nm].discount != null) input.discount = prices[nm].discount;
+      if (prices[nm].priceBuy != null) input.priceBuy = prices[nm].priceBuy;
     }
     const r = await calcWB(input);
     r.platform = "wb";
@@ -221,6 +225,7 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
       sku: String(nm), name,
       priceSeller: prices[nm].priceSeller,
       discount: prices[nm].discount,
+      priceBuy: prices[nm].priceBuy ?? null,
       buyout: 0.9,
       commissionRate: subject && subjAvg[subject] != null ? subjAvg[subject] : globalComm,
       spp: sppAuto[nm] ?? null,
