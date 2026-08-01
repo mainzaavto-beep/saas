@@ -58,6 +58,9 @@ WB_COLLECTORS = [
     "wb_cabinet_costs",
     "wb_metrics",
     "wb_ads",
+    # "wb_jem",        # «Портрет покупателя» (Джем) — ОТКЛЮЧЁН 2026-08-01: зависает
+    #                  # намертво (см. run_saas_collect.sh:19-25), вешал onboarding
+    #                  # нового кабинета на таймаут 1 час. Вернуть после фикса зависания.
     "wb_prices",
     "wb_stocks",
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)

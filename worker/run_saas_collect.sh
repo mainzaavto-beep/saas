@@ -16,6 +16,13 @@ DAYS_FROM="${2:-}"
 DAYS_TO="${3:-0}"
 
 # Списки сборщиков по группам.
+# ⚠️ 2026-07-27: wb_jem ВРЕМЕННО убран из MAIN_COLLECTORS. Сборщик «Портрет
+# покупателя» (подписка Джем, untracked worker/collectors/wb_jem.py) зависает
+# намертво при запуске (молчит, exit по таймауту). Т.к. orchestrator гоняет
+# сборщики последовательно, wb_jem вешал весь saas-worker на 1 час
+# (TimeoutStartSec=1h) → Ozon-сборщики в конце очереди НИКОГДА не запускались
+# → данные Ozon замёрзли на 22-23 июля. Файл wb_jem.py НЕ трогаем (из параллельной
+# сессии) — хозяин решает, чинить ли его. После фикса — вернуть wb_jem сюда.
 MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_order_costs,ozon_metrics,ozon_efficiency"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
