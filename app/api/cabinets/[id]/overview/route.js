@@ -71,11 +71,14 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   ).get(from, toEnd)).v || 0;
 
   // Налог: УСН (база = выручка без НДС) + НДС (выделение из цены). profit вычитает total.
-  const expenses = k.commission + k.acquiring + k.logistics + k.costRub + k.adSp + k.storage;
-  const tot = calcTotalTax(taxMode, k.revenue, expenses);
+  // База налога = ppvz_for_pay (fin.forPay, «к перечислению продавцу») — реальная выручка
+  // продавца, уже за вычетом комиссии/эквайринга/лояльности площадкой (урок D15, фикс 2026-07-31).
+  // profit = forPay − logistics − cost − ad − storage − tax. commission/acquiring УЖЕ внутри forPay.
+  const expenses = k.logistics + k.costRub + k.adSp + k.storage;
+  const tot = calcTotalTax(taxMode, fin.forPay, expenses);
   k.tax = tot.total;
   k.profit = Math.round(
-    (k.revenue - k.commission - k.acquiring - k.logistics - k.costRub - k.adSp - k.tax) * 100
+    (fin.forPay - k.logistics - k.costRub - k.adSp - k.storage - k.tax) * 100
   ) / 100;
   return k;
 }
@@ -171,6 +174,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
          SUM(s.retail_price_withdisc_rub) AS salesRub,
          SUM(s.commission_percent * s.retail_price_withdisc_rub / 100.0) AS commission,
          SUM(s.acquiring_fee) AS acquiring,
+         SUM(s.ppvz_for_pay) AS forPay,
          SUM(s.quantity) AS qty
        FROM finance_report s
        WHERE s.supplier_oper_name='Продажа' AND s.nm_id > 0
@@ -199,12 +203,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     lossMakers = lmFin
       .filter((f) => lmCost[f.nm_id] != null)
       .map((f) => {
-        const rev = f.salesRub || 0;
+        // Модель ppvz_for_pay (урок D15): forPay уже включает комиссию/эквайринг/лояльность,
+        // их НЕ вычитаем. Только логистика (отдельная операция) + себест + реклама + налог.
+        const forPay = f.forPay || 0;
         const costRub = (lmCost[f.nm_id] || 0) * (f.qty || 0);
-        const itemExpenses = (f.commission || 0) + (f.acquiring || 0)
-          + (lmLogMap[f.nm_id] || 0) + (lmAdMap[f.nm_id] || 0) + costRub;
-        const tax = calcTotalTax(wbTax, rev, itemExpenses).total;
-        const profit = rev - itemExpenses - tax;
+        const itemExpenses = (lmLogMap[f.nm_id] || 0) + (lmAdMap[f.nm_id] || 0) + costRub;
+        const tax = calcTotalTax(wbTax, forPay, itemExpenses).total;
+        const profit = forPay - itemExpenses - tax;
         return { nm_id: f.nm_id, name: lmName[f.nm_id] || String(f.nm_id),
                  profit: Math.round(profit * 100) / 100 };
       })

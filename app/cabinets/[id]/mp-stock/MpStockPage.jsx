@@ -20,6 +20,8 @@ const moneyC = (v) =>
   v == null ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v) + " ₽";
 const num = (v) =>
   v == null ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v);
+// Сегодня в виде YYYY-MM-DD (для max у date-picker'а — нельзя выбрать будущую дату).
+const todayStr = () => new Date().toLocaleDateString("sv-SE");
 
 export default function MpStockPage({ cabinetId }) {
   const [data, setData] = useState(null);
@@ -28,13 +30,18 @@ export default function MpStockPage({ cabinetId }) {
   const [mp, setMp] = useState("all"); // all | wb | ozon
   const [cat, setCat] = useState("all"); // all | <category>
   const [tab, setTab] = useState("items"); // items | warehouses
+  const [date, setDate] = useState(""); // YYYY-MM-DD или "" (срез по умолчанию = MAX date)
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/cabinets/${cabinetId}/mp-stock`)
+    setLoading(true);
+    const qs = date ? `?date=${date}` : "";
+    fetch(`/api/cabinets/${cabinetId}/mp-stock${qs}`)
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setData(d)))
-      .catch((e) => setError(String(e)));
-  }, []);
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [cabinetId, date]);
 
   // Товары выбранного МП. useMemo ДО условных return (Rules of Hooks).
   const platformItems = useMemo(() => {
@@ -84,16 +91,41 @@ export default function MpStockPage({ cabinetId }) {
   if (!data) return <Centered>Загрузка данных…</Centered>;
   if (!data.date) return <Centered>Данных по остаткам пока нет.</Centered>;
 
-  // Складская разбивка по выбранному МП (у Ozon своя, у WB своя; при «Все» — WB).
-  const warehouses = mp === "ozon" ? data.byWarehouseOzon : data.byWarehouse;
+  // Складская разбивка по выбранному МП. При «Все» — оба МП вместе (byWarehouseAll
+  // с меткой platform). Раньше при «Все» показывался только WB — баг.
+  const warehouses =
+    mp === "ozon" ? data.byWarehouseOzon :
+    mp === "wb" ? data.byWarehouse :
+    data.byWarehouseAll;
 
   return (
     <main style={{ maxWidth: 1640, margin: "0 auto", padding: "28px 30px", fontFamily: FONT, color: C.ink }}>
-      <div style={{ marginBottom: 18 }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Остатки на маркетплейсе</h1>
-        <p style={{ margin: "4px 0 0", color: C.muted, fontSize: 13 }}>
-          Срез: {data.dateWb ? `WB ${data.dateWb}` : ""}{data.dateWb && data.dateOzon ? " · " : ""}{data.dateOzon ? `Ozon ${data.dateOzon}` : ""} · {t.items} SKU в выборке
-        </p>
+      <div style={{ marginBottom: 18, display: "flex", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 280 }}>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Остатки на маркетплейсе</h1>
+          <p style={{ margin: "4px 0 0", color: C.muted, fontSize: 13 }}>
+            Срез: {data.dateWb ? `WB ${data.dateWb}` : ""}{data.dateWb && data.dateOzon ? " · " : ""}{data.dateOzon ? `Ozon ${data.dateOzon}` : ""} · {t.items} SKU в выборке{loading ? " · загрузка…" : ""}
+          </p>
+        </div>
+        {/* Выбор даты среза. Backend берёт ближайший снимок <= выбранной даты.
+            Если дата пустая — MAX(date) (свежий срез по умолчанию). */}
+        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 }}>
+          Дата среза
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="date"
+              value={date}
+              max={todayStr()}
+              onChange={(e) => setDate(e.target.value)}
+              style={{ padding: "8px 12px", borderRadius: 10, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit" }}
+            />
+            {date && (
+              <button onClick={() => setDate("")} title="Свежий срез" style={{ padding: "8px 12px", borderRadius: 10, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.muted, cursor: "pointer", fontSize: 12 }}>
+                Сброс
+              </button>
+            )}
+          </span>
+        </label>
       </div>
 
       {/* KPI */}
@@ -222,32 +254,58 @@ export default function MpStockPage({ cabinetId }) {
           </div>
         </>
       ) : (
-        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
             <thead>
               <tr style={{ background: C.surfaceAlt }}>
-                {["Склад", "Остаток (шт.)", "Полный", "Товаров"].map((h, i) => (
+                {["Склад", "Остаток (шт.)", "Полный", "Товаров", "Сумма (себест.)", "Сумма (реализ.)"].map((h, i) => (
                   <th key={i} style={th({ align: i === 0 ? "left" : "right" })}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {(warehouses || []).map((w) => (
-                <tr key={w.warehouse} style={{ borderTop: `1px solid ${C.line}` }}>
-                  <Td>{w.warehouse}</Td>
+              {(warehouses || []).map((w, i) => (
+                <tr key={w.warehouse + "-" + i} style={{ borderTop: `1px solid ${C.line}` }}>
+                  <Td>
+                    {mp === "all" && w.platform && (
+                      <span style={{ color: w.platform === "wb" ? C.accent : "#ff8800", fontWeight: 700, marginRight: 6, fontSize: 11 }}>
+                        {w.platform.toUpperCase()}
+                      </span>
+                    )}
+                    {w.warehouse}
+                  </Td>
                   <Td right style={{ fontWeight: 700 }}>{num(w.quantity)}</Td>
                   <Td right>{num(w.quantity_full)}</Td>
                   <Td right>{num(w.items)}</Td>
+                  <Td right>{money(w.value_cost)}</Td>
+                  <Td right>{money(w.value_retail)}</Td>
                 </tr>
               ))}
               {(!warehouses || warehouses.length === 0) && (
-                <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", color: C.muted }}>Нет данных по складам для этого МП</td></tr>
+                <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: C.muted }}>Нет данных по складам для этого МП</td></tr>
               )}
             </tbody>
+            {(warehouses && warehouses.length > 0) && (
+              <tfoot>
+                <tr style={{ background: C.surfaceAlt, borderTop: `2px solid ${C.line}` }}>
+                  <td style={tdFootLeft}>Итого ({warehouses.length} складов)</td>
+                  <td style={tdFootRight}>{num(warehouses.reduce((a, w) => a + (w.quantity || 0), 0))}</td>
+                  <td style={{ ...tdFootRight, fontWeight: 800 }}>{num(warehouses.reduce((a, w) => a + (w.quantity_full || 0), 0))}</td>
+                  <td style={tdFootRight}>{num(warehouses.reduce((a, w) => a + (w.items || 0), 0))}</td>
+                  <td style={{ ...tdFootRight, fontWeight: 800 }}>{money(warehouses.reduce((a, w) => a + (w.value_cost || 0), 0))}</td>
+                  <td style={{ ...tdFootRight, fontWeight: 800 }}>{money(warehouses.reduce((a, w) => a + (w.value_retail || 0), 0))}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
-          {mp !== "ozon" && (
+          {mp === "wb" && (
             <p style={{ padding: "0 14px 12px", color: C.faint, fontSize: 12 }}>
               Топ-20 складов WB по остатку. Мелкие склады скрыты.
+            </p>
+          )}
+          {mp === "all" && (
+            <p style={{ padding: "0 14px 12px", color: C.faint, fontSize: 12 }}>
+              Все склады WB и Ozon, отсортированы по полному остатку.
             </p>
           )}
         </div>

@@ -15,8 +15,19 @@ SaaS-сборщик ОСТАТКОВ по складам WB → tenant.wb_daily_
    • ⚠️ НЕТ поля quantityFull (как в старом) → считаем сами:
        quantity_full = quantity + inWayToClient + inWayFromClient
      (склад + в пути обе стороны). Это и есть «полный остаток».
-   • Новые поля chrtId / warehouseId / regionName — не пишем (схема не менялась,
-     колонок для них нет; при желании добавим миграцией).
+   • Новые поля chrtId / regionName — не пишем (схема не менялась, колонок
+     для них нет; при желании добавим миграцией). warehouseId — пишем.
+
+⚠️ ГРАБЛЯ chrtId (фикс 2026-07-22): WB отдаёт ОТДЕЛЬНУЮ строку на каждый
+   chrtId (характеристика = размер/цвет внутри карточки nm_id). Товары с
+   размерами дают несколько строк на один (nm_id, warehouseName). PK таблицы
+   = (cabinet_id, nm_id, date, warehouse) → без агрегации эти строки
+   перезаписывали друг друга через ON CONFLICT DO UPDATE, выживала последняя.
+   Симптом: по Невинномысску WB ЛК показывал ~225 шт, у нас 135 (разница 90
+   = два размерных товара: 63→12 и 54→15, выжили последние chrtId).
+   Фикс: в collect() строки группируются по (nm_id, warehouse) ДО upsert,
+   quantity/inWay* складываются. Код чтения трогать не нужно — все SELECT'ы
+   в stocks/route.js уже используют SUM+GROUP BY.
 
 Пишется на дату = сегодня (append-only; WB исторические остатки не отдаёт).
 Токен из env WB_TOKEN. Идемпотентно по (cabinet_id, nm_id, date, warehouse).
@@ -105,27 +116,70 @@ def collect():
         print("[wb_stocks] ПРОПУСК: WB API недоступен, снимок не записан (exit 0)", flush=True)
         return 0
     known = set(db_pg.active_nm_ids())
-    rows = []
+
+    # ⚠️ АГРЕГАЦИЯ chrtId → одна строка на (nm_id, склад) [фикс 2026-07-22].
+    # WB отдаёт ОТДЕЛЬНУЮ строку на каждый chrtId (характеристика = размер/цвет
+    # внутри карточки nm_id). Товары с размерами дают 2-5 строк на один (nm_id,
+    # warehouseName). PK таблицы = (cabinet_id, nm_id, date, warehouse) → без
+    # агрегации строки перезаписывали друг друга через ON CONFLICT DO UPDATE,
+    # выживала последняя (терялось до 90 шт на Невинномысске: 63→12, 54→15).
+    # Группируем заранее: складываем quantity / inWay* всех характеристик.
+    # warehouse_id берём из первой строки группы (одинаков для одного склада).
+    grouped = {}  # (nm_id, warehouse_name) → {quantity, in_to, in_from, warehouse_id}
+    skipped_unknown_nm = 0
+    skipped_no_wh = 0
     for s in data:
         nm = s.get("nmId")
         if nm not in known:
+            skipped_unknown_nm += 1
             continue  # только артикулы каталога
         wh = s.get("warehouseName")
         if not wh:
+            skipped_no_wh += 1
             continue
+        key = (nm, wh)
         qty = int(s.get("quantity", 0) or 0)
         in_to = int(s.get("inWayToClient", 0) or 0)
         in_from = int(s.get("inWayFromClient", 0) or 0)
+        acc = grouped.get(key)
+        if acc is None:
+            # warehouse_id одинаковый для всех строк одного склада, но кладём
+            # только при первом появлении (на случай NULL в какой-то строке).
+            grouped[key] = {
+                "quantity": qty, "in_to": in_to, "in_from": in_from,
+                "warehouse_id": s.get("warehouseId"),
+            }
+        else:
+            acc["quantity"] += qty
+            acc["in_to"] += in_to
+            acc["in_from"] += in_from
+            if acc.get("warehouse_id") is None:
+                acc["warehouse_id"] = s.get("warehouseId")
+
+    # Разворот аккумулированных групп в строки для upsert.
+    rows = []
+    for (nm, wh), acc in grouped.items():
+        qty = acc["quantity"]
+        in_to = acc["in_to"]
+        in_from = acc["in_from"]
         # ⚠️ Новый endpoint НЕ отдаёт quantityFull — считаем сами:
         # полный остаток = склад + в пути к клиенту + в пути от клиента.
         rows.append({
             "nm_id": nm, "date": today, "warehouse": wh,
-            "warehouse_id": s.get("warehouseId"),  # для маппинга к shared.wb_warehouses (миграция 025)
+            "warehouse_id": acc["warehouse_id"],  # для маппинга к shared.wb_warehouses (миграция 025)
             "quantity": qty,
             "quantity_full": qty + in_to + in_from,
             "in_way_to": in_to,
             "in_way_from": in_from,
         })
+
+    # Диагностика: сколько характеристик было свёрнуто (лог помогает заметить
+    # регрессию, если WB поменяет структуру ответа).
+    n_src = len(data)
+    n_merged = n_src - len(rows) - skipped_unknown_nm - skipped_no_wh
+    if n_merged > 0:
+        print(f"[wb_stocks] свёрнуто chrtId-дублей: {n_merged} "
+              f"({n_src} строк API → {len(rows)} уникальных nm_id+склад)", flush=True)
     n = db_pg.upsert_stock_many(rows)
     print(f"[wb_stocks] записано {n} строк → tenant.wb_daily_stock", flush=True)
     return n

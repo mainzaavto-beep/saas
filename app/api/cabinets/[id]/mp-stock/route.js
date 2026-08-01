@@ -19,8 +19,9 @@ export const dynamic = "force-dynamic";
 //    • category      — WB: articles.subject; Ozon: products.category (часто NULL, задача #30)
 //
 //  Totals считаются: общий (по всем МП) + по каждому МП отдельно (для
-//  переключателя «Все / WB / Ozon»). по-складам — только WB (у Ozon складская
-//  детализация в daily_stock есть, но складов мало — показываем в общем блоке).
+//  переключателя «Все / WB / Ozon»). Складская разбивка — для каждого МП
+//  своя (byWarehouse / byWarehouseOzon), плюс byWarehouseAll = оба МП
+//  вместе с меткой platform (для тумблера «Все МП»).
 // =====================================================================
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -47,6 +48,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       totalsOzon: aggAll(oz.items),
       byWarehouse: wb.byWarehouse, // только у WB есть содержательная складская разбивка
       byWarehouseOzon: oz.byWarehouse,
+      // Объединённый список складов WB + Ozon (с меткой platform) — для тумблера «Все МП».
+      byWarehouseAll: [
+        ...wb.byWarehouse.map((w) => ({ ...w, platform: "wb" })),
+        ...oz.byWarehouse.map((w) => ({ ...w, platform: "ozon" })),
+      ],
       items,
       categories,
     });
@@ -128,13 +134,33 @@ async function collectWB(dateParam) {
   ).all(date)).map((it) => ({ ...it, platform: "wb", article: String(it.sku) }));
 
   const byWarehouse = await db.prepare(
-    `SELECT warehouse,
-            SUM(quantity)      AS quantity,
-            SUM(quantity_full) AS quantity_full,
-            COUNT(DISTINCT nm_id) AS items
-     FROM daily_stock WHERE date = ?
-     GROUP BY warehouse ORDER BY quantity DESC LIMIT 20`
-  ).all(date);
+    `SELECT s.warehouse,
+            s.quantity,
+            s.quantity_full,
+            s.items,
+            ROUND(SUM(st.quantity_full * COALESCE(co.cost, 0))::numeric, 2) AS value_cost,
+            ROUND(SUM(st.quantity_full * COALESCE(m.price, 0))::numeric, 2) AS value_retail
+     FROM (
+       SELECT warehouse,
+              SUM(quantity)      AS quantity,
+              SUM(quantity_full) AS quantity_full,
+              COUNT(DISTINCT nm_id) AS items
+       FROM daily_stock WHERE date = ? GROUP BY warehouse
+     ) s
+     LEFT JOIN daily_stock st ON st.warehouse = s.warehouse AND st.date = ?
+     LEFT JOIN LATERAL (
+       SELECT nm_id, ROUND((price_seller * (1 - COALESCE(discount, 0) / 100.0))::numeric, 0) AS price
+       FROM wb_prices
+     ) m ON m.nm_id = st.nm_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE nm_id = st.nm_id AND platform = 'wb'
+         AND effective_from <= COALESCE(?, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
+     GROUP BY s.warehouse, s.quantity, s.quantity_full, s.items
+     ORDER BY s.quantity_full DESC LIMIT 20`
+  ).all(date, date, date);
 
   return { date, items, byWarehouse };
 }
@@ -188,13 +214,32 @@ async function collectOzon(dateParam) {
 
   // Складская разбивка Ozon (складов мало, но покажем все).
   const byWarehouse = await db.prepare(
-    `SELECT warehouse,
-            SUM(fbo_present - fbo_reserved) AS quantity,
-            SUM(fbo_present) AS quantity_full,
-            COUNT(DISTINCT product_id) AS items
-     FROM daily_stock WHERE date = ?
-     GROUP BY warehouse ORDER BY quantity DESC`
-  ).all(date);
+    `SELECT s.warehouse,
+            s.quantity,
+            s.quantity_full,
+            s.items,
+            ROUND(SUM(st.fbo_present * COALESCE(co.cost, 0))::numeric, 2) AS value_cost,
+            ROUND(SUM(st.fbo_present * COALESCE(pp.price, 0))::numeric, 2) AS value_retail
+     FROM (
+       SELECT warehouse,
+              SUM(fbo_present - fbo_reserved) AS quantity,
+              SUM(fbo_present) AS quantity_full,
+              COUNT(DISTINCT product_id) AS items
+       FROM daily_stock WHERE date = ? GROUP BY warehouse
+     ) s
+     LEFT JOIN daily_stock st ON st.warehouse = s.warehouse AND st.date = ?
+     LEFT JOIN LATERAL (
+       SELECT product_id, MAX(price) AS price FROM products GROUP BY product_id
+     ) pp ON pp.product_id = st.product_id
+     LEFT JOIN LATERAL (
+       SELECT cost FROM tenant.cost_overrides
+       WHERE product_id = st.product_id AND platform = 'ozon'
+         AND effective_from <= COALESCE(?, current_date)
+       ORDER BY effective_from DESC LIMIT 1
+     ) co ON true
+     GROUP BY s.warehouse, s.quantity, s.quantity_full, s.items
+     ORDER BY s.quantity_full DESC`
+  ).all(date, date, date);
 
   return { date, items, byWarehouse };
 }

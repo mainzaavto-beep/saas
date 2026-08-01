@@ -8,6 +8,7 @@ import {
   ozOrderCostsByProduct, ozAdSpend, calcOperatingProfit as ozCalcProfit,
 } from "@/lib/ozonMetrics.js";
 import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
+import { statusMap } from "@/lib/finItems.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,14 +46,18 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const platform = url.searchParams.get("platform") || "all"; // all|wb|ozon
     const fromQ = url.searchParams.get("from") || "";           // YYYY-MM-DD
     const toQ = url.searchParams.get("to") || "";
+    // ?includeInactive=1 — показать и inactive (по умолчанию фильтруется только active,
+    // симметрично /api/unit/all). Но товары С продажами/возвратами за период показываются
+    // ВСЕГДА (даже inactive) — чтобы не потерать свежие продажи снятого с продаж товара.
+    const includeInactive = url.searchParams.get("includeInactive") === "1";
 
     // Дефолтный период: последние 30 дней от MAX(order_dt) по обеим БД.
     // Если MAX пустой (нет данных / RLS ничего не видит) — fallback на сегодня.
     let from = fromQ, to = toQ;
     if (!from || !to) {
       let maxDt = "";
-      try { maxDt = await new DatabaseSync("wb", {readOnly:true}).prepare("SELECT MAX(order_dt) AS m FROM orders").get()?.m || ""; } catch {}
-      try { const oz = await new DatabaseSync("ozon", {readOnly:true}).prepare("SELECT MAX(order_dt) AS m FROM orders").get()?.m || ""; if (oz > maxDt) maxDt = oz; } catch {}
+      try { maxDt = (await new DatabaseSync("wb", {readOnly:true}).prepare("SELECT MAX(order_dt) AS m FROM orders").get())?.m || ""; } catch (e) { console.error("products-summary: MAX(order_dt) wb", e); }
+      try { const oz = (await new DatabaseSync("ozon", {readOnly:true}).prepare("SELECT MAX(order_dt) AS m FROM orders").get())?.m || ""; if (oz > maxDt) maxDt = oz; } catch (e) { console.error("products-summary: MAX(order_dt) ozon", e); }
       if (maxDt) {
         if (!to) to = maxDt.slice(0, 10);
         if (!from) {
@@ -73,6 +78,30 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
     if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb, wbTax));
     if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon, ozonTax));
+
+    // ⚠️ ФИЛЬТР СТАТУСА 2026-07-23 (симметрично /api/unit/all): показываем active-товары
+    // (из products, fallback "active") ПЛЮС товары С продажами/возвратами за период
+    // (даже inactive — чтобы не терять свежие продажи снятого с продаж товара). Раньше
+    // addStub по products добавлял ВСЕ 88 ozon-артикулов, включая 34 inactive без продаж.
+    const stat = await statusMap();
+    if (!includeInactive) {
+      items = items.filter((it) => {
+        const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
+        const status = stat[key] || "active";
+        it.status = status;
+        // Товар с продажами/возвратами за период → показываем ВСЕГДА (независимо от статуса).
+        // Товар без активности → только если active. Это сохраняет свежие продажи снятого
+        // товара, но убирает inactive-мусор без продаж.
+        const hasActivity = (it.sold || 0) + (it.returns || 0) > 0;
+        return hasActivity || status === "active";
+      });
+    } else {
+      // includeInactive: обогащаем статусом, но не фильтруем (для отладки/сверки).
+      for (const it of items) {
+        const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
+        it.status = stat[key] || "active";
+      }
+    }
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
@@ -112,13 +141,20 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // эмулятора DatabaseSync поверх node-postgres). Решение: считать через
       // subquery в одном запросе. fullAd = Σ ad_spend из daily_metrics за период.
       let fullAd = 0;
-      try {
-        const wbad = await new DatabaseSync("wb", {readOnly:true}).prepare(
-          `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
-                   WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
-        ).get(from, toEnd);
-        fullAd += (wbad && wbad.s) || 0;
-      } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
+      // ⚠️ ФИКС 2026-07-23: каждый блок — в своём platform-гарде, симметрично
+      // logistics-блоку ниже (там уже есть `if (platform !== "ozon")`). Раньше
+      // WB-ad блок был БЕЗ гарда → при platform=ozon к totals.profit вычиталась
+      // ВСЯ WB-реклама (≈81к на cabinet #1) → profit показывал ≈−45к вместо
+      // реальных +1.8к. Баг: +36к (profitClean) − 81к (WB ad) = −45 651.
+      if (platform !== "ozon") {
+        try {
+          const wbad = await new DatabaseSync("wb", {readOnly:true}).prepare(
+            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+          ).get(from, toEnd);
+          fullAd += (wbad && wbad.s) || 0;
+        } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
+      }
       if (platform !== "wb") {
         try {
           const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
@@ -184,6 +220,7 @@ function aggTotals(items) {
     ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
     orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
     acquiring: 0, loyalty: 0, tax: 0, profit: 0, adSpend: 0, stock: 0,
+    returnLogistics: 0,
   };
   for (const i of items) {
     t.ordered += i.ordered || 0;
@@ -202,6 +239,7 @@ function aggTotals(items) {
     t.profit += i.profit || 0;
     t.adSpend += i.adSpend || 0;
     t.stock += i.stock || 0;
+    t.returnLogistics += i.returnLogistics || 0;
   }
   t.buyoutPct = (t.sold + t.returns + t.cancelled) > 0
     ? round2(100 * t.sold / (t.sold + t.returns + t.cancelled)) : null;
@@ -365,6 +403,9 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     const acquiring  = round2(f.acquiring || 0);
     const logistics  = round2(f.logistics || 0);
     const loyalty    = round2(f.loyalty || 0);
+    // forPay = ppvz_for_pay («к перечислению продавцу») — ЭТАЛОН выручки для profit
+    // (урок D15). commission/acquiring/loyalty УЖЕ внутри → в profit не вычитаем.
+    const forPay = round2(f.forPay || 0);
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
     // Инварианта: ordered >= sold + cancelled. ⚠️ returns НЕ прибавляем к sold:
@@ -376,15 +417,14 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     const ordered = Math.max(o.ordered || 0, minOrdered);
     const adSp = ad[nm] || 0;
     const costRub = round2((unitCost[nm] ?? 0) * sold);
-    // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
-    // лояльность + себестоимость + реклама (хранение не привязано к SKU).
-    const itemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
-    const tax = calcTotalTax(taxMode, salesRub, itemExpenses).total;
-    // ЧИСТАЯ прибыль по SKU = выручка − все расходы. Хранение сюда НЕ входит —
-    // оно не привязано к товару (№27), показывается в плитке «Кабинетные расходы».
-    const profitClean = round2(
-      salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax
-    );
+    // Налог и profit — от ppvz_for_pay (ЭТАЛОН, урок D15). forPay уже включает
+    // комиссию/эквайринг/лояльность → их НЕ вычитаем из profit. Расходы для УСН Д−Р:
+    // логистика + себестоимость + реклама (хранение не привязано к SKU).
+    const itemExpenses = logistics + costRub + adSp;
+    const tax = calcTotalTax(taxMode, forPay, itemExpenses).total;
+    // ЧИСТАЯ прибыль по SKU = forPay − логистика − себест − реклама − налог.
+    // Хранение сюда НЕ входит — оно не привязано к товару (№27).
+    const profitClean = round2(forPay - logistics - costRub - adSp - tax);
     return {
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
@@ -394,6 +434,10 @@ async function collectWB(from, toEnd, shopName, taxMode) {
       orderRub: round2(orderRub), salesRub: round2(salesRub),
       costRub,
       commission, logistics, acquiring, loyalty,
+      // returnLogistics = 0 для WB: у WB возвратная логистика уже ВХОДИТ в поле
+      // logistics (операция «Логистика» в finance_report суммируется целиком,
+      // включая сторно возвратов — грабля #98). Отдельной колонки не нужно.
+      returnLogistics: 0,
       adSpend: round2(adSp),
       tax, profit: profitClean,
       stock: stockEnd[nm] ?? 0, avgStock: round2(avgStock), avgDailySales: round2(avgDailySales),
@@ -436,18 +480,28 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
        SUM(CASE WHEN oc.is_return=0 AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.logistics       ELSE 0 END) AS logistics,
        SUM(CASE WHEN oc.is_return=0 AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.acquiring       ELSE 0 END) AS acquiring,
        SUM(CASE WHEN oc.is_return=0 AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.loyalty         ELSE 0 END) AS loyalty,
+       -- ⚠️ ФИКС 2026-07-23: возвратные убытки. Трактовка хозяина: себестоимость
+       -- возвращённого товара НЕ списываем (он физически вернулся на склад), но
+       -- логистика возврата + комиссия Ozon за возврат — это реальный расход,
+       -- который ДОЛЖЕН входить в profit. Раньше возвраты (is_return=1) вообще
+       -- не учитывались → на cabinet #1 ~34к (логистика 24к + комиссия 10к за 30д)
+       -- «исчезали», а profit был завышен и минус на worst-товарах был необъясним.
+       SUM(CASE WHEN oc.is_return=1 AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.logistics       ELSE 0 END) AS rLogistics,
+       SUM(CASE WHEN oc.is_return=1 AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.commission      ELSE 0 END) AS rCommission,
        SUM(CASE WHEN substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)>=? AND substr(COALESCE(oc.sale_dt,oc.return_dt),1,10)<=? THEN oc.profit ELSE 0 END) AS profit
      FROM order_costs oc
      LEFT JOIN products p ON p.product_id = oc.product_id
      WHERE oc.product_id IS NOT NULL
        AND COALESCE(oc.sale_dt, oc.return_dt) IS NOT NULL
      GROUP BY oc.product_id`
-  ).all(from, toEnd, from, toEnd,
-        from, toEnd,
-        from, toEnd,
-        from, toEnd,
-        from, toEnd, from, toEnd, from, toEnd, from, toEnd,
-        from, toEnd);
+  ).all(from, toEnd, from, toEnd,          // sold, returns
+        from, toEnd,                       // selfBuyout
+        from, toEnd,                       // salesRub
+        from, toEnd,                       // costRub
+        from, toEnd, from, toEnd, from, toEnd, from, toEnd,  // commission, logistics, acquiring, loyalty
+        from, toEnd,                       // rLogistics
+        from, toEnd,                       // rCommission
+        from, toEnd);                      // profit
 
   // ⚠️ ФИКС 2026-06-25 (грабля #137): orderRub (сумма ЗАКАЗОВ) для Ozon считаем из
   // таблицы `orders` — симметрично WB (где orderRub = SUM(price_with_disc) из orders).
@@ -550,9 +604,29 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
     unitCost[r.product_id] = r.cost > 0 ? r.cost : null;
   }
 
-  // Добавляем все активные SKU (из order_costs). freshOz убран (грабля #134).
-  // Все активные товары уже попадают через GROUP BY oc.product_id в SQL-запросе.
+  // ⚠️ ФИКС 2026-07-23: добавляем ВСЕ товары из ozon_products (симметрично WB
+  // addStub в collectWB). Раньше список собирался только из order_costs → 43 из 88
+  // артикулов (без продаж в периоде) были невидимы в Сводке. Теперь каждый товар
+  // из products попадает в выдачу, даже с нулями (как на WB).
   const seen = new Set(rows.map((r) => r.nm));
+  try {
+    for (const r of await db.prepare(
+      `SELECT product_id AS nm, barcode, name, brand, category AS grp, im_url, offer_id AS sa
+       FROM products`
+    ).all()) {
+      if (!seen.has(r.nm)) {
+        rows.push({
+          nm: r.nm, barcode: r.barcode || null, name: r.name || null,
+          brand: r.brand || null, grp: r.grp || null, im_url: r.im_url || null, sa: r.sa || null,
+          // Все фин. поля = 0 (нет продаж/возвратов в периоде).
+          sold: 0, returns: 0, selfBuyout: 0, salesRub: 0, costRub: 0,
+          commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
+          rLogistics: 0, rCommission: 0, profit: 0,
+        });
+        seen.add(r.nm);
+      }
+    }
+  } catch (e) { console.error('[products-summary] Ozon products addStub:', e.message); }
 
   return rows.map((r) => {
     const nm = r.nm;
@@ -571,22 +645,26 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
     const loyalty    = round2(r.loyalty || 0);
     const costRub    = round2(r.costRub || 0);
     const adSp = ad[nm] || 0;
+    // Убыток от возвратов (фикс 2026-07-23): логистика + комиссия Ozon по
+    // возвращённым отправлениям. Себестоимость НЕ списываем (товар на складе).
+    // Раньше возвраты вообще не входили в profit → ~34к на cabinet #1 «исчезали».
+    const returnLogistics = round2((r.rLogistics || 0) + (r.rCommission || 0));
     // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
-    // лояльность + себестоимость + реклама.
-    const ozItemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp;
+    // лояльность + себестоимость + реклама + убыток от возвратов.
+    const ozItemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp + returnLogistics;
     const tax = calcTotalTax(taxMode, salesRub, ozItemExpenses).total;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
     // profitClean = ОПЕРАЦИОННАЯ прибыль (правка 2026-06-26): та же формула, что в
     // collectWB — выручка − себест − комиссия − логистика − эквайринг − лояльность −
-    // реклама − УСН 6%. Раньше здесь было просто order_costs.profit (валовая, без
-    // рекламы/налога) → Ozon и WB считали прибыль по-разному внутри Сводки, и План
-    // продаж не сходился с Сводкой. Теперь единая операционная прибыль для обеих МП.
+    // реклама − налог − убыток от возвратов. Раньше здесь было просто order_costs.profit
+    // (валовая, без рекламы/налога) → Ozon и WB считали прибыль по-разному внутри
+    // Сводки, и План продаж не сходился с Сводкой. Теперь единая операционная прибыль.
     // Готовый order_costs.profit оставляем справочно как profitGross (валовая, до
     // рекламы/налога) — иногда полезно видеть валовую маржу отдельно.
     const profitGross = round2(r.profit || 0);
     const profitClean = round2(
-      salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax
+      salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax - returnLogistics
     );
     // orderRub и ordered/cancelled — из таблицы orders (фикс #137). orderRub = сумма
     // ЗАКАЗОВ (симметрично WB), НЕ равен salesRub (который из order_costs = доставки).
@@ -602,6 +680,7 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
       orderRub: round2(o.orderRub), salesRub: round2(salesRub),
       costRub,
       commission, logistics, acquiring, loyalty,
+      returnLogistics,
       adSpend: round2(adSp),
       tax, profit: profitClean, profitGross,
       stock: stockEnd[nm] ?? 0, avgStock: round2(avgStock), avgDailySales: round2(avgDailySales),

@@ -23,7 +23,10 @@ const pct = (v) =>
   v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(v) + "%";
 
 const COMPACT = {
-  wb: ["name", "priceSeller", "discount", "priceSell", "spp", "priceWithSpp", "adsRate", "ads", "buyout", "defectRate", "profitWithDefect"],
+  // priceBuy («Цена на сайте») добавлен в дефолтный набор (фикс 2026-07-28):
+  // финальная цена покупателя из WB API (discountedPrice), от которой считаются
+  // налоги/комиссии. Заменяет эмуляцию «СПП» (WB не отдаёт её отдельным полем).
+  wb: ["name", "priceSeller", "discount", "priceSell", "spp", "priceWithSpp", "priceBuy", "adsRate", "ads", "buyout", "defectRate", "profitWithDefect"],
   ozon: ["name", "priceSell", "boost", "priceBuyer", "vat", "revNet", "commission", "logisticsFbo", "ads", "usn", "cost", "profit", "margin"],
 };
 

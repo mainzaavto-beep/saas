@@ -54,6 +54,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // Только WB (Ozon — единый склад FBO, не применимо).
     const efficiency = await buildWarehouseEfficiency(vel);
 
+    // Тренд остатков по складам (склад × день) — для drill-down во вкладке «Склады».
+    const warehouseTrend = await warehouseTrendAll();
+
     // Мёртвый капитал = Σ себест. товаров без продаж (velocity=0) с остатком > 0.
     const deadCapital = round2(
       itemsWithStatus
@@ -92,6 +95,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       deadCapital,
       // Вкладка 5: эффективность складов (byWarehouse/byCluster) + рекомендации (только WB)
       efficiency,
+      // Тренд остатков по складам (склад × день) — drill-down во вкладке «Склады»
+      warehouseTrend,
       categories: [...new Set(allItems.map((i) => i.category).filter(Boolean))].sort(),
     });
   } catch (e) {
@@ -408,6 +413,29 @@ async function byWarehouseOzon(db, date) {
 async function resolveStockDate(db) {
   const r = await db.prepare("SELECT MAX(date) AS d FROM daily_stock").get();
   return r?.d || null;
+}
+
+// ---------- Тренд остатков по складам (склад × день) ----------
+// Для drill-down во вкладке «Склады»: клик на склад → график остатка этого
+// склада по дням. Решётка маленькая (~10 складов × ~7 дат = 70 строк на МП),
+// поэтому отдаём в основном ответе, без отдельного запроса.
+// Группируем по (date, warehouse) — SUM схлопнет множественные nm_id/склад
+// (а после фикса wb_stocks и множественные chrtId) в одну сумму на склад-день.
+async function warehouseTrendAll() {
+  const wbDb = new DatabaseSync("wb", { readOnly: true });
+  const wbRows = await wbDb.prepare(
+    `SELECT date AS d, warehouse AS w, SUM(quantity_full) AS t
+     FROM daily_stock GROUP BY date, warehouse ORDER BY date, warehouse`
+  ).all();
+  const ozDb = new DatabaseSync("ozon", { readOnly: true });
+  const ozRows = await ozDb.prepare(
+    `SELECT date AS d, warehouse AS w, SUM(fbo_present) AS t
+     FROM daily_stock GROUP BY date, warehouse ORDER BY date, warehouse`
+  ).all();
+  return {
+    wb: wbRows.map((r) => ({ date: r.d, warehouse: r.w, total: Number(r.t) || 0 })),
+    ozon: ozRows.map((r) => ({ date: r.d, warehouse: r.w, total: Number(r.t) || 0 })),
+  };
 }
 
 // =====================================================================

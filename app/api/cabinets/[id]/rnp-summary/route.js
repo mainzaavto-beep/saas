@@ -50,8 +50,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     let from = fromQ, to = toQ;
     if (!from || !to) {
       let maxDt = "";
-      try { maxDt = await new DatabaseSync("wb", { readOnly: true }).prepare("SELECT MAX(order_dt) AS m FROM orders").get()?.m || ""; } catch {}
-      try { const oz = await new DatabaseSync("ozon", { readOnly: true }).prepare("SELECT MAX(order_dt) AS m FROM orders").get()?.m || ""; if (oz > maxDt) maxDt = oz; } catch {}
+      try { maxDt = (await new DatabaseSync("wb", { readOnly: true }).prepare("SELECT MAX(order_dt) AS m FROM orders").get())?.m || ""; } catch (e) { console.error("rnp-summary: MAX(order_dt) wb", e); }
+      try { const oz = (await new DatabaseSync("ozon", { readOnly: true }).prepare("SELECT MAX(order_dt) AS m FROM orders").get())?.m || ""; if (oz > maxDt) maxDt = oz; } catch (e) { console.error("rnp-summary: MAX(order_dt) ozon", e); }
       if (maxDt) {
         if (!to) to = maxDt.slice(0, 10);
         if (!from) {
@@ -79,7 +79,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       await collectWB(from, toEnd, prevFrom, prevToEnd, cabinet.shop_names?.wb, wbTax)
     );
     if (platform !== "wb")   items = items.concat(
-      await collectOzon(from, toEnd, prevFrom, prevToEnd, cabinet.shop_names?.ozon, ozonTax)
+      await collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, cabinet.shop_names?.ozon, ozonTax)
     );
 
     // План (пропорция от месяца) — общий хелпер, per-SKU по nm_id/product_id.
@@ -96,6 +96,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // Динамика (только там, где есть prev).
       it.ctrTrend = trendOf(it.ctrPct, it.ctrPrevPct);
       it.ratingTrend = trendOf(it.rating, it.ratingPrev);
+      it.mpDiscountTrend = trendOf(it.mpDiscount, it.mpDiscountPrev);
     }
 
     // Сортировка: по выручке вниз.
@@ -273,6 +274,15 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
   ).all(from, toEnd)) {
     spp[r.nm_id] = r.s != null ? round2(r.s) : null;
   }
+  // 5б) СПП предыдущего периода — для стрелки динамики (по образцу CTR/rating, блок 4).
+  const sppPrev = {};
+  for (const r of await db.prepare(
+    `SELECT nm_id, AVG(spp) AS s FROM orders
+     WHERE order_dt >= ? AND order_dt <= ? AND spp IS NOT NULL AND nm_id IS NOT NULL
+     GROUP BY nm_id`
+  ).all(prevFrom, prevToEnd)) {
+    sppPrev[r.nm_id] = r.s != null ? round2(r.s) : null;
+  }
 
   // 6) Себестоимость единицы — tenant.cost_overrides (единый источник, как в
   //    /products-summary). Актуальный override на сегодня.
@@ -349,11 +359,13 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
     const acquiring = round2(f.acquiring || 0);
     const logistics = round2(f.logistics || 0);
     const loyalty = round2(f.loyalty || 0);
+    const forPay = round2(f.forPay || 0); // ppvz_for_pay — ЭТАЛОН выручки для profit (урок D15)
     const adSp = round2(d.spend || 0);
     // Себестоимость партии = unitCost × продано за период (тот же канон, что /products-summary).
     const costRub = round2((unitCost[nm] ?? 0) * (soldAll[nm] || 0));
-    const tax = calcTotalTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp).total;
-    const profitClean = round2(salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax);
+    // Налог и profit — от forPay (комиссия/эквайринг/лояльность уже внутри, не вычитаем).
+    const tax = calcTotalTax(taxMode, forPay, logistics + costRub + adSp).total;
+    const profitClean = round2(forPay - logistics - costRub - adSp - tax);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
     const avgDaily5 = s5 / 5;
@@ -369,6 +381,7 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
       drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: spp[nm] != null ? round2(spp[nm]) : null,
+      mpDiscountPrev: sppPrev[nm] != null ? round2(sppPrev[nm]) : null,
       profitFact: profitClean,
       turnoverDays,
       rating: d.rating, ratingPrev: dp.rating != null ? dp.rating : null,
@@ -378,7 +391,7 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
 }
 
 // ---------- Ozon ----------
-async function collectOzon(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
+async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, taxMode) {
   const db = new DatabaseSync("ozon", { readOnly: true });
   const to = toEnd.slice(0, 10);
 
@@ -443,7 +456,23 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) 
     ).all(toEnd)) {
       boost[r.product_id] = r.current_boost != null ? round2(r.current_boost * 100) : null;
     }
-  } catch { /* таблица может быть пуста — игнор */ }
+  } catch (e) { console.error("rnp-summary: ozon boost", e); /* не фейлим весь роут */ }
+  // 5б-ozon) Соинвест предыдущего периода — последний снимок ≤ prevTo (для динамики).
+  const boostPrev = {};
+  try {
+    for (const r of await db.prepare(
+      `SELECT ap.product_id, ap.current_boost
+       FROM ozon_action_products ap
+       INNER JOIN (
+         SELECT product_id, MAX(date) AS d
+         FROM ozon_action_products
+         WHERE date <= ? AND current_boost IS NOT NULL
+         GROUP BY product_id
+       ) m ON ap.product_id = m.product_id AND ap.date = m.d`
+    ).all(prevTo)) {
+      boostPrev[r.product_id] = r.current_boost != null ? round2(r.current_boost * 100) : null;
+    }
+  } catch (e) { console.error("rnp-summary: ozon boostPrev", e); /* не фейлим весь роут */ }
 
   // 6) Продано за последние 5 дней (order_costs) — для оборачиваемости.
   const last5From = addDays(to, -4);
@@ -515,6 +544,7 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) 
       drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: boost[nm] != null ? boost[nm] : null,
+      mpDiscountPrev: boostPrev[nm] != null ? boostPrev[nm] : null,
       profitFact: profitClean,
       turnoverDays,
       rating: d.rating, ratingPrev: dp.rating != null ? dp.rating : null,

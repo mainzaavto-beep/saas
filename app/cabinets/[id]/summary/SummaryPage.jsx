@@ -347,6 +347,7 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{num(it.sold)}</Td>
                 <Td right>{num(it.cancelled)}</Td>
                 <Td right>{num(it.returns)}</Td>
+                <Td right><span style={{ color: (it.returnLogistics || 0) > 0 ? C.neg : C.faint }}>{money(it.returnLogistics)}</span></Td>
                 <Td right>{num(it.stock)}</Td>
                 <Td right>{pct(it.buyoutPct)}</Td>
                 <Td right>{num(it.avgOrdersDay)}</Td>
@@ -383,6 +384,7 @@ export default function SummaryPage({ cabinetId }) {
                 <td style={tdFootR}>{num(t.sold)}</td>
                 <td style={tdFootR}>{num(t.cancelled)}</td>
                 <td style={tdFootR}>{num(t.returns)}</td>
+                <td style={{ ...tdFootR, color: t.returnLogistics > 0 ? C.neg : C.faint }}>{money(t.returnLogistics)}</td>
                 <td style={tdFootR}>{num(t.stock)}</td>
                 <td style={tdFootR}>{pct(t.buyoutPct)}</td>
                 <td style={tdFootR}>—</td>
@@ -524,6 +526,7 @@ const COLS = [
   { key: "sold",        label: "Продано",        minW: 70, sort: "num" },
   { key: "cancelled",   label: "Отмен",          minW: 60, sort: "num" },
   { key: "returns",     label: "Возвраты",       minW: 70, sort: "num" },
+  { key: "returnLogistics", label: "Убыток возвр.", minW: 90, sort: "num" },
   { key: "stock",       label: "Остаток",        minW: 75, sort: "num" },
   { key: "buyoutPct",   label: "% выкупа",       minW: 75, sort: "num" },
   { key: "avgOrdersDay",label: "Зак/день",       minW: 70, sort: "num" },

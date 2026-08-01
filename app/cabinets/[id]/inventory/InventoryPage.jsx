@@ -24,6 +24,13 @@ const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v) + " ₽";
 const num = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v);
 const dash = (v) => (v == null || v === "" ? "—" : v);
+// Склонение по числу (1 карточка / 2 карточки / 5 карточек). Для подсказки в LinkModal.
+const pluralRu = (n, one, few, many) => {
+  const n10 = Math.abs(n) % 10, n100 = Math.abs(n) % 100;
+  if (n10 === 1 && n100 !== 11) return one;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+  return many;
+};
 
 export default function InventoryPage({ cabinetId }) {
   const [data, setData] = useState(null);
@@ -536,6 +543,38 @@ function LinkModal({ cabinetId, id, existingSkus = [], onClose, onLinked }) {
   const [platform, setPlatform] = useState("wb");
   const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
+  // С 2026-07-19: список уже подгруженных карточек МП для combobox (datalist),
+  // чтобы клиент выбирал из известных nm_id/product_id, а не вводил вслепую.
+  const [catalog, setCatalog] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
+  // Подгрузка справочника при смене МП. catalogue хранит ВСЕ артикулы кабинета
+  // по выбранному МП (limit 1000 в API), независимо от того, привязаны ли они.
+  useEffect(() => {
+    let cancelled = false;
+    setCatalog([]);
+    setCatalogLoading(true);
+    fetch(`/api/cabinets/${cabinetId}/articles?mp=${platform}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        // Унифицируем ключи для datalist: id = числовой артикул, label = имя + артикул.
+        const list = (d.articles || []).map((a) => ({
+          id: platform === "wb" ? a.nm_id : a.product_id,
+          name: a.name,
+          brand: a.brand,
+          offer: a.offer_id,
+          im_url: a.im_url,
+        })).filter((x) => Number.isFinite(Number(x.id)));
+        setCatalog(list);
+      })
+      .catch(() => { if (!cancelled) setCatalog([]); })
+      .finally(() => { if (!cancelled) setCatalogLoading(false); });
+    return () => { cancelled = true; };
+  }, [cabinetId, platform]);
+
+  // Совпадение выбранного значения с подгруженной карточкой — для превью имени/фото.
+  const picked = catalog.find((c) => String(c.id) === String(val).trim());
 
   // Список уже привязанных артикулов выбранного МП — для предупреждения о повторе.
   const taken = existingSkus
@@ -544,7 +583,7 @@ function LinkModal({ cabinetId, id, existingSkus = [], onClose, onLinked }) {
 
   async function save() {
     const v = parseInt(val, 10);
-    if (!Number.isFinite(v) || v <= 0) { alert("Введите числовой артикул"); return; }
+    if (!Number.isFinite(v) || v <= 0) { alert("Введите или выберите числовой артикул"); return; }
     if (taken.includes(String(v))) { alert("Этот артикул уже привязан к позиции"); return; }
     setBusy(true);
     try {
@@ -559,6 +598,9 @@ function LinkModal({ cabinetId, id, existingSkus = [], onClose, onLinked }) {
     } catch (e) { alert("Не привязать: " + e.message); }
     finally { setBusy(false); }
   }
+
+  // datalist id должен быть стабильным и уникальным для этого инстанса модалки.
+  const listId = `inv-link-skus-${platform}`;
 
   return (
     <div style={modalBackdrop} onClick={onClose}>
@@ -582,12 +624,54 @@ function LinkModal({ cabinetId, id, existingSkus = [], onClose, onLinked }) {
         </Field>
         <div style={{ height: 8 }} />
         <Field label={platform === "wb" ? "Артикул WB (nm_id)" : "Артикул Ozon (product_id)"}>
-          <input autoFocus type="number" value={val}
+          {/* Combobox: input + datalist. Пользователь либо выбирает из списка
+              подгруженных карточек, либо вводит числовой артикул вручную (fallback
+              для случая, когда карточки ещё нет в БД). */}
+          <input autoFocus type="number" value={val} list={listId}
             onChange={(e) => setVal(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
             placeholder={platform === "wb" ? "напр. 1055493730" : "напр. 3124567007"}
             style={{ ...inputStyle, width: "100%" }} />
+          <datalist id={listId}>
+            {catalog.map((c) => (
+              <option key={c.id} value={c.id}
+                label={`${c.name}${c.brand ? " · " + c.brand : ""}${c.offer ? " · " + c.offer : ""}`} />
+            ))}
+          </datalist>
         </Field>
+        {/* Превью выбранной карточки: имя + миниатюра, если артикул нашёлся в БД. */}
+        {picked && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8, padding: 8,
+            background: C.surfaceAlt, borderRadius: 6 }}>
+            {picked.im_url ? (
+              <img src={picked.im_url} alt="" style={{ width: 40, height: 40, objectFit: "cover",
+                borderRadius: 6, background: C.surface }} />
+            ) : (
+              <div style={{ width: 40, height: 40, borderRadius: 6, background: C.surface,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                color: C.faint, fontSize: 16 }}>📦</div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.ink,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {picked.name || "—"}
+              </div>
+              <div style={{ fontSize: 11, color: C.faint }}>
+                {picked.brand ? picked.brand + " · " : ""}артикул {picked.id}
+                {picked.offer ? " · " + picked.offer : ""}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Подсказка о покрытии справочника. */}
+        <div style={{ fontSize: 11, color: C.faint, marginTop: 8 }}>
+          {catalogLoading ? "Загружаю список карточек…" :
+           catalog.length === 0
+             ? <>Список карточек пуст — введите артикул вручную. Справочник
+                наполняется сборщиком (раз в день).</>
+             : <>В списке {catalog.length} {pluralRu(catalog.length, "карточка", "карточки", "карточек")}.
+                Можно выбрать из списка или ввести свой.</>}
+        </div>
         <div style={{ fontSize: 11, color: C.faint, marginTop: 8 }}>
           Привязка подтянет имя и фото карточки с маркетплейса. Один товар можно
           привязать к нескольким артикулам (например, WB + Ozon). Складская

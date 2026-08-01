@@ -280,13 +280,16 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
     const mk = (total, adPart) => (total != null ? Math.max(0, total - (adPart ?? 0)) : null);
     const fd = finByDate.get(date);
     const dayRevenue = fd ? fd.salesRub : null;
+    // forPay (ppvz_for_pay) — ЭТАЛОН выручки для profit (урок D15). Для витрины dayRevenue
+    // показываем salesRub, но налог и profit считаем от forPay.
+    const dayForPay = fd ? (fd.forPay || 0) : null;
     const daySold = salesDayByDate.has(date) ? salesDayByDate.get(date) : null;
     const dayCost = (fd && daySold != null) ? Math.round(((unitCost ?? 0) * daySold) * 100) / 100 : null;
     const dayAdSp = Math.round(((e.spend || 0) + (ru.spend || 0) + (cl.spend || 0)) * 100) / 100;
-    const dayProfit = (fd && dayRevenue != null)
-      ? Math.round((dayRevenue - (fd.commission || 0) - (fd.acquiring || 0) - (fd.logistics || 0) - (fd.loyalty || 0) - (dayCost || 0) - dayAdSp
-          - calcTotalTax(taxMode, dayRevenue,
-              (fd.commission || 0) + (fd.acquiring || 0) + (fd.logistics || 0) + (fd.loyalty || 0) + (dayCost || 0) + dayAdSp
+    const dayProfit = (fd && dayForPay != null && dayForPay > 0)
+      ? Math.round((dayForPay - (fd.logistics || 0) - (dayCost || 0) - dayAdSp
+          - calcTotalTax(taxMode, dayForPay,
+              (fd.logistics || 0) + (dayCost || 0) + dayAdSp
             ).total) * 100) / 100
       : null;
     const ordersTotal = ordersCountByDate.has(date) ? ordersCountByDate.get(date) : null;
@@ -353,16 +356,17 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
 
   const sold = totals.sales || 0;
   const salesRub = fin.salesRub;
+  const forPay = fin.forPay || 0; // ppvz_for_pay — ЭТАЛОН выручки для profit (урок D15)
   const costRub = Math.round(((unitCost ?? 0) * sold) * 100) / 100;
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
-  // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
-  const wbExpenses = (fin.commission || 0) + (fin.acquiring || 0) + (fin.logistics || 0) + costRub + adSp;
-  const tax = calcTotalTax(taxMode, salesRub, wbExpenses).total;
+  // Налог и profit — от forPay (комиссия/эквайринг/лояльность уже внутри, не вычитаем).
+  const wbExpenses = (fin.logistics || 0) + costRub + adSp;
+  const tax = calcTotalTax(taxMode, forPay, wbExpenses).total;
   totals.revenue = salesRub; totals.cost = costRub;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
   totals.acquiring = fin.acquiring; totals.loyalty = 0;
   totals.adSpend = adSp; totals.tax = tax;
-  totals.profit = Math.round((salesRub - fin.commission - fin.acquiring - fin.logistics - 0 - costRub - adSp - tax) * 100) / 100;
+  totals.profit = Math.round((forPay - (fin.logistics || 0) - costRub - adSp - tax) * 100) / 100;
 
   // 7) Ключевые слова (могут быть пусты — graceful).
   const kwByDay = new Map();

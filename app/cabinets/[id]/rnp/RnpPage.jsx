@@ -245,7 +245,7 @@ export default function RnpPage({ cabinetId }) {
                 <Td right>{it.drrPctPlan != null ? pct(it.drrPctPlan) : "—"}</Td>
                 <Td right>{money(it.drrRubFact)}</Td>
                 <Td right>{it.drrRubPlan != null ? money(it.drrRubPlan) : "—"}</Td>
-                <Td right>{it.mpDiscount != null ? pct1(it.mpDiscount) : "—"}</Td>
+                <Td right>{it.mpDiscount != null ? pct1(it.mpDiscount) : "—"} <Trend trend={it.mpDiscountTrend} /></Td>
                 <Td right>
                   <span style={{ color: (it.profitFact || 0) >= 0 ? C.pos : C.neg, fontWeight: 700 }}>{money(it.profitFact)}</span>
                 </Td>

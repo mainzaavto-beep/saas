@@ -510,11 +510,21 @@ def upsert_cogs(nm_id, cost):
         )
 
 
-_PRICES_COLS = ["nm_id", "price_seller", "discount", "spp_auto"]
+_PRICES_COLS = ["nm_id", "price_seller", "discount", "price_buyer", "spp_auto"]
+# Fallback без price_buyer — если миграция 028 ещё не применена (нет owner-прав),
+# чтобы НЕ сломать запись всех цен WB. После применения 028 эта ветка не нужна.
+_PRICES_COLS_LEGACY = ["nm_id", "price_seller", "discount", "spp_auto"]
 
 
 def upsert_prices_many(rows):
-    return _batch_upsert("wb_prices", ["nm_id"], _PRICES_COLS, rows)
+    try:
+        return _batch_upsert("wb_prices", ["nm_id"], _PRICES_COLS, rows)
+    except Exception as e:
+        # Колонки price_buyer нет → повтор без неё (старая схема).
+        if "price_buyer" in str(e):
+            legacy_rows = [{k: v for k, v in r.items() if k != "price_buyer"} for r in rows]
+            return _batch_upsert("wb_prices", ["nm_id"], _PRICES_COLS_LEGACY, legacy_rows)
+        raise
 
 
 _PSKU_COLS = ["nm_id", "period_from", "period_to", "penalty", "logistics_correction",
@@ -530,6 +540,33 @@ _CAB_COLS = ["cost_type", "period_from", "period_to", "amount", "detail"]
 
 def upsert_cabinet_costs_many(rows):
     return _batch_upsert("wb_cabinet_costs", ["cost_type", "period_from", "period_to"], _CAB_COLS, rows)
+
+
+# =====================================================================
+#  «Портрет покупателя» (подписка «Джем» WB, миграция 027, с 2026-07-19).
+#  Колонки сверены живым probe'ом на cabinet #1 — это реальные поля ответа
+#  WB API (дока расходится с реальностью, грабля #18/#57).
+# =====================================================================
+_JEM_SEARCH_COLS = ["nm_id", "date", "keyword", "freq", "week_freq",
+                    "avg_position", "median_position", "open_card", "add_to_cart",
+                    "open_to_cart", "orders", "cart_to_order", "visibility",
+                    "open_card_pct", "orders_pct"]
+
+
+def upsert_jem_search_many(rows):
+    """Batch-upsert поисковых запросов (источник: /search-report/product/search-texts).
+    PK = (nm_id, date, keyword)."""
+    return _batch_upsert("wb_search_queries", ["nm_id", "date", "keyword"], _JEM_SEARCH_COLS, rows)
+
+
+_JEM_FUNNEL_COLS = ["nm_id", "date", "avg_position", "visibility", "open_card",
+                    "add_to_cart", "open_to_cart", "orders", "cart_to_order"]
+
+
+def upsert_jem_funnel_many(rows):
+    """Batch-upsert воронки конверсий (источник: /search-report/report).
+    PK = (nm_id, date)."""
+    return _batch_upsert("wb_funnel_daily", ["nm_id", "date"], _JEM_FUNNEL_COLS, rows)
 
 
 # =====================================================================

@@ -1,6 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 // /cabinets/[id]/stocks — Склады и индексы.
@@ -188,7 +188,7 @@ export default function StocksPage({ cabinetId }) {
 
       {/* Содержимое вкладок */}
       {tab === "warehouses" && (
-        <WarehousesTable rows={whF} totalFull={totalsForMp.quantity_full} />
+        <WarehousesTable rows={whF} totalFull={totalsForMp.quantity_full} trend={data.warehouseTrend} />
       )}
       {tab === "oos" && (
         <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} />
@@ -213,7 +213,7 @@ export default function StocksPage({ cabinetId }) {
 // =====================================================================
 //  Вкладка 1: распределение по складам
 // =====================================================================
-function WarehousesTable({ rows, totalFull }) {
+function WarehousesTable({ rows, totalFull, trend }) {
   const maxFull = Math.max(...rows.map((r) => r.quantity_full || 0), 1);
   const { sort, toggle, apply } = useSort("quantity_full", "desc");
   const sorted = apply(rows, {
@@ -226,11 +226,23 @@ function WarehousesTable({ rows, totalFull }) {
     value_cost:   (r) => r.value_cost,
     value_retail: (r) => r.value_retail,
   });
+  // Итоги считаем от исходных rows (не зависят от порядка сортировки).
+  const sumQty = rows.reduce((a, r) => a + (r.quantity || 0), 0);
+  const sumFull = rows.reduce((a, r) => a + (r.quantity_full || 0), 0);
+  const sumItems = rows.reduce((a, r) => a + (r.items || 0), 0);
+  const sumCost = rows.reduce((a, r) => a + (r.value_cost || 0), 0);
+  const sumRetail = rows.reduce((a, r) => a + (r.value_retail || 0), 0);
+
+  // Раскрытая строка тренда (drill-down): ключ = platform|warehouse.
+  const [openKey, setOpenKey] = useState(null);
+  const trendByMp = trend || { wb: [], ozon: [] };
+
   return (
     <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
+            <th style={{ ...thLeft, width: 28, cursor: "default" }}></th>
             <SortTh colKey="platform"     sort={sort} toggle={toggle} baseStyle={thLeft}>МП</SortTh>
             <SortTh colKey="warehouse"    sort={sort} toggle={toggle} baseStyle={thLeft}>Склад</SortTh>
             <SortTh colKey="quantity"     sort={sort} toggle={toggle} baseStyle={thR}>Остаток (шт)</SortTh>
@@ -242,36 +254,126 @@ function WarehousesTable({ rows, totalFull }) {
           </tr>
         </thead>
         <tbody>
-          {sorted.map((r, i) => (
-            <tr key={`${r.platform}-${r.warehouse}-${i}`} style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
-              <td style={tdLeft}><MpBadge platform={r.platform} /></td>
-              <td style={tdLeft}>{r.warehouse}</td>
-              <td style={tdRight}>{num(r.quantity)}</td>
-              <td style={{ ...tdRight, fontWeight: 700 }}>{num(r.quantity_full)}</td>
-              <td style={tdRight}>{num(r.items)}</td>
-              <td style={tdLeft}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ height: 6, flex: 1, background: C.surfaceAlt, borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{
-                      height: "100%",
-                      width: `${Math.max(1, (r.quantity_full / maxFull) * 100)}%`,
-                      background: r.platform === "wb" ? C.accent : C.pink,
-                    }} />
-                  </div>
-                  <span style={{ fontSize: 11, color: C.muted, minWidth: 40, textAlign: "right" }}>{r.share_pct}%</span>
-                </div>
-              </td>
-              <td style={{ ...tdRight, color: C.neg }}>{money(r.value_cost)}</td>
-              <td style={tdRight}>{money(r.value_retail)}</td>
-            </tr>
-          ))}
+          {sorted.map((r, i) => {
+            const key = `${r.platform}|${r.warehouse}`;
+            const isOpen = openKey === key;
+            const series = (trendByMp[r.platform] || [])
+              .filter((t) => t.warehouse === r.warehouse)
+              .map((t) => ({ date: t.date, total: t.total }))
+              .sort((a, b) => (a.date < b.date ? -1 : 1));
+            return (
+              <Fragment key={key}>
+                <tr
+                  onClick={() => series.length > 0 && setOpenKey(isOpen ? null : key)}
+                  style={{
+                    borderBottom: `1px solid ${soft("line", 20)}`,
+                    cursor: series.length > 0 ? "pointer" : "default",
+                    background: isOpen ? soft("accent", 8) : "transparent",
+                  }}
+                  title={series.length > 0 ? "Клик — показать тренд по дням" : undefined}
+                >
+                  <td style={{ ...tdLeft, color: C.muted, fontSize: 11 }}>
+                    {series.length > 0 ? (isOpen ? "▾" : "▸") : ""}
+                  </td>
+                  <td style={tdLeft}><MpBadge platform={r.platform} /></td>
+                  <td style={tdLeft}>{r.warehouse}</td>
+                  <td style={tdRight}>{num(r.quantity)}</td>
+                  <td style={{ ...tdRight, fontWeight: 700 }}>{num(r.quantity_full)}</td>
+                  <td style={tdRight}>{num(r.items)}</td>
+                  <td style={tdLeft}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ height: 6, flex: 1, background: C.surfaceAlt, borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${Math.max(1, (r.quantity_full / maxFull) * 100)}%`,
+                          background: r.platform === "wb" ? C.accent : C.pink,
+                        }} />
+                      </div>
+                      <span style={{ fontSize: 11, color: C.muted, minWidth: 40, textAlign: "right" }}>{r.share_pct}%</span>
+                    </div>
+                  </td>
+                  <td style={{ ...tdRight, color: C.neg }}>{money(r.value_cost)}</td>
+                  <td style={tdRight}>{money(r.value_retail)}</td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "10px 16px 14px", background: soft("accent", 6), borderBottom: `1px solid ${C.line}` }}>
+                      <WarehouseTrend series={series} platform={r.platform} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
           {sorted.length === 0 && (
-            <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.muted }}>
+            <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.muted }}>
               Нет данных по складам для выбранного фильтра.
             </td></tr>
           )}
         </tbody>
+        {sorted.length > 0 && (
+          <tfoot>
+            <tr style={{ background: C.surfaceAlt, borderTop: `2px solid ${C.line}` }}>
+              <td style={tdFootLeft}></td>
+              <td style={tdFootLeft} colSpan={2}>Итого</td>
+              <td style={tdFootRight}>{num(sumQty)}</td>
+              <td style={{ ...tdFootRight, fontWeight: 700 }}>{num(sumFull)}</td>
+              <td style={tdFootRight}>{num(sumItems)}</td>
+              <td style={tdFootLeft}>{totalFull > 0 ? "100%" : "—"}</td>
+              <td style={{ ...tdFootRight, color: C.neg }}>{money(sumCost)}</td>
+              <td style={tdFootRight}>{money(sumRetail)}</td>
+            </tr>
+          </tfoot>
+        )}
       </table>
+    </div>
+  );
+}
+
+// ── Мини-тренд остатка склада по дням (drill-down) ──────────────────────
+function WarehouseTrend({ series, platform }) {
+  const stroke = platform === "wb" ? C.accent : C.pink;
+  const values = series.map((s) => s.total);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 0;
+  const cur = values.length ? values[values.length - 1] : 0;
+  const first = values.length ? values[0] : 0;
+  const delta = cur - first;
+  const deltaPct = first > 0 ? Math.round((delta / first) * 100) : 0;
+
+  if (series.length === 0) {
+    return <div style={{ color: C.muted, fontSize: 12, padding: 8 }}>Нет истории по дням для этого склада.</div>;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 20, alignItems: "baseline", marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: C.muted }}>Остаток по дням (полный сток, шт)</span>
+        <span style={{ fontSize: 12 }}>
+          <span style={{ color: C.muted }}>min </span><b>{num(min)}</b>
+          <span style={{ color: C.muted, marginLeft: 12 }}>max </span><b>{num(max)}</b>
+          <span style={{ color: C.muted, marginLeft: 12 }}>сейчас </span><b>{num(cur)}</b>
+          <span style={{ color: C.muted, marginLeft: 12 }}>Δ за период </span>
+          <b style={{ color: delta > 0 ? C.pos : delta < 0 ? C.neg : C.muted }}>
+            {delta > 0 ? "+" : ""}{num(delta)} {first > 0 ? `(${deltaPct > 0 ? "+" : ""}${deltaPct}%)` : ""}
+          </b>
+        </span>
+      </div>
+      <div style={{ height: 200 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={series} margin={{ top: 5, right: 16, bottom: 5, left: 0 }}>
+            <CartesianGrid stroke={soft("line", 20)} vertical={false} />
+            <XAxis dataKey="date" tickFormatter={fmtFull} tick={{ fontSize: 11, fill: C.muted }} stroke={soft("line", 30)} minTickGap={20} />
+            <YAxis tickFormatter={(v) => num(v)} tick={{ fontSize: 11, fill: C.muted }} stroke={soft("line", 30)} width={50} />
+            <Tooltip
+              labelFormatter={fmtFullLong}
+              formatter={(v) => [num(v) + " шт", "Остаток"]}
+              contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 12 }}
+            />
+            <Line type="monotone" dataKey="total" name="Остаток" stroke={stroke} strokeWidth={2}
+              dot={{ r: 3, fill: stroke }} activeDot={{ r: 5 }} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
