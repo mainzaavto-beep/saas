@@ -17,9 +17,11 @@ discounts-prices-api /api/v2/list/goods/filter (limit/offset пагинация)
 Колонка spp_auto — NULL (legacy).
 Токен из env WB_TOKEN. Идемпотентно по (cabinet_id, nm_id).
 """
+import json
 import os
 import sys
 import time
+import urllib.request
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +29,18 @@ import db_pg
 
 WB_TOKEN = os.getenv("WB_TOKEN")
 ENDPOINT = "https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter"
+# Публичная карточка (без токена) — единственный источник РЕАЛЬНОЙ цены сайта
+# (с СПП). Решение хозяина 2026-08-02, миграция 029. dest=-1257786 — Москва.
+# ⚠️ Версия пути дрейфует: v1/v2/v3 отдают 404, рабочая v4 (проверено
+# 2026-08-02 на nm 1181386677: basic=948000 коп, product=625500 коп = цена
+# с СПП). Если снова 404 всем батчам — проверить новую версию вручную.
+# ⚠️⚠️ БЛОКИРОВКА IP (2026-08-02): антибот WB отдаёт 403 на ПРЯМЫЕ запросы
+# с этого сервера (хостинговая подсеть) — 403 и curl'у, и urllib. Через
+# внешний прокси — 200. Т.е. с боевого сервера цена сайта НЕ собирается,
+# пока хозяин не решит вопрос прокси (см. память сессии). Сбой деградирует
+# мягко: price_site просто стареет (виден по price_site_at), UI падает
+# на fallback «последний СПП из заказов».
+CARD_ENDPOINT = "https://card.wb.ru/cards/v4/detail"
 
 
 def _wb_get(params):
@@ -90,7 +104,51 @@ def collect():
         time.sleep(0.2)
     n = db_pg.upsert_prices_many(rows)
     print(f"[wb_prices] записано {n} цен → tenant.wb_prices", flush=True)
+    collect_site_prices([r["nm_id"] for r in rows])
     return n
+
+
+def collect_site_prices(nm_ids):
+    """Реальная цена сайта (с СПП) с публичного card.wb.ru, батчами по 100 nm.
+    Сбой здесь НЕ валит основной сбор цен и НЕ затирает старые price_site
+    (отдельный UPDATE только по пришедшим nm, см. db_pg.update_site_prices_many);
+    свежесть видна по price_site_at.
+    ⚠️ Только urllib, НЕ requests: защита WB отдаёт requests'у 403 при любых
+    заголовках (отпечаток соединения), urllib проходит (проверено 2026-08-02).
+    Плюс requests кодирует ';' в %3B — WB это тоже режет. Формат ответа гуляет:
+    товары то в data.products, то в products верхнего уровня — читаем оба."""
+    site_rows = []
+    failed_batches = 0
+    for i in range(0, len(nm_ids), 100):
+        chunk = nm_ids[i:i + 100]
+        url = (CARD_ENDPOINT + "?appType=1&curr=rub&dest=-1257786&nm="
+               + ";".join(str(x) for x in chunk))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "curl/8.5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                d = json.loads(resp.read())
+            products = (d.get("data") or {}).get("products") or d.get("products") or []
+            for p in products:
+                sizes = p.get("sizes") or []
+                price = None
+                for sz in sizes:
+                    pr = (sz.get("price") or {}).get("product")
+                    if pr:  # копейки
+                        price = round(pr / 100)
+                        break
+                if price:
+                    site_rows.append({"nm_id": p.get("id"), "price_site": price})
+        except Exception as e:
+            print(f"  [site] батч {i//100}: {e}", flush=True)
+            failed_batches += 1
+        time.sleep(0.3)
+    try:
+        m = db_pg.update_site_prices_many(site_rows)
+        print(f"[wb_prices] цена сайта: {m} из {len(nm_ids)} nm"
+              + (f", сбойных батчей: {failed_batches}" if failed_batches else ""), flush=True)
+    except Exception as e:
+        # Колонок 029 ещё нет → не валим основной сбор, но кричим в лог.
+        print(f"[wb_prices] цена сайта НЕ записана: {e}", flush=True)
 
 
 if __name__ == "__main__":

@@ -527,6 +527,24 @@ def upsert_prices_many(rows):
         raise
 
 
+def update_site_prices_many(rows):
+    """Реальная цена сайта (card.wb.ru, миграция 029) — ОТДЕЛЬНЫЙ UPDATE,
+    не upsert: сбой публичного API не должен затирать вчерашние price_site
+    NULL'ами (урок аудита 2026-08: «затирание хорошего плохим»). Обновляем
+    только пришедшие nm_id; price_site_at показывает свежесть снимка.
+    rows: [{nm_id, price_site}]."""
+    if not rows:
+        return 0
+    cid = _cabinet_id()
+    sql = ("UPDATE tenant.wb_prices SET price_site = %s, price_site_at = now() "
+           "WHERE cabinet_id = %s AND nm_id = %s")
+    batch = [[r["price_site"], cid, r["nm_id"]] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+    return len(rows)
+
+
 _PSKU_COLS = ["nm_id", "period_from", "period_to", "penalty", "logistics_correction",
               "loyalty_correction", "voluntary_comp", "other"]
 

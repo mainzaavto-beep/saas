@@ -283,13 +283,25 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
   ).all(prevFrom, prevToEnd)) {
     sppPrev[r.nm_id] = r.s != null ? round2(r.s) : null;
   }
-  // 5в) Fallback СПП (с 2026-08-02): для артикулов БЕЗ заказов в периоде —
-  //     ПОСЛЕДНИЙ известный СПП из заказов за 60 дней до конца периода.
-  //     ⚠️ Первая версия считала из wb_prices (price_buyer), но discountedPrice
-  //     из API цен продавца НЕ включает СПП — доказано на nm 1181386677:
-  //     API=8911 ₽ (цена после скидки продавца), сайт=6344 ₽, СПП в заказах
-  //     31-45%. Реальной цены сайта в наших данных нет (нужен card.wb.ru).
-  //     Оценка помечается mpDiscountEst (фронт рисует ⚙), динамика не даётся.
+  // 5в) Fallback СПП (с 2026-08-02) для артикулов БЕЗ заказов в периоде, по
+  //     приоритету: (1) реальная цена сайта price_site (card.wb.ru, миграция
+  //     029): 1 − price_site/priceCabinet; (2) последний известный СПП из
+  //     заказов за 60 дней. ⚠️ price_buyer (discountedPrice) для этого НЕ
+  //     годится — НЕ включает СПП (доказано: nm 1181386677, API=8911 ₽,
+  //     сайт=6344 ₽). Оценка помечается mpDiscountEst (⚙), динамика не даётся.
+  const sppFromSite = {};
+  try {
+    for (const r of await db.prepare(
+      `SELECT nm_id, price_seller, discount, price_site FROM wb_prices
+       WHERE price_site > 0 AND price_seller > 0`
+    ).all()) {
+      const cab = r.price_seller * (1 - (r.discount || 0) / 100);
+      // допуск 2% на округление price_site до рубля (СПП прижимается к 0)
+      if (cab > 0 && r.price_site <= cab * 1.02) {
+        sppFromSite[r.nm_id] = Math.max(0, round2(100 * (1 - r.price_site / cab)));
+      }
+    }
+  } catch (e) { console.error("rnp-summary: spp from price_site", e); }
   const sppLastKnown = {};
   try {
     for (const r of await db.prepare(
@@ -398,10 +410,11 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
       drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: spp[nm] != null ? round2(spp[nm])
-        : (sppLastKnown[nm] != null ? sppLastKnown[nm] : null),
-      // est: значение из снимка цен, не из заказов периода; prev не даём —
-      // динамика по разным методологиям была бы враньём.
-      mpDiscountEst: spp[nm] == null && sppLastKnown[nm] != null || undefined,
+        : (sppFromSite[nm] != null ? sppFromSite[nm]
+        : (sppLastKnown[nm] != null ? sppLastKnown[nm] : null)),
+      // est: значение не из заказов периода; prev не даём — динамика по
+      // разным методологиям была бы враньём.
+      mpDiscountEst: spp[nm] == null && (sppFromSite[nm] != null || sppLastKnown[nm] != null) || undefined,
       mpDiscountPrev: spp[nm] != null && sppPrev[nm] != null ? round2(sppPrev[nm]) : null,
       profitFact: profitClean,
       turnoverDays,

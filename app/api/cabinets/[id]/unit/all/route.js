@@ -141,14 +141,15 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
      ORDER BY nm_id, effective_from DESC`
   ).all()) cogs[r.nm_id] = r.cost > 0 ? r.cost : null;
   const prices = {};
-  for (const r of await db.prepare("SELECT nm_id, price_seller, discount, price_buyer FROM wb_prices").all()) {
+  for (const r of await db.prepare("SELECT nm_id, price_seller, discount, price_site FROM wb_prices").all()) {
     prices[r.nm_id] = {
       priceSeller: r.price_seller > 0 ? r.price_seller : null,
       discount: r.discount != null ? r.discount / 100 : null,
-      // price_buyer = цена после скидки ПРОДАВЦА (WB API discountedPrice).
-      // ⚠️ НЕ включает СПП (опровергнуто 2026-08-02, см. wb_prices.py) — но как
-      // база налогов корректна: СПП компенсирует WB, выручку продавца не режет.
-      priceBuy: r.price_buyer != null && r.price_buyer > 0 ? r.price_buyer : null,
+      // priceBuy = реальная цена сайта (card.wb.ru, price_site, миграция 029) —
+      // база налогов по решению хозяина 2026-08-02: цена, которую платит
+      // покупатель (с СПП). price_buyer (discountedPrice, БЕЗ СПП) как базу
+      // НЕ подаём. Нет price_site → calcWB считает через СПП: цена×(1−spp).
+      priceBuy: r.price_site != null && r.price_site > 0 ? r.price_site : null,
     };
   }
   // SPP из daily_metrics — последнее не-NULL значение по nm_id.

@@ -248,7 +248,7 @@ export default function RnpPage({ cabinetId }) {
                 <Td right>
                   {it.mpDiscount != null ? pct1(it.mpDiscount) : "—"}
                   {it.mpDiscountEst
-                    ? <span title="Оценка: последний известный СПП из заказов (до 60 дней назад) — в выбранном периоде заказов по артикулу не было. Динамика для оценок не показывается." style={{ cursor: "help", opacity: .7 }}> ⚙</span>
+                    ? <span title="Оценка (в периоде заказов не было): из реальной цены сайта (card.wb.ru) — 1 − цена сайта / цена кабинета; если цена сайта не собрана — последний известный СПП из заказов до 60 дней назад. Динамика для оценок не показывается." style={{ cursor: "help", opacity: .7 }}> ⚙</span>
                     : <> <Trend trend={it.mpDiscountTrend} /></>}
                 </Td>
                 <Td right>
