@@ -157,10 +157,15 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       }
       if (platform !== "wb") {
         try {
+          // ⚠️ 2026-08-02: реклама Ozon существует только «кабинет×день»
+          // (ozon_daily_efficiency; per-SKU daily_metrics.ad_spend ПУСТ, до
+          // фикса 6046d36 расход не собирался вовсе — прибыль завышалась).
+          // В totals вычитаем кабинетный расход; по товарам Ozon-реклама не
+          // разнесена (как кабинетные расходы WB). date — DATE, сравниваем с 'YYYY-MM-DD'.
           const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
-            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM ozon_daily_efficiency
                      WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
-          ).get(from, toEnd);
+          ).get(from, to);
           fullAd += (ozad && ozad.s) || 0;
         } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
       }
