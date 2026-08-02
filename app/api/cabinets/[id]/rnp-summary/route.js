@@ -477,33 +477,20 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
     };
   }
 
-  // 5) Соинвест — средний по ДНЕВНЫМ СНИМКАМ цен ozon_prices (миграция 030,
-  //    спек 2026-08-02). Соинвест % = 1 − marketing_price/marketing_seller_price;
-  //    marketing_price NULL = Озон не доплачивает → честный 0, не пропуск.
-  //    ⚠️ Буст из акций (current_boost) — НЕ соинвест (решение хозяина):
-  //    старое чтение ozon_action_products удалено (таблица и так пуста).
-  const coinvestSql = `
-      SELECT product_id, AVG(CASE
-          WHEN marketing_price IS NOT NULL AND marketing_price > 0
-               AND marketing_price <= marketing_seller_price
-            THEN 100 * (1 - marketing_price / marketing_seller_price)
-          ELSE 0 END) AS s
-      FROM ozon_prices
-      WHERE date >= ? AND date <= ? AND marketing_seller_price > 0
-      GROUP BY product_id`;
+  // 5) Соинвест Ozon — ЧЕСТНОЕ «н/д» (грабля, доказано probe'ами 2026-08-02 на
+  //    «карта 64»: кабинет показывает цену покупателя 764 при цене продавца
+  //    1120, но размер соинвеста НЕ отдаётся продавцовским API НИГДЕ):
+  //    • /v5/product/info/prices — цены витрины нет (грабля #57, marketing_price
+  //      мёртв); • current_boost из акций — сила БУСТА показов, не соинвест
+  //      (эластичная кривая 1383₽↔15…1012₽↔75 сошлась точно);
+  //    • financial_data заказов — перечисляет акции «Скидка (за счёт Озон) —
+  //      AI benefit system (Mesh)» БЕЗ сумм, price = цена продавца;
+  //    • витрина ozon.ru — антибот (307-челлендж даже через прокси).
+  //    Показывать 0% из снимков ozon_prices — ЛОЖЬ (соинвест есть, размер
+  //    скрыт) → по правилу о финансах отдаём null («—» в UI), не ноль.
+  //    Снимки ozon_prices продолжаем собирать (история цен полезна сама по себе).
   const boost = {};
-  try {
-    for (const r of await db.prepare(coinvestSql).all(from, to)) {
-      boost[r.product_id] = r.s != null ? round2(r.s) : null;
-    }
-  } catch (e) { console.error("rnp-summary: ozon coinvest", e); /* не фейлим весь роут */ }
-  // 5б-ozon) Соинвест прошлого периода — те же снимки за prevFrom..prevTo (динамика).
   const boostPrev = {};
-  try {
-    for (const r of await db.prepare(coinvestSql).all(prevFrom, prevTo)) {
-      boostPrev[r.product_id] = r.s != null ? round2(r.s) : null;
-    }
-  } catch (e) { console.error("rnp-summary: ozon coinvestPrev", e); /* не фейлим весь роут */ }
 
   // 6) Продано за последние 5 дней (order_costs) — для оборачиваемости.
   const last5From = addDays(to, -4);
