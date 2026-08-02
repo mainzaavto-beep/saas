@@ -283,26 +283,23 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
   ).all(prevFrom, prevToEnd)) {
     sppPrev[r.nm_id] = r.s != null ? round2(r.s) : null;
   }
-  // 5в) Fallback СПП из каталога цен (с 2026-08-02): для артикулов БЕЗ заказов
-  //     в периоде считаем из wb_prices: 1 − price_buyer/priceCabinet, где
-  //     priceCabinet = price_seller×(1−discount%). Это ТЕКУЩИЙ снимок цен, а не
-  //     среднее за период → помечается mpDiscountEst (фронт рисует ⚙), динамика
-  //     для таких строк НЕ показывается (истории цен нет — правило по финансам:
-  //     не смешивать методологии без пометки). price_buyer — миграция 028.
-  const sppFromPrices = {};
+  // 5в) Fallback СПП (с 2026-08-02): для артикулов БЕЗ заказов в периоде —
+  //     ПОСЛЕДНИЙ известный СПП из заказов за 60 дней до конца периода.
+  //     ⚠️ Первая версия считала из wb_prices (price_buyer), но discountedPrice
+  //     из API цен продавца НЕ включает СПП — доказано на nm 1181386677:
+  //     API=8911 ₽ (цена после скидки продавца), сайт=6344 ₽, СПП в заказах
+  //     31-45%. Реальной цены сайта в наших данных нет (нужен card.wb.ru).
+  //     Оценка помечается mpDiscountEst (фронт рисует ⚙), динамика не даётся.
+  const sppLastKnown = {};
   try {
     for (const r of await db.prepare(
-      `SELECT nm_id, price_seller, discount, price_buyer FROM wb_prices
-       WHERE price_buyer > 0 AND price_seller > 0`
-    ).all()) {
-      const cab = r.price_seller * (1 - (r.discount || 0) / 100);
-      // допуск 2%: price_buyer округлён сборщиком до рубля и может быть чуть
-      // выше расчётной cab — это шум округления (СПП=0), а не аномалия.
-      if (cab > 0 && r.price_buyer <= cab * 1.02) {
-        sppFromPrices[r.nm_id] = Math.max(0, round2(100 * (1 - r.price_buyer / cab)));
-      }
+      `SELECT DISTINCT ON (nm_id) nm_id, spp FROM orders
+       WHERE order_dt >= ? AND order_dt <= ? AND spp IS NOT NULL AND nm_id IS NOT NULL
+       ORDER BY nm_id, order_dt DESC`
+    ).all(addDays(from, -60), toEnd)) {
+      sppLastKnown[r.nm_id] = round2(r.spp);
     }
-  } catch (e) { console.error("rnp-summary: spp fallback from wb_prices", e); }
+  } catch (e) { console.error("rnp-summary: spp last-known fallback", e); }
 
   // 6) Себестоимость единицы — tenant.cost_overrides (единый источник, как в
   //    /products-summary). Актуальный override на сегодня.
@@ -401,10 +398,10 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
       drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: spp[nm] != null ? round2(spp[nm])
-        : (sppFromPrices[nm] != null ? sppFromPrices[nm] : null),
+        : (sppLastKnown[nm] != null ? sppLastKnown[nm] : null),
       // est: значение из снимка цен, не из заказов периода; prev не даём —
       // динамика по разным методологиям была бы враньём.
-      mpDiscountEst: spp[nm] == null && sppFromPrices[nm] != null || undefined,
+      mpDiscountEst: spp[nm] == null && sppLastKnown[nm] != null || undefined,
       mpDiscountPrev: spp[nm] != null && sppPrev[nm] != null ? round2(sppPrev[nm]) : null,
       profitFact: profitClean,
       turnoverDays,

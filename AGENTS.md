@@ -154,6 +154,14 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   Канон: заказы = `COUNT(*) FROM orders WHERE is_cancel=0`; выручка =
   `SUM(retail_price_withdisc_rub)` из finance_report Продажа; комиссия =
   `commission_percent × retail_price_withdisc_rub / 100`.
+- **СПП / цена сайта (опровержение 2026-08-02):** `wb_prices.price_buyer`
+  (= discountedPrice из API цен продавца) **НЕ включает СПП** — это цена после
+  скидки ПРОДАВЦА, не цена сайта (доказано на nm 1181386677: API 8911 ₽,
+  сайт 6344 ₽, СПП в заказах 31-45%). Реальной цены сайта в наших данных НЕТ;
+  единственный источник СПП — поле `spp` в `wb_orders` (только по артикулам
+  с заказами). Хотим цену сайта без заказов → парсить публичный card.wb.ru
+  (в очереди). ⚠️ Открытый вопрос хозяину: в `lib/unit.js` база налогов через
+  override (без СПП) и через fallback (с СПП) — разная, см. коммент в calcWB.
 - **Метрики Ozon**: `lib/ozonMetrics.js`.
 - **Юнит-экономика** (маржа/ROI товара): `lib/unit.js` (`calcWB`, `calcOzon`).
   Формула СПП нетривиальна — править осторожно.

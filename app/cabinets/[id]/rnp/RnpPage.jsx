@@ -248,7 +248,7 @@ export default function RnpPage({ cabinetId }) {
                 <Td right>
                   {it.mpDiscount != null ? pct1(it.mpDiscount) : "—"}
                   {it.mpDiscountEst
-                    ? <span title="Оценка из текущих цен каталога (заказов в периоде не было): 1 − цена покупателя / цена продавца со скидкой. Динамика для оценок не показывается." style={{ cursor: "help", opacity: .7 }}> ⚙</span>
+                    ? <span title="Оценка: последний известный СПП из заказов (до 60 дней назад) — в выбранном периоде заказов по артикулу не было. Динамика для оценок не показывается." style={{ cursor: "help", opacity: .7 }}> ⚙</span>
                     : <> <Trend trend={it.mpDiscountTrend} /></>}
                 </Td>
                 <Td right>

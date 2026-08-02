@@ -145,8 +145,9 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
     prices[r.nm_id] = {
       priceSeller: r.price_seller > 0 ? r.price_seller : null,
       discount: r.discount != null ? r.discount / 100 : null,
-      // price_buyer = финальная цена покупателя на сайте (WB API discountedPrice,
-      // фикс 2026-07-28). calcWB использует её как базу налогов, если задана.
+      // price_buyer = цена после скидки ПРОДАВЦА (WB API discountedPrice).
+      // ⚠️ НЕ включает СПП (опровергнуто 2026-08-02, см. wb_prices.py) — но как
+      // база налогов корректна: СПП компенсирует WB, выручку продавца не режет.
       priceBuy: r.price_buyer != null && r.price_buyer > 0 ? r.price_buyer : null,
     };
   }
