@@ -75,6 +75,7 @@ PY = sys.executable
 
 # Списки SaaS-сборщиков по маркетплейсу (модули в worker/collectors/). Порядок важен:
 # catalog → orders → finance → order_costs + cabinet_costs (зависят от finance) → metrics → prices → stocks.
+# ⚠️ ИНВАРИАНТ GUARD'а: *_finance обязан идти РАНЬШЕ *_order_costs (см. GUARD_DEPS в _run_one).
 # ⚠️ Принцип SaaS: НИКАКИХ Google Sheets — все данные только в PostgreSQL.
 WB_COLLECTORS = [
     "wb_catalog",
@@ -309,7 +310,22 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
 
     ok, failed = [], []
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
+
+    # Guard от затирания (спек п.3): order_costs агрегирует из finance_report
+    # безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО прогона не-ok,
+    # пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
+    GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance"}
+
     for coll in shop_collectors:
+        dep = GUARD_DEPS.get(coll)
+        if dep and statuses.get(dep) not in (None, "ok"):
+            reason = f"{dep} status={statuses[dep]} — агрегат не пересчитан (guard от затирания)"
+            print(f"     [{coll}] SKIP: {reason}", flush=True)
+            statuses[coll] = "skipped"
+            failed.append(coll)
+            _record_run(cid, coll, "skipped", error=reason,
+                        date_from=date_from, date_to=date_to)
+            continue
         cmd = [PY, "-m", f"worker.collectors.{coll}"]
         if date_from:
             cmd.append(date_from)
