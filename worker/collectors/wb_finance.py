@@ -20,6 +20,10 @@ WB_TOKEN = os.getenv("WB_TOKEN")
 REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 PAGE_LIMIT = 100000
 
+# Окна, пропущенные из-за 429 после 5 попыток. >0 → exit 3 (partial) —
+# контракт exit-кодов оркестратора (orchestrator.py, _run_one).
+_SKIPPED_429 = 0
+
 
 def fetch_realization(date_from, date_to, daily=True):
     """Выгрузка строк отчёта за период. cursor-пагинация по rrdid. period=daily."""
@@ -56,7 +60,10 @@ def fetch_realization(date_from, date_to, daily=True):
             r.raise_for_status()
             break
         else:
-            # Все 5 попыток исчерпаны на 429 — пропускаем окно (не валит весь backfill).
+            # Все 5 попыток исчерпаны на 429 — пропускаем окно (не валит весь backfill),
+            # но помечаем прогон как partial (exit 3), чтобы оркестратор знал о дыре.
+            global _SKIPPED_429
+            _SKIPPED_429 += 1
             print(f"    429 после 5 попыток — пропускаю окно", flush=True)
             return []
         rows = r.json()
@@ -116,3 +123,7 @@ if __name__ == "__main__":
     os.environ["NO_PROXY"] = "*"
     args = sys.argv[1:]
     collect(args[0] if len(args) > 0 else None, args[1] if len(args) > 1 else None)
+    if _SKIPPED_429:
+        print(f"[wb_finance] PARTIAL: пропущено окон из-за 429: {_SKIPPED_429}",
+              file=sys.stderr, flush=True)
+        sys.exit(3)
