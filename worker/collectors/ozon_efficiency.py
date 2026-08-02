@@ -62,12 +62,15 @@ def _collect_ads(since, to):
         print("  Performance credentials нет — ad_spend NULL", flush=True)
         return 0
     try:
-        # OAuth2 token
+        # OAuth2 token. ⚠️ Грабля 2026-08-02: basic auth даёт 401
+        # (invalid_client) — из-за этого расход рекламы Ozon НИКОГДА не
+        # собирался (сборщик тихо возвращал 0, ad_spend был NULL, прибыль
+        # Ozon завышалась). Рабочий формат — JSON-тело с client_id/secret.
         tr = requests.post("https://api-performance.ozon.ru/api/client/token",
-                           data={"grant_type": "client_credentials"},
-                           auth=(perf_id, perf_secret), timeout=30)
+                           json={"client_id": perf_id, "client_secret": perf_secret,
+                                 "grant_type": "client_credentials"}, timeout=30)
         if tr.status_code != 200:
-            print(f"  Performance token HTTP {tr.status_code}", flush=True)
+            print(f"  Performance token HTTP {tr.status_code}: {tr.text[:120]}", flush=True)
             return 0
         token = tr.json().get("access_token")
         r = requests.get("https://api-performance.ozon.ru/api/client/statistics/daily",
