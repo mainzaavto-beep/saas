@@ -33,6 +33,7 @@ import argparse
 import subprocess
 import psycopg
 from psycopg.rows import dict_row
+from datetime import datetime, timezone
 
 # Воркер подключается как postgres (читает api_creds — auth.* без RLS).
 # Сборщики внутри subprocess подключаются как saas_app (RLS изоляция).
@@ -43,6 +44,31 @@ PG_SUPER = {
     "user": "postgres",
     "password": os.environ.get("POSTGRES_PASSWORD", ""),
 }
+
+# Метка прогона для jobs.collector_runs; выставляется в main() из --run-kind.
+RUN_KIND = "manual"
+
+# ── Контракт exit-кодов сборщиков ────────────────────────────────────
+# 0 = ok · 3 = partial (собрано, но часть окон пропущена — см. wb_finance.py)
+# · прочее = failed. Маппинг в _run_one.
+
+def _record_run(cabinet_id, collector, status, *, error=None,
+                date_from=None, date_to=None, started_at=None, finished_at=None):
+    """Строка прогона → jobs.collector_runs. Сбой записи НЕ роняет прогон,
+    но печатается в stderr (правило «никаких молчаливых catch»)."""
+    try:
+        with psycopg.connect(**PG_SUPER) as conn:
+            conn.execute(
+                "INSERT INTO jobs.collector_runs "
+                "(cabinet_id, collector, run_kind, date_from, date_to, status, "
+                " error, started_at, finished_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (cabinet_id, collector, RUN_KIND, date_from, date_to, status,
+                 error, started_at or datetime.now(timezone.utc),
+                 finished_at or datetime.now(timezone.utc)))
+    except Exception as e:
+        print(f"    [collector_runs] не записал ({collector}/{status}): {e}",
+              file=sys.stderr, flush=True)
 
 # Путь к Python интерпретатору.
 PY = sys.executable
@@ -263,9 +289,13 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     # Проверка: есть ли нужный токен для этого shop? Иначе сборщик упадёт с RuntimeError.
     if mp == "wb" and not env.get("WB_TOKEN"):
         print(f"    shop #{shop.get('shop_id')} {mp}: нет WB_TOKEN — пропуск", flush=True)
+        _record_run(cid, "wb:credentials", "no_token",
+                    error=f"shop #{shop.get('shop_id')}: нет WB_TOKEN")
         return [], [f"{mp}:no_token"]
     if mp == "ozon" and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
         print(f"    shop #{shop.get('shop_id')} {mp}: нет OZON creds — пропуск", flush=True)
+        _record_run(cid, "ozon:credentials", "no_token",
+                    error=f"shop #{shop.get('shop_id')}: нет OZON creds")
         return [], [f"{mp}:no_token"]
 
     shop_collectors = _collectors_for_mp(mp, collectors)
@@ -278,6 +308,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         print(f"     диапазон backfill: {date_from} .. {date_to or 'вчера'}", flush=True)
 
     ok, failed = [], []
+    statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
     for coll in shop_collectors:
         cmd = [PY, "-m", f"worker.collectors.{coll}"]
         if date_from:
@@ -285,6 +316,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             if date_to:
                 cmd.append(date_to)
         label = f"     [{coll}]"
+        started = datetime.now(timezone.utc)
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=3600)
             if r.returncode == 0:
@@ -292,6 +324,17 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 last = out[-1] if out else "ok"
                 print(f"{label} OK: {last}", flush=True)
                 ok.append(coll)
+                statuses[coll] = "ok"
+                _record_run(cid, coll, "ok",
+                            date_from=date_from, date_to=date_to, started_at=started)
+            elif r.returncode == 3:
+                # Контракт exit-кодов: 3 = partial (часть окон пропущена, напр. 429).
+                err = (r.stderr or r.stdout or "").strip().splitlines()
+                print(f"{label} PARTIAL: {err[-1] if err else ''}", flush=True)
+                failed.append(coll)
+                statuses[coll] = "partial"
+                _record_run(cid, coll, "partial", error=(err[-1] if err else None),
+                            date_from=date_from, date_to=date_to, started_at=started)
             else:
                 err = (r.stderr or r.stdout or "").strip().splitlines()
                 print(f"{label} FAIL (exit {r.returncode}): {err[-1] if err else ''}", flush=True)
@@ -299,12 +342,22 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                     for line in err[-5:]:
                         print(f"        {line}", flush=True)
                 failed.append(coll)
+                statuses[coll] = "failed"
+                _record_run(cid, coll, "failed",
+                            error=(err[-1] if err else f"exit {r.returncode}"),
+                            date_from=date_from, date_to=date_to, started_at=started)
         except subprocess.TimeoutExpired:
             print(f"{label} TIMEOUT (>3600s)", flush=True)
             failed.append(coll)
+            statuses[coll] = "timeout"
+            _record_run(cid, coll, "timeout", error="timeout >3600s",
+                        date_from=date_from, date_to=date_to, started_at=started)
         except Exception as e:
             print(f"{label} ERROR: {e}", flush=True)
             failed.append(coll)
+            statuses[coll] = "failed"
+            _record_run(cid, coll, "failed", error=str(e)[:500],
+                        date_from=date_from, date_to=date_to, started_at=started)
     return ok, failed
 
 
@@ -316,6 +369,7 @@ def run_cabinet(cabinet, collectors, verbose=False, date_from=None, date_to=None
     print(f"\n=== Кабинет #{cid} «{name}» shops={len(shops)} ===", flush=True)
     if not shops:
         print("  нет магазинов с кредами — пропуск", flush=True)
+        _record_run(cid, "_cabinet", "failed", error="no_shops")
         return ["no_shops"]
 
     all_failed = []
@@ -409,7 +463,15 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--date-from", dest="date_from", help="Backfill с даты (YYYY-MM-DD)")
     ap.add_argument("--date-to", dest="date_to", help="Backfill по дату (YYYY-MM-DD, по умолч. вчера)")
+    ap.add_argument("--run-kind", dest="run_kind", default="manual",
+                    help="Метка прогона для jobs.collector_runs "
+                         "(main|stocks|metrics30m|references|backfill|systemd|manual)")
     args = ap.parse_args()
+
+    global RUN_KIND
+    RUN_KIND = args.run_kind
+    if args.drain_queue and RUN_KIND == "manual":
+        RUN_KIND = "backfill"
 
     # Режим drain-queue: игнорируем --all/--cabinet, гоняем onboarding-jobs.
     if args.drain_queue:
@@ -428,6 +490,13 @@ def main():
         cabinets = [cab]
     elif args.all:
         cabinets = _read_cabinets(active_only=True)
+        # Ретеншн журнала прогонов: 90 дней (спек 2026-08-02-worker-alerting).
+        try:
+            with psycopg.connect(**PG_SUPER) as conn:
+                conn.execute("DELETE FROM jobs.collector_runs "
+                             "WHERE started_at < now() - interval '90 days'")
+        except Exception as e:
+            print(f"[collector_runs] ретеншн не отработал: {e}", file=sys.stderr, flush=True)
     else:
         ap.error("укажите --cabinet N, --all или --drain-queue")
 

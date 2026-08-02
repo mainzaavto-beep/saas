@@ -54,7 +54,7 @@ PY=/opt/agents/data-presenter-agent/.venv/bin/python
 
 echo "=== SaaS collect [$MODE] $(date) — период $FROM..$TO ===" >> /opt/agentsDB/logs/saas_worker.log
 cd /opt/agents/saas
-$PY -m worker.orchestrator --all --collectors "$COLLECTORS" --date-from "$FROM" --date-to "$TO" >> /opt/agentsDB/logs/saas_worker.log 2>&1
+$PY -m worker.orchestrator --all --collectors "$COLLECTORS" --date-from "$FROM" --date-to "$TO" --run-kind "$MODE" >> /opt/agentsDB/logs/saas_worker.log 2>&1
 EXIT=$?
 echo "EXIT=$EXIT" >> /opt/agentsDB/logs/saas_worker.log
 exit $EXIT
