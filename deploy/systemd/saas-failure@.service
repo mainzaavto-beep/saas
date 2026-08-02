@@ -1,0 +1,15 @@
+[Unit]
+Description=SAAS Failure hook — фиксирует падение юнита %i в jobs.collector_runs
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# POSTGRES_PASSWORD + SAAS_DB_* для record_failure.py
+EnvironmentFile=/etc/saas-worker.env
+Environment=SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas
+WorkingDirectory=/opt/agents/saas
+ExecStart=/opt/agents/data-presenter-agent/.venv/bin/python -m worker.record_failure %i
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-failure
