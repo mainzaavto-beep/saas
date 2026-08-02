@@ -1,0 +1,18 @@
+[Unit]
+Description=SAAS Backfill — прогон очереди onboarding-jobs 4×/день
+
+[Timer]
+# Смещённые слоты — не пересекаться с основным сбором saas-worker
+# (05:15/09:00/12:00/17:00). Backfill в 07:00, 10:30, 14:00, 19:00.
+OnCalendar=*-*-* 07:00:00
+OnCalendar=*-*-* 10:30:00
+OnCalendar=*-*-* 14:00:00
+OnCalendar=*-*-* 19:00:00
+# Если сервер был выключен — догнать при старте
+Persistent=true
+# Разброс ±5 мин — не бить API МП синхронно с основным сбором
+RandomizedDelaySec=5m
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

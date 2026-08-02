@@ -1,0 +1,13 @@
+[Unit]
+Description=SAAS PostgreSQL backup — ежедневно в 03:00 (до воркера 07:15)
+
+[Timer]
+# Каждую ночь в 03:00 — тихий час, до утра и до воркера
+OnCalendar=*-*-* 03:00:00
+# Если сервер был выключен — догнать при старте
+Persistent=true
+# Без случайного разброса: бэкап должен идти строго до воркера
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

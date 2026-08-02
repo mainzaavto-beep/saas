@@ -1,0 +1,21 @@
+[Unit]
+Description=SAAS References — справочник складов WB + тарифы перевозок (1×/неделю)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# wb_references: GET /warehouses + /transit-tariffs → shared.* (глобальные, без RLS).
+# Запускается через orchestrator --all (WB_TOKEN берётся от первого WB-магазина;
+# данные cabinet-agnostic, upsert идемпотентен — повторные прогоны per-cabinet безвредны).
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh references
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-references
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

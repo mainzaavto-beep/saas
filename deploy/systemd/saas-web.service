@@ -1,0 +1,27 @@
+[Unit]
+Description=SAAS Dashboard (Next.js) — sysell.ru
+Documentation=https://sysell.ru
+# Подниматься после сети и PostgreSQL (база нужна для работы)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/agents/saas
+EnvironmentFile=/opt/agents/saas/.env.local
+ExecStart=/usr/bin/npm run start
+# Перезапуск при падении, не чаще чем раз в 5 секунд
+Restart=on-failure
+RestartSec=5
+# Логи идут в journald (смотреть: journalctl -u saas-web)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-web
+# Безопасность: мягкие лимиты (Next не любит жёсткую песочницу)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

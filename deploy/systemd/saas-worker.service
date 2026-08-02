@@ -1,0 +1,20 @@
+[Unit]
+Description=SAAS Worker — основной сбор WB/Ozon (4×/день, −2..сегодня)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# 14 сборщиков (без остатков), период: сегодня−2 .. сегодня.
+# Логирует в /opt/agentsDB/logs/saas_worker.log (через сам скрипт).
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh main
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-worker
+TimeoutStartSec=1h
+
+[Install]
+WantedBy=multi-user.target

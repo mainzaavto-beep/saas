@@ -1,0 +1,17 @@
+[Unit]
+Description=SAAS Worker — основной сбор 4×/день (05:15, 09:00, 12:00, 17:00)
+
+[Timer]
+# 4 прогона: 05:15 (после остатков 05:00), 09:00, 12:00, 17:00.
+OnCalendar=*-*-* 05:15:00
+OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 12:00:00
+OnCalendar=*-*-* 17:00:00
+# Если сервер был выключен — догнать при старте (последний пропуск)
+Persistent=true
+# Небольшой разброс ±3 мин — не бить API МП синхронно
+RandomizedDelaySec=3m
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

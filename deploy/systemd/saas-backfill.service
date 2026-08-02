@@ -1,0 +1,22 @@
+[Unit]
+Description=SAAS Backfill — прогон onboarding-jobs (backfill за 75 дней, 4×/день)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Читает queued onboarding-jobs из jobs.collect_jobs, гоняет backfill per-cabinet.
+# Паузы между jobs внутри drain — rate-limit для очереди клиентов.
+# Логирует в /opt/agentsDB/logs/saas_worker.log (через сам скрипт).
+ExecStart=/opt/agents/saas/worker/run_saas_backfill.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-backfill
+# Backfill одного кабинета за 75 дней ≈ 15–25 мин; очередь из N — до нескольких часов.
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

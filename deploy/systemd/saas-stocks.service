@@ -1,0 +1,19 @@
+[Unit]
+Description=SAAS Stocks — снимок остатков WB/Ozon (1×/день)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# 2 сборщика остатков (wb_stocks + ozon_stocks), снимок «на сейчас».
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh stocks
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-stocks
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

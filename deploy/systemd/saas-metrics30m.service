@@ -1,0 +1,20 @@
+[Unit]
+Description=SAAS Metrics 30m — снимок воронки WB каждые 30 минут
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# wb_metrics_30m — снимок воронки для РНП/времени заказов. Через orchestrator
+# (он выставляет WB_SaaS_CABINET_ID для каждого кабинета отдельно).
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh metrics30m
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-metrics30m
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

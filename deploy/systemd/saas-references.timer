@@ -1,0 +1,12 @@
+[Unit]
+Description=SAAS References — еженедельное обновление справочников WB
+
+[Timer]
+# Понедельник 06:00 — до основного утреннего сбора saas-worker (05:15..17:00).
+# Справочник складов и тарифы практически статичны; реже — нет смысла дёргать WB API.
+OnCalendar=Mon *-*-* 06:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

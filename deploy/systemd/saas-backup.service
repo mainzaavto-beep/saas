@@ -1,0 +1,22 @@
+[Unit]
+Description=SAAS PostgreSQL backup (daily pg_dump + retention 14d)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Креды: .env.local (хост/порт/имя базы) + /etc/saas-worker.env (POSTGRES_PASSWORD для полного дампа)
+EnvironmentFile=/opt/agents/saas/.env.local
+EnvironmentFile=/etc/saas-worker.env
+ExecStart=/opt/agentsDB/backup_saas.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-backup
+# Бэкап не должен висеть вечно; 10 минут хватит для базы нашего размера
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

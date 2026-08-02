@@ -1,0 +1,11 @@
+[Unit]
+Description=SAAS Metrics 30m — снимок воронки WB каждые 30 минут
+
+[Timer]
+# Каждые 30 минут (кумулятивные метрики растут в реальном времени).
+OnCalendar=*:0/30
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
