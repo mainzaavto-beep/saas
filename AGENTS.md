@@ -21,6 +21,9 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Добавить/изменить API-эндпоинт | `app/api/cabinets/[id]/<name>/route.js` |
 | Страницу дашборда (UI) | `app/cabinets/[id]/<name>/page.js` + `*Page.jsx` |
 | Схему БД / миграции | `db/migrations/0NN_*.sql` (пронумерованы, идемпотентны) |
+| Журнал прогонов сборщиков | jobs.collector_runs (пишет orchestrator; ok/partial/failed/timeout/no_token/skipped; ретеншн 90 дн) |
+| Здоровье данных | /health (доступ: SAAS_OPS_USER_IDS в .env.local) + OnFailure=saas-failure@%n во всех юнитах |
+| systemd-юниты | deploy/systemd/ (источник истины) + deploy/install-systemd.sh |
 | Слой расчёта метрик WB | `lib/wbMetrics.js` (единый источник правды по заказам/выручке/прибыли) |
 | Слой расчёта метрик Ozon | `lib/ozonMetrics.js` |
 | Юнит-экономику | `lib/unit.js` (calcWB / calcOzon, налоги в отдельных колонках) |
@@ -99,6 +102,11 @@ subprocess с env-инъекцией (`WB_TOKEN` / `OZON_*` + `WB_SaaS_CABINET_I
 `worker/db_pg.py` (тот же паттерн RLS по `WB_SaaS_CABINET_ID`). Все upsert'ы
 идемпотентны (`ON CONFLICT`). Порядок важен: catalog → orders → finance →
 order_costs → metrics → prices → stocks (зависимости по FK).
+
+Контракт exit-кодов сборщиков: 0 = ok, 3 = partial (часть окон пропущена, напр.
+429 у wb_finance), прочее = failed. Guard: если *_finance прогона не-ok,
+*_order_costs НЕ запускается (иначе безусловный DO UPDATE затёр бы хорошие
+агрегаты дырявыми) — GUARD_DEPS в orchestrator._run_one.
 
 ## Боевое расписание (systemd, `/etc/systemd/system/`)
 
