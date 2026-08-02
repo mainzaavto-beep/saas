@@ -51,7 +51,10 @@ def collect(since=None, to=None):
         orders_map[(int(r["product_id"]), r["d"])] = int(r["cnt"])
 
     dimensions = ["day", "sku"]
-    metrics = ["hits_view", "delivered_units", "revenue", "returns"]
+    # hits_tocart — добавления в корзину. ⚠️ Грабля 2026-08-02: правильное имя
+    # БЕЗ подчёркивания (hits_tocart, не hits_to_cart) — из-за опечатки метрику
+    # считали «недоступной в API» и cart в ozon_daily_metrics пустовал.
+    metrics = ["hits_view", "delivered_units", "revenue", "returns", "hits_tocart"]
     n = 0
     n_orphans = 0
     for row in cli.iter_analytics(since, to, dimensions, metrics):
@@ -68,9 +71,11 @@ def collect(since=None, to=None):
         if pid is None:
             n_orphans += 1
             continue
-        clicks = (row.get("metrics") or [None])[0]
+        mvals = row.get("metrics") or []
+        clicks = mvals[0] if len(mvals) > 0 else None
+        cart = mvals[4] if len(mvals) > 4 else None
         orders = orders_map.get((pid, d))
-        db_pg.upsert_ozon_daily(pid, d, clicks=clicks, orders=orders)
+        db_pg.upsert_ozon_daily(pid, d, clicks=clicks, orders=orders, cart=cart)
         n += 1
     print(f"[ozon_metrics] записано {n} метрик"
           + (f", пропущено {n_orphans}" if n_orphans else ""), flush=True)

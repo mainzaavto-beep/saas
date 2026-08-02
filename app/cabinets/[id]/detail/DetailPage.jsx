@@ -224,13 +224,16 @@ const AD_MODELS = [
 // Ozon — матрица. Без СПП (механики нет), без моделей рекламы (одна ставка).
 // orders_sum = СПРОС (SUM(total) из orders по order_dt — синхронно с «Заказы»);
 // sold/revenue/profit = ФАКТ (из order_costs по sale_dt, is_return=0).
-// Корзины недоступны в API Ozon (hits_to_cart отбрасывается) → строка с row.na.
+// Корзины в API Ozon ДОСТУПНЫ (hits_tocart, сбор с 2026-08-02, см. ozon_metrics.py).
 const OZ_MATRIX_ROWS = [
   { key: "orders",          label: "Заказы",            kind: "int", group: "oz_orders" },  // created (СПРОС); клик → реклама/органика
   { key: "sold",       label: "Продано",        kind: "int" },        // delivered (ФАКТ, is_return=0)
   { key: "orders_sum", label: "Сумма заказов, ₽", kind: "money" },
   { key: "clicks",     label: "Клики",          kind: "int" },
-  { key: "cart",       label: "Корзины",        kind: "int", na: "Корзины недоступны в API Ozon (hits_to_cart отбрасывается)" },
+  // Корзины ДОСТУПНЫ в API Ozon (грабля 2026-08-02: метрика называется
+  // hits_tocart, БЕЗ подчёркивания — из-за опечатки hits_to_cart считали
+  // её несуществующей). Данные копятся с 2026-08-02; старые дни — «·».
+  { key: "cart",       label: "Корзины",        kind: "int" },
   { key: "price",      label: "Цена",           kind: "price" },
   { key: "boost",      label: "Соинвест",       kind: "pct_raw" },    // снапшот бустинга Ozon (%)
   { key: "ad_spend",   label: "Реклама ₽",      kind: "money" },
