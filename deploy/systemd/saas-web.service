@@ -5,6 +5,10 @@ Documentation=https://sysell.ru
 After=network.target postgresql.service
 Requires=postgresql.service
 OnFailure=saas-failure@%n.service
+# Лимит рестарт-шторма: >5 падений за 5 минут — остановиться (иначе OnFailure
+# пишет строку в jobs.collector_runs на каждую попытку и засоряет /health).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

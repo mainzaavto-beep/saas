@@ -287,6 +287,13 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     env, mp = _env_for_shop(shop)
     env["WB_SaaS_CABINET_ID"] = str(cid)
 
+    # Сначала — есть ли вообще сборщики для этого mp в данном прогоне (напр. metrics30m
+    # содержит только wb_metrics_30m — ozon-магазин здесь ни при чём). Если нет, выходим
+    # ДО проверки кредов, иначе получаем бессмысленный no_token на каждый холостой прогон.
+    shop_collectors = _collectors_for_mp(mp, collectors)
+    if not shop_collectors:
+        return [], []
+
     # Проверка: есть ли нужный токен для этого shop? Иначе сборщик упадёт с RuntimeError.
     if mp == "wb" and not env.get("WB_TOKEN"):
         print(f"    shop #{shop.get('shop_id')} {mp}: нет WB_TOKEN — пропуск", flush=True)
@@ -299,10 +306,6 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                     error=f"shop #{shop.get('shop_id')}: нет OZON creds")
         return [], [f"{mp}:no_token"]
 
-    shop_collectors = _collectors_for_mp(mp, collectors)
-    if not shop_collectors:
-        return [], []
-
     legacy = " (legacy cab-creds)" if shop.get("_legacy") else ""
     print(f"  -- shop #{shop.get('shop_id')} [{mp}]{legacy}: {shop_collectors}", flush=True)
     if date_from:
@@ -311,10 +314,11 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     ok, failed = [], []
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
 
-    # Guard от затирания (спек п.3): order_costs агрегирует из finance_report
-    # безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО прогона не-ok,
-    # пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
-    GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance"}
+    # Guard от затирания (спек п.3): order_costs И cabinet_costs агрегируют из
+    # finance_report безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО
+    # прогона не-ok, пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
+    GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance",
+                  "wb_cabinet_costs": "wb_finance"}
 
     for coll in shop_collectors:
         dep = GUARD_DEPS.get(coll)
