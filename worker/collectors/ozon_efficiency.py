@@ -73,26 +73,35 @@ def _collect_ads(since, to):
             print(f"  Performance token HTTP {tr.status_code}: {tr.text[:120]}", flush=True)
             return 0
         token = tr.json().get("access_token")
-        r = requests.get("https://api-performance.ozon.ru/api/client/statistics/daily",
-                         headers={"Authorization": f"Bearer {token}"},
-                         params={"dateFrom": since.strftime("%Y-%m-%d"), "dateTo": to.strftime("%Y-%m-%d")},
-                         timeout=60)
-        if r.status_code != 200:
-            print(f"  Performance /daily HTTP {r.status_code}", flush=True)
-            return 0
-        # CSV: Дата в колонке, расход — «Расход, ₽» (русская запятая).
-        reader = csv.reader(io.StringIO(r.text), delimiter=";")
-        header = next(reader, None)
+        # ⚠️ Грабля 2026-08-02: /statistics/daily отдаёт максимум 62 дня за
+        # запрос («max statistics period: 62 days», причём ровно 62 тоже 400)
+        # → длинный backfill режем окнами по 60 дней.
         spend_by_day = {}
-        for row in reader:
-            if len(row) < 7:
+        win_start = since
+        while win_start <= to:
+            win_end = min(win_start + timedelta(days=59), to)
+            r = requests.get("https://api-performance.ozon.ru/api/client/statistics/daily",
+                             headers={"Authorization": f"Bearer {token}"},
+                             params={"dateFrom": win_start.strftime("%Y-%m-%d"),
+                                     "dateTo": win_end.strftime("%Y-%m-%d")},
+                             timeout=60)
+            if r.status_code != 200:
+                print(f"  Performance /daily HTTP {r.status_code}: {r.text[:120]}", flush=True)
+                win_start = win_end + timedelta(days=1)
                 continue
-            d = (row[2] or "")[:10]
-            try:
-                spend = float((row[5] or "0").replace(",", "."))
-            except ValueError:
-                spend = 0
-            spend_by_day[d] = spend_by_day.get(d, 0) + spend
+            # CSV: Дата в колонке, расход — «Расход, ₽» (русская запятая).
+            reader = csv.reader(io.StringIO(r.text), delimiter=";")
+            next(reader, None)
+            for row in reader:
+                if len(row) < 7:
+                    continue
+                d = (row[2] or "")[:10]
+                try:
+                    spend = float((row[5] or "0").replace(",", "."))
+                except ValueError:
+                    spend = 0
+                spend_by_day[d] = spend_by_day.get(d, 0) + spend
+            win_start = win_end + timedelta(days=1)
         cid = db_pg._cabinet_id()
         now = datetime.now().isoformat(timespec="seconds")
         for d, spend in spend_by_day.items():
