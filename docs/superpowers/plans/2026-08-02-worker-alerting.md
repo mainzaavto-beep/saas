@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Комментарии и commit-сообщения — на русском, в стиле репо (`feat(...)`, `fix(...)`).
-- Миграции идемпотентны (`IF NOT EXISTS`, `DO $$`), раннера нет — применяются вручную `sudo -u postgres psql -d saas -f <файл>`. Таблицы версий миграций нет.
+- Миграции идемпотентны (`IF NOT EXISTS`, `DO $$`), раннера нет — применяются вручную `PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -f <файл>`. Таблицы версий миграций нет.
 - Никаких пустых catch — любой проглоченный сбой печатается в stderr (правило из AGENTS.md).
 - Это боевой хост: `/opt/agents/saas` — прод. Тестовые строки в `jobs.collector_runs` удалять после проверки (`DELETE ... WHERE run_kind='manual' AND collector LIKE 'smoke%'`).
 - Сбой обвязки журналирования НЕ должен ронять прогон сборки.
@@ -73,12 +73,12 @@ COMMIT;
 
 - [ ] **Step 2: Применить к живой БД**
 
-Run: `sudo -u postgres psql -d saas -f /opt/agents/saas/db/migrations/031_collector_runs.sql`
+Run: `PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -f /opt/agents/saas/db/migrations/031_collector_runs.sql`
 Expected: `BEGIN / CREATE TABLE / CREATE INDEX ×2 / GRANT ×2 / COMMIT` без ошибок.
 
 - [ ] **Step 3: Проверить структуру и права**
 
-Run: `sudo -u postgres psql -d saas -c "\d jobs.collector_runs" -c "SELECT has_table_privilege('saas_app','jobs.collector_runs','SELECT')"`
+Run: `PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "\d jobs.collector_runs" -c "SELECT has_table_privilege('saas_app','jobs.collector_runs','SELECT')"`
 Expected: 12 колонок, оба CHECK'а, `has_table_privilege = t`.
 
 - [ ] **Step 4: Commit**
@@ -270,7 +270,7 @@ cd /opt/agents/saas && set -a && . /etc/saas-worker.env && . /etc/collectors.env
   && export SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas \
   && /opt/agents/data-presenter-agent/.venv/bin/python -m worker.orchestrator \
      --cabinet 1 --collectors wb_catalog --run-kind manual
-sudo -u postgres psql -d saas -c "SELECT collector, run_kind, status, started_at FROM jobs.collector_runs ORDER BY id DESC LIMIT 3"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT collector, run_kind, status, started_at FROM jobs.collector_runs ORDER BY id DESC LIMIT 3"
 ```
 
 Expected: сборщик отработал, в таблице строка `wb_catalog / manual / ok`.
@@ -538,8 +538,8 @@ SyslogIdentifier=saas-failure
 cd /opt/agents/saas && set -a && . /etc/saas-worker.env && set +a \
   && export SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas \
   && /opt/agents/data-presenter-agent/.venv/bin/python -m worker.record_failure smoke-test.service
-sudo -u postgres psql -d saas -c "SELECT collector, run_kind, status, error FROM jobs.collector_runs WHERE collector='unit:smoke-test.service'"
-sudo -u postgres psql -d saas -c "DELETE FROM jobs.collector_runs WHERE collector='unit:smoke-test.service'"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT collector, run_kind, status, error FROM jobs.collector_runs WHERE collector='unit:smoke-test.service'"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "DELETE FROM jobs.collector_runs WHERE collector='unit:smoke-test.service'"
 ```
 
 Expected: строка `unit:smoke-test.service / systemd / failed`, затем удалена.
@@ -623,8 +623,8 @@ Expected: `OnFailure=saas-failure@saas-worker.service` (у всех 7), verify �
 ```bash
 systemd-run --unit=saas-smoke-fail --property=OnFailure=saas-failure@saas-smoke-fail.service /bin/false
 sleep 3
-sudo -u postgres psql -d saas -c "SELECT collector, status, error FROM jobs.collector_runs WHERE collector LIKE 'unit:saas-smoke-fail%'"
-sudo -u postgres psql -d saas -c "DELETE FROM jobs.collector_runs WHERE collector LIKE 'unit:saas-smoke-fail%'"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT collector, status, error FROM jobs.collector_runs WHERE collector LIKE 'unit:saas-smoke-fail%'"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "DELETE FROM jobs.collector_runs WHERE collector LIKE 'unit:saas-smoke-fail%'"
 systemctl reset-failed saas-smoke-fail.service 2>/dev/null || true
 ```
 
@@ -659,7 +659,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Определить id владельца и прописать env**
 
 ```bash
-sudo -u postgres psql -d saas -c "SELECT user_id, email FROM auth.users ORDER BY user_id LIMIT 5"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT user_id, email FROM auth.users ORDER BY user_id LIMIT 5"
 ```
 
 Взять user_id владельца (agentrdrd@gmail.com) и добавить строку в `/opt/agents/saas/.env.local`:
@@ -864,7 +864,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ```bash
 systemctl start saas-stocks.service; systemctl status saas-stocks.service --no-pager | head -5
-sudo -u postgres psql -d saas -c "SELECT cabinet_id, collector, run_kind, status, started_at FROM jobs.collector_runs WHERE run_kind='stocks' ORDER BY id DESC LIMIT 10"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT cabinet_id, collector, run_kind, status, started_at FROM jobs.collector_runs WHERE run_kind='stocks' ORDER BY id DESC LIMIT 10"
 ```
 
 Expected: юнит завершился, в журнале строки `wb_stocks`/`ozon_stocks` со статусом `ok` по каждому кабинету, `run_kind='stocks'`.
@@ -891,14 +891,14 @@ set -a && . /etc/saas-worker.env && . /etc/collectors.env && set +a \
      --cabinet 1 --collectors wb_finance,wb_order_costs --run-kind manual
 cp /tmp/claude-0/wb_finance.py.bak worker/collectors/wb_finance.py   # откат правки
 git diff --stat worker/collectors/wb_finance.py                       # пусто = откат чистый
-sudo -u postgres psql -d saas -c "SELECT collector, status, error FROM jobs.collector_runs WHERE run_kind='manual' ORDER BY id DESC LIMIT 4"
-sudo -u postgres psql -d saas -c "SELECT count(*), max(updated_at) FROM tenant.wb_order_costs WHERE cabinet_id=1"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT collector, status, error FROM jobs.collector_runs WHERE run_kind='manual' ORDER BY id DESC LIMIT 4"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "SELECT count(*), max(updated_at) FROM tenant.wb_order_costs WHERE cabinet_id=1"
 ```
 
 Expected: в выводе оркестратора `[wb_finance] PARTIAL` и `[wb_order_costs] SKIP`; в журнале строки `wb_finance/partial` и `wb_order_costs/skipped`; `max(updated_at)` у `wb_order_costs` НЕ изменился (агрегаты не тронуты). Затем удалить smoke-строки:
 
 ```bash
-sudo -u postgres psql -d saas -c "DELETE FROM jobs.collector_runs WHERE run_kind='manual'"
+PGPASSWORD="$(. /etc/saas-worker.env; echo $POSTGRES_PASSWORD)" psql -h localhost -U postgres -d saas -c "DELETE FROM jobs.collector_runs WHERE run_kind='manual'"
 ```
 
 - [ ] **Step 3: Проверить /health показывает всё**
