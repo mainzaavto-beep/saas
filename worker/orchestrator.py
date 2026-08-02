@@ -74,6 +74,7 @@ OZON_COLLECTORS = [
     "ozon_metrics",
     "ozon_stocks",
     "ozon_efficiency",
+    "ozon_prices",     # дневной снимок цен → соинвест (миграция 030, спек 2026-08-02)
 ]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).

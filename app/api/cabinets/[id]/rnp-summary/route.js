@@ -22,7 +22,9 @@ export const dynamic = "force-dynamic";
 //    • CTR % + динамика ▲▼          — рекламный: 100×ad_clicks/ad_views (daily_metrics)
 //    • ДРР % факт/план              — факт 100×ad_spend/salesRub; план = sales_plan.drr_plan
 //    • ДРР ₽ факт/план              — факт SUM(ad_spend); план = drr_plan × revenue_plan_prop
-//    • Скидка за счёт МП %          — WB: AVG(orders.spp); Ozon: current_boost (соинвест)
+//    • Скидка за счёт МП %          — WB: AVG(orders.spp); Ozon: соинвест из
+//      снимков ozon_prices (1 − marketing_price/marketing_seller_price);
+//      буст из акций — НЕ соинвест (решение хозяина 2026-08-02)
 //    • Прибыль факт/план            — операционная; план = revenue_plan_prop × margin_plan_pct
 //    • Оборачиваемость, дн          — lastStock / (sold5/5) по последним 5 дням от конца периода
 //    • Рейтинг ★ + динамика ▲▼      — AVG(daily_metrics.rating) (feedbackRating, сглаженный)
@@ -475,38 +477,33 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
     };
   }
 
-  // 5) Соинвест (boost) — последний снимок ozon_action_products на <= to.
+  // 5) Соинвест — средний по ДНЕВНЫМ СНИМКАМ цен ozon_prices (миграция 030,
+  //    спек 2026-08-02). Соинвест % = 1 − marketing_price/marketing_seller_price;
+  //    marketing_price NULL = Озон не доплачивает → честный 0, не пропуск.
+  //    ⚠️ Буст из акций (current_boost) — НЕ соинвест (решение хозяина):
+  //    старое чтение ozon_action_products удалено (таблица и так пуста).
+  const coinvestSql = `
+      SELECT product_id, AVG(CASE
+          WHEN marketing_price IS NOT NULL AND marketing_price > 0
+               AND marketing_price <= marketing_seller_price
+            THEN 100 * (1 - marketing_price / marketing_seller_price)
+          ELSE 0 END) AS s
+      FROM ozon_prices
+      WHERE date >= ? AND date <= ? AND marketing_seller_price > 0
+      GROUP BY product_id`;
   const boost = {};
   try {
-    for (const r of await db.prepare(
-      `SELECT ap.product_id, ap.current_boost
-       FROM ozon_action_products ap
-       INNER JOIN (
-         SELECT product_id, MAX(date) AS d
-         FROM ozon_action_products
-         WHERE date <= ? AND current_boost IS NOT NULL
-         GROUP BY product_id
-       ) m ON ap.product_id = m.product_id AND ap.date = m.d`
-    ).all(toEnd)) {
-      boost[r.product_id] = r.current_boost != null ? round2(r.current_boost * 100) : null;
+    for (const r of await db.prepare(coinvestSql).all(from, to)) {
+      boost[r.product_id] = r.s != null ? round2(r.s) : null;
     }
-  } catch (e) { console.error("rnp-summary: ozon boost", e); /* не фейлим весь роут */ }
-  // 5б-ozon) Соинвест предыдущего периода — последний снимок ≤ prevTo (для динамики).
+  } catch (e) { console.error("rnp-summary: ozon coinvest", e); /* не фейлим весь роут */ }
+  // 5б-ozon) Соинвест прошлого периода — те же снимки за prevFrom..prevTo (динамика).
   const boostPrev = {};
   try {
-    for (const r of await db.prepare(
-      `SELECT ap.product_id, ap.current_boost
-       FROM ozon_action_products ap
-       INNER JOIN (
-         SELECT product_id, MAX(date) AS d
-         FROM ozon_action_products
-         WHERE date <= ? AND current_boost IS NOT NULL
-         GROUP BY product_id
-       ) m ON ap.product_id = m.product_id AND ap.date = m.d`
-    ).all(prevTo)) {
-      boostPrev[r.product_id] = r.current_boost != null ? round2(r.current_boost * 100) : null;
+    for (const r of await db.prepare(coinvestSql).all(prevFrom, prevTo)) {
+      boostPrev[r.product_id] = r.s != null ? round2(r.s) : null;
     }
-  } catch (e) { console.error("rnp-summary: ozon boostPrev", e); /* не фейлим весь роут */ }
+  } catch (e) { console.error("rnp-summary: ozon coinvestPrev", e); /* не фейлим весь роут */ }
 
   // 6) Продано за последние 5 дней (order_costs) — для оборачиваемости.
   const last5From = addDays(to, -4);

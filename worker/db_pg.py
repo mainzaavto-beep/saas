@@ -527,6 +527,16 @@ def upsert_prices_many(rows):
         raise
 
 
+_OZON_PRICES_COLS = ["product_id", "date", "price", "old_price",
+                     "marketing_seller_price", "marketing_price", "min_price"]
+
+
+def upsert_ozon_prices_many(rows):
+    """Дневной снимок цен Ozon → соинвест (миграция 030, спек 2026-08-02).
+    PK (cabinet_id, product_id, date): повтор в тот же день перезаписывает."""
+    return _batch_upsert("ozon_prices", ["product_id", "date"], _OZON_PRICES_COLS, rows)
+
+
 def update_site_prices_many(rows):
     """Реальная цена сайта (card.wb.ru, миграция 029) — ОТДЕЛЬНЫЙ UPDATE,
     не upsert: сбой публичного API не должен затирать вчерашние price_site
