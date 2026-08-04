@@ -27,7 +27,11 @@ function validWeek(w) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(w || ""));
 }
 
-export async function GET(req) {
+// 🔒 Роут был экспортирован БЕЗ withCabinet: cabinet_id не читался вовсе, а
+// единственной преградой был middleware («залогинен») — любой пользователь
+// панели мог править чужой план закупок. Теперь как у остальных финансовых
+// разделов: чтение — участнику кабинета, запись — только владельцу.
+export const GET = withCabinet(async (req) => {
   try {
     const url = new URL(req.url);
     const pivot = url.searchParams.get("pivot") === "1";
@@ -101,9 +105,9 @@ export async function GET(req) {
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
-}
+});
 
-export async function POST(req) {
+export const POST = withCabinet(async (req) => {
   try {
     const b = await req.json();
     const week = String(b.week || "");
@@ -146,9 +150,9 @@ export async function POST(req) {
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
-}
+}, { requireRole: 'owner' });
 
-export async function DELETE(req) {
+export const DELETE = withCabinet(async (req) => {
   try {
     const url = new URL(req.url);
     const id = Number(url.searchParams.get("id") || 0);
@@ -163,9 +167,9 @@ export async function DELETE(req) {
       }
       return NextResponse.json({ ok: true, id, action: "archived" });
     } finally {
-      
+
     }
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
-}
+}, { requireRole: 'owner' });

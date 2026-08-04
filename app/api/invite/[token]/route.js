@@ -1,6 +1,7 @@
 // /api/invite/[token] — проверить/принять приглашение.
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db.js";
+import { getSession } from "@/lib/session.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,10 +24,14 @@ export async function GET(req, { params }) {
 }
 
 // Принять приглашение (после регистрации/логина).
+// 🔒 user_id берётся ТОЛЬКО из сессии. Раньше он приходил в теле запроса —
+// любой залогиненный мог принять чужой токен на произвольный user_id
+// (и поднять себе роль до указанной в инвайте).
 export async function POST(req, { params }) {
   const token = params.token;
-  const { user_id } = await req.json();
-  if (!user_id) return NextResponse.json({ error: "user_id required" }, { status: 400 });
+  const session = await getSession();
+  const user_id = session?.user_id;
+  if (!user_id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const rows = await query(
     `SELECT cabinet_id, role, expires_at, accepted_at FROM auth.invitations WHERE token = $1`,

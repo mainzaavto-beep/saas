@@ -8,6 +8,9 @@ import crypto from "crypto";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// 🔒 owner: ответ содержит ТОКЕНЫ висящих приглашений — по ним любой залогиненный
+// может вступить в кабинет с ролью из инвайта (см. /api/invite/[token]). Раньше
+// список был доступен и viewer'у → наблюдатель мог поднять себе роль до менеджера.
 export const GET = withCabinet(async (req, { cabinet }) => {
   const rows = await query(
     `SELECT token, role, email, created_by, accepted_by, accepted_at, expires_at, created_at
@@ -16,7 +19,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     [cabinet.cabinet_id]
   );
   return NextResponse.json({ items: rows });
-});
+}, { requireRole: 'owner' });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
   const session = await getSession();

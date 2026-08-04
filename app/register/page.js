@@ -54,12 +54,10 @@ function RegisterInner() {
       const data = await r.json();
       if (!r.ok) { setErr(data.error || 'Ошибка регистрации'); return; }
 
-      // Если есть инвайт-токен — принять его.
-      if (inviteToken && inviteInfo?.valid && data.user_id) {
-        await fetch(`/api/invite/${inviteToken}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: data.user_id }),
-        });
+      // Если есть инвайт-токен — принять его. user_id сервер берёт из сессии
+      // (её создал /api/auth/register), тело запроса не нужно.
+      if (inviteToken && inviteInfo?.valid && data.user?.user_id) {
+        await fetch(`/api/invite/${inviteToken}`, { method: 'POST' });
       }
 
       // Редирект: если был инвайт → в проект, иначе → онбординг.
