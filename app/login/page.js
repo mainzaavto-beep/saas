@@ -21,8 +21,14 @@ function LoginForm() {
       const data = await r.json();
       if (!r.ok) { setErr(data.error || 'Ошибка входа'); return; }
       const rawNext = params.get('next') || data.next || '/';
-      // Только внутренние пути: внешний ?next= (открытый редирект) — вектор фишинга.
-      const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
+      // Только внутренние пути. Резолвим относительно своего origin: строковые
+      // проверки обходятся через '\' (браузер трактует его как '/'), поэтому
+      // сверяем именно origin результата.
+      let next = '/';
+      try {
+        const u = new URL(rawNext, window.location.origin);
+        if (u.origin === window.location.origin) next = u.pathname + u.search + u.hash;
+      } catch { /* мусор в next — идём на главную */ }
       router.push(next);
       router.refresh();
     } catch { setErr('Сетевая ошибка'); }
