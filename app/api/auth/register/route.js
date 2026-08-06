@@ -33,20 +33,31 @@ export async function POST(req) {
 
     const { user } = await registerUser(body);
 
-    // Принять инвайт атомарно: membership + отметка использования.
+    // Принять инвайт атомарно: сжигаем токен с блокировкой, потом membership.
     if (invite) {
       const client = await getPool().connect();
       try {
         await client.query('BEGIN');
+        // Атомарное «сжигание»: условие в UPDATE закрывает гонку двух
+        // одновременных регистраций с одним токеном — победит ровно один.
+        const claim = await client.query(
+          `UPDATE auth.invitations SET accepted_by = $1, accepted_at = now()
+           WHERE token = $2 AND accepted_at IS NULL AND expires_at > now()
+           RETURNING cabinet_id, role`,
+          [user.user_id, invite.token]
+        );
+        if (!claim.rowCount) {
+          await client.query('ROLLBACK');
+          return NextResponse.json(
+            { error: 'Приглашение уже использовано или истекло. Аккаунт создан — войдите по email и паролю и запросите новую ссылку.' },
+            { status: 403 }
+          );
+        }
         await client.query(
           `INSERT INTO auth.memberships (user_id, cabinet_id, role)
            VALUES ($1, $2, $3)
            ON CONFLICT (user_id, cabinet_id) DO NOTHING`,
-          [user.user_id, invite.cabinet_id, invite.role]
-        );
-        await client.query(
-          `UPDATE auth.invitations SET accepted_by = $1, accepted_at = now() WHERE token = $2`,
-          [user.user_id, invite.token]
+          [user.user_id, claim.rows[0].cabinet_id, claim.rows[0].role]
         );
         await client.query('COMMIT');
       } catch (e) {
