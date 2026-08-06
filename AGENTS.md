@@ -285,8 +285,12 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   экосистемы). Для новых файлов не нужно.
 - **Не открывать `.db` файлы** — всё в PostgreSQL. Если нужно новое поле —
   миграция в `tenant.*` + сборщик пишет, либа читает.
-- **После правок `.js` в `app/`/`lib/`** — ребилд + рестарт `saas.service`
-  (`npm run build && systemctl restart saas`).
+- **После правок `.js` в `app/`/`lib/`** — ребилд + рестарт `saas-web.service`
+  (`npm run build && systemctl restart saas-web`). Старый дубль `saas.service`
+  удалён 2026-08-06 (бэкап юнита в `/opt/agentsDB/backups/`).
+- **Не гонять `next dev` в каталоге прода** — dev-режим затирает продакшен-сборку
+  в `.next/`, и следующий рестарт `saas-web` упадёт. Смоуки — только после
+  финального `npm run build`, либо dev в отдельной копии каталога.
 - **После правок сборщиков `.py`** — проверка: `python -m worker.orchestrator
   --cabinet N --collectors <name>`.
 
