@@ -124,6 +124,18 @@ try {
     note('SAAS_REQUIRE_VERIFIED_EMAIL не выставлен — гейт подтверждения email НЕ проверен (включить вместе с SMTP)');
   }
 
+  // ── 5б. Тот же гейт на ключах магазина (POST /api/cabinets/[id]/shops) ──
+  if (gateOn) {
+    const shopTry = await api('POST', `/api/cabinets/${unvCab}/shops`, {
+      cookie: unv.cookie,
+      body: { mp_code: 'wb', shop_name: 'smoke shop', tax_mode: { type: 'usn_income', rate: 6, vat: 0 }, api_creds: {} },
+    });
+    check('неподтверждённый не может добавить магазин: 403 email_unverified',
+      shopTry.status === 403 && shopTry.json?.code === 'email_unverified', `${shopTry.status} ${JSON.stringify(shopTry.json)}`);
+  } else {
+    note('SAAS_REQUIRE_VERIFIED_EMAIL не выставлен — гейт подтверждения email на магазинах НЕ проверен (включить вместе с SMTP)');
+  }
+
   // ── 6. Забыли пароль: одинаковый ответ для существующего и нет ──
   const f1 = await api('POST', '/api/auth/forgot', { body: { email } });
   const f2 = await api('POST', '/api/auth/forgot', { body: { email: `nobody-${run}@smoke.test` } });
