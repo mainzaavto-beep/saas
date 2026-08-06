@@ -40,6 +40,9 @@ function LoginForm() {
       <form className="auth-card" onSubmit={submit}>
         <h1>Вход</h1>
         <p className="sub">Аналитика для продавцов WB и Ozon</p>
+        {params.get('reset') === '1' && !err && (
+          <div className="err" style={{ background: "rgba(46,204,113,.12)", color: "#2ecc71" }}>Пароль изменён — войдите с новым паролем</div>
+        )}
         {err && <div className="err">{err}</div>}
         <div className="field">
           <label>Email</label>
@@ -51,6 +54,7 @@ function LoginForm() {
         </div>
         <button className="btn" disabled={busy}>{busy ? 'Вход...' : 'Войти'}</button>
         <div className="foot">Нет аккаунта? <a href="/register">Зарегистрироваться</a></div>
+        <div className="foot"><a href="/forgot">Забыли пароль?</a></div>
       </form>
     </div>
   );

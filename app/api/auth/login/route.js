@@ -40,6 +40,7 @@ export async function POST(req) {
     session.user_id = user.user_id;
     session.email = user.email;
     session.name = user.name;
+    session.sv = user.session_version;
     session.active_cabinet_id = cabinet ? cabinet.cabinet_id : null;
     session.touched_at = Date.now();
     await session.save();

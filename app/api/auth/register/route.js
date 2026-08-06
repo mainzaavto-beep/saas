@@ -99,6 +99,7 @@ export async function POST(req) {
     session.email = user.email;
     session.name = user.name;
     session.active_cabinet_id = invite ? invite.cabinet_id : null;
+    session.sv = 1;
     session.touched_at = Date.now();
     await session.save();
     return NextResponse.json({

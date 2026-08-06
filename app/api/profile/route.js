@@ -1,8 +1,8 @@
 // /api/profile — профиль пользователя (ФИО, телефон, смена пароля).
 import { NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
 import { getSession } from "@/lib/session.js";
 import { query } from "@/lib/db.js";
+import { hashPassword, verifyPassword } from "@/lib/auth.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,10 +49,19 @@ export async function POST(req) {
   const rows = await query(`SELECT password_hash FROM auth.users WHERE user_id = $1`, [session.user_id]);
   if (!rows.length) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  const valid = bcrypt.compareSync(old_password, rows[0].password_hash);
+  const valid = verifyPassword(old_password, rows[0].password_hash);
   if (!valid) return NextResponse.json({ error: "Неверный текущий пароль" }, { status: 403 });
 
-  const hash = bcrypt.hashSync(new_password, 10);
-  await query(`UPDATE auth.users SET password_hash = $1, updated_at = now() WHERE user_id = $2`, [hash, session.user_id]);
+  const hash = hashPassword(new_password);
+  await query(
+    `UPDATE auth.users
+        SET password_hash = $1, session_version = session_version + 1, updated_at = now()
+      WHERE user_id = $2`,
+    [hash, session.user_id]
+  );
+  // Текущее устройство остаётся в системе: переиздаём куку с новой версией.
+  const fresh = await query(`SELECT session_version FROM auth.users WHERE user_id = $1`, [session.user_id]);
+  session.sv = fresh[0].session_version;
+  await session.save();
   return NextResponse.json({ ok: true });
 }
