@@ -28,8 +28,8 @@ function RegisterInner() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
   const [err, setErr] = useState('');
+  const [emailTaken, setEmailTaken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [inviteInfo, setInviteInfo] = useState(null); // {valid, role, cabinet_name}
 
@@ -45,6 +45,7 @@ function RegisterInner() {
   async function submit(e) {
     e.preventDefault();
     setErr('');
+    setEmailTaken(false);
     if (password !== password2) { setErr('Пароли не совпадают'); return; }
     setBusy(true);
     try {
@@ -55,12 +56,15 @@ function RegisterInner() {
           name: [lastName, firstName].filter(Boolean).join(' ') || undefined,
           first_name: firstName || undefined,
           last_name: lastName || undefined,
-          invite_code: inviteCode || undefined,
           invite_token: inviteToken || undefined,
         }),
       });
       const data = await r.json();
-      if (!r.ok) { setErr(data.error || 'Ошибка регистрации'); return; }
+      if (!r.ok) {
+        setErr(data.error || 'Ошибка регистрации');
+        if (data.code === 'email_taken') setEmailTaken(true);
+        return;
+      }
       // Инвайт принят сервером регистрации; идём куда он сказал.
       router.push(data.next || '/onboarding');
       router.refresh();
@@ -76,6 +80,11 @@ function RegisterInner() {
           {inviteInfo ? `Приглашение в «${inviteInfo.cabinet_name}» (${inviteInfo.role === "manager" ? "Менеджер" : "Наблюдатель"})` : "Создайте аккаунт для доступа к сервису"}
         </p>
         {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {emailTaken && (
+          <div style={{ fontSize: 14, marginBottom: 16 }}>
+            <a href={`/login${inviteToken ? `?next=${encodeURIComponent(`/invite/${inviteToken}`)}` : ''}`} style={{ color: C.accent }}>Войти в существующий аккаунт</a>
+          </div>
+        )}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Фамилия</label>
           <input type="text" value={lastName} onChange={e => setLastName(e.target.value)} style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
@@ -99,12 +108,6 @@ function RegisterInner() {
             <span style={{ display: "block", color: C.neg, fontSize: 12, marginTop: 4 }}>Пароли не совпадают</span>
           )}
         </div>
-        {!inviteToken && (
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 13, color: C.muted }}>Invite-код (если есть)</label>
-            <input type="text" value={inviteCode} onChange={e => setInviteCode(e.target.value)} placeholder="Для закрытой регистрации" style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
-          </div>
-        )}
         <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit" }}>
           {busy ? "Создаём…" : "Создать аккаунт"}
         </button>

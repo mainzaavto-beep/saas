@@ -1,6 +1,7 @@
-// POST /api/auth/register { email, password, name, invite_token? } → создаёт юзера, логинит.
-// При валидном invite_token регистрация открыта (токен = персональный пропуск),
-// инвайт принимается здесь же, в одной транзакции с membership.
+// POST /api/auth/register { email, password, name, first_name, last_name, invite_token? }
+// → создаёт юзера, логинит. Регистрация открытая (общий SAAS_INVITE_CODE убран
+// в фазе 2). При валидном invite_token инвайт принимается здесь же, в одной
+// транзакции с membership.
 import { NextResponse } from 'next/server';
 import { registerUser } from '@/lib/auth.js';
 import { getSession } from '@/lib/session.js';
@@ -10,7 +11,7 @@ export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Неверный JSON' }, { status: 400 }); }
   try {
-    // Валидный персональный инвайт освобождает от общего кода.
+    // Валидный персональный инвайт либо предоставляет автоматический membership.
     let invite = null;
     if (body.invite_token) {
       const rows = await query(
@@ -23,12 +24,6 @@ export async function POST(req) {
       if (inv.accepted_at) return NextResponse.json({ error: 'Приглашение уже использовано' }, { status: 403 });
       if (new Date(inv.expires_at) < new Date()) return NextResponse.json({ error: 'Срок приглашения истёк' }, { status: 403 });
       invite = inv;
-    }
-    // 🔒 Invite-only: если задан SAAS_INVITE_CODE, регистрация только с кодом
-    // или по персональному инвайту. Пустой код = открыто.
-    const inviteCode = process.env.SAAS_INVITE_CODE;
-    if (!invite && inviteCode && body.invite_code !== inviteCode) {
-      return NextResponse.json({ error: 'Неверный invite-код. Регистрация по приглашению.' }, { status: 403 });
     }
 
     const { user } = await registerUser(body);
@@ -80,6 +75,13 @@ export async function POST(req) {
       next: invite ? `/cabinets/${invite.cabinet_id}` : '/onboarding',
     });
   } catch (e) {
-    return NextResponse.json({ error: e.message }, { status: 400 });
+    if (e.code === 'email_taken') {
+      return NextResponse.json({ error: e.message, code: 'email_taken' }, { status: 409 });
+    }
+    if (e.code === 'validation') {
+      return NextResponse.json({ error: e.message }, { status: 400 });
+    }
+    console.error('[register]', e.message);
+    return NextResponse.json({ error: 'Внутренняя ошибка, попробуйте позже' }, { status: 500 });
   }
 }

@@ -106,11 +106,11 @@ try {
   const inv = await q(`SELECT accepted_at FROM auth.invitations WHERE token = $1`, [tokenViewer]);
   check('инвайт помечен принятым', !!inv[0]?.accepted_at);
 
-  // ── 4. Регистрация без кода и без инвайта по-прежнему закрыта ──
+  // ── 4. Регистрация без инвайта теперь открыта (фаза 2 убрала общий код) ──
   const regNoCode = await api('POST', '/api/auth/register', {
     body: { email: `stranger-${run}@smoke.test`, password: 'smoke-pass-123' },
   });
-  check('регистрация без кода и инвайта: 403', regNoCode.status === 403, `got ${regNoCode.status}`);
+  check('регистрация без инвайта: 200 (открытая)', regNoCode.status === 200, `got ${regNoCode.status}`);
 
   // ── 5. Вход сотрудника ведёт в кабинет по membership (ловит обрыв №3: firstCabinetOf) ──
   // Пароль invitee задан регистрацией выше; логинимся заново без куки.
