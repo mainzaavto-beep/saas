@@ -70,9 +70,10 @@ export default function OnboardingPage() {
       if (!projectR.ok) { setErr(projectData.error || 'Ошибка'); return; }
       const cabinetId = projectData.cabinet.cabinet_id;
 
-      // Добавляем магазины с налоговым режимом
+      // Добавляем магазины с налоговым режимом. Ошибку не проглатываем:
+      // проект уже создан, но без магазина данные собираться не будут.
       for (const s of shops) {
-        await fetch(`/api/cabinets/${cabinetId}/shops`, {
+        const shopR = await fetch(`/api/cabinets/${cabinetId}/shops`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mp_code: s.mp_code,
@@ -82,6 +83,11 @@ export default function OnboardingPage() {
             api_creds: { [s.mp_code]: s.creds },
           }),
         });
+        if (!shopR.ok) {
+          const d = await shopR.json().catch(() => ({}));
+          setErr(`Проект создан, но магазин «${s.shop_name || s.mp_code}» не добавлен: ${d.error || 'ошибка сервера'}. Добавьте его в настройках проекта.`);
+          return;
+        }
       }
 
       router.push(`/cabinets/${cabinetId}`);

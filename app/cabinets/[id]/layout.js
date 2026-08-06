@@ -65,7 +65,7 @@ export default async function CabinetLayout({ children, params }) {
   if (!session?.user_id) redirect("/login");
 
   const mem = await query(
-    `SELECT c.display_name, c.marketplaces
+    `SELECT c.display_name, c.marketplaces, c.trial_ends_at
      FROM auth.memberships m
      JOIN auth.cabinets c ON c.cabinet_id = m.cabinet_id
      WHERE m.user_id = $1 AND m.cabinet_id = $2`,
@@ -75,6 +75,15 @@ export default async function CabinetLayout({ children, params }) {
 
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
+
+  // Пробный период: показываем срок, доступ не ограничиваем (оплата — отдельно).
+  // У кабинетов, созданных до фазы 2, trial_ends_at = NULL — баннера нет.
+  const trialEnds = cab.trial_ends_at ? new Date(cab.trial_ends_at) : null;
+  const trialDaysLeft = trialEnds ? Math.ceil((trialEnds - Date.now()) / 86400000) : null;
+  const trialText = !trialEnds ? null
+    : trialDaysLeft > 0
+      ? `Пробный период — осталось ${trialDaysLeft} дн. (до ${trialEnds.toLocaleDateString('ru-RU')})`
+      : `Пробный период закончился ${trialEnds.toLocaleDateString('ru-RU')}`;
 
   // Список всех проектов пользователя — для dropdown выбора.
   const allProjects = await query(
@@ -183,6 +192,16 @@ export default async function CabinetLayout({ children, params }) {
           </div>
         </div>
       </header>
+      {trialText && (
+        <div style={{
+          padding: "8px 16px", textAlign: "center", fontSize: 13,
+          background: trialDaysLeft > 0 ? "rgba(255,193,7,.12)" : "rgba(255,107,107,.12)",
+          color: trialDaysLeft > 0 ? "var(--warn, #d9a400)" : "var(--neg, #ff6b6b)",
+          borderBottom: "1px solid var(--border)",
+        }}>
+          {trialText}
+        </div>
+      )}
       <main className="main">{children}</main>
     </div>
   );

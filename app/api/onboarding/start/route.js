@@ -15,6 +15,10 @@ import { normalizeTaxMode } from '@/lib/tax.js';
 // Сколько дней истории тянуть при подключении нового кабинета.
 const BACKFILL_DAYS = 75;
 
+// Пробный период нового кабинета. Доступ по истечении НЕ блокируется —
+// блокировка появится вместе с оплатой подписки (отдельная спека).
+const TRIAL_DAYS = Number(process.env.SAAS_TRIAL_DAYS) || 14;
+
 export async function POST(req) {
   const session = await getSession();
   if (!session?.user_id) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -45,10 +49,10 @@ export async function POST(req) {
   try {
     await cl.query('BEGIN');
     const { rows } = await cl.query(
-      `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, tax_mode, status)
-       VALUES ($1, $2, $3, $4, 'active')
-       RETURNING cabinet_id, display_name, status`,
-      [userId, displayName, marketplaces, JSON.stringify(taxMode)]
+      `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, tax_mode, status, trial_ends_at)
+       VALUES ($1, $2, $3, $4, 'active', now() + make_interval(days => $5))
+       RETURNING cabinet_id, display_name, status, trial_ends_at`,
+      [userId, displayName, marketplaces, JSON.stringify(taxMode), TRIAL_DAYS]
     );
     const cabinet = rows[0];
     await cl.query(
