@@ -15,23 +15,26 @@ export default function TeamPage({ cabinetId }) {
   const [inviteUrl, setInviteUrl] = useState(null);
   const [copied, setCopied] = useState(false);
 
+  // Ответы читаем с проверкой r.ok: 403 у /invites для не-владельца — норма
+  // (раздел скрыт через canManage), остальные ошибки показываем.
   const load = () => {
     fetch(`/api/cabinets/${cabinetId}/me`).then(r => r.json()).then(d => setMyRole(d.role || null));
-    fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.json()).then(d => setMembers(d.items || []));
-    fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.json()).then(d => setInvites(d.items || []));
+    fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.ok ? r.json() : { items: [] }).then(d => setMembers(d.items || []));
+    fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.ok ? r.json() : { items: [] }).then(d => setInvites(d.items || []));
   };
   useEffect(() => { load(); }, [cabinetId]);
   // Менять роли / приглашать / удалять может только владелец (см. withCabinet requireRole:'owner').
   const canManage = myRole === "owner";
 
   const createInvite = async () => {
-    setInviteUrl(null); setCopied(false);
+    setInviteUrl(null); setCopied(false); setError(null);
     const r = await fetch(`/api/cabinets/${cabinetId}/invites`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: newRole }),
     });
     const d = await r.json();
-    if (d.url) { setInviteUrl(d.url); load(); }
+    if (r.ok && d.url) { setInviteUrl(d.url); load(); }
+    else setError(d.error || "Не удалось создать приглашение");
   };
 
   const copyUrl = () => {
@@ -39,16 +42,20 @@ export default function TeamPage({ cabinetId }) {
   };
 
   const changeRole = async (userId, role) => {
-    await fetch(`/api/cabinets/${cabinetId}/members`, {
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, role }),
     });
+    if (!r.ok) setError((await r.json()).error || "Не удалось изменить роль");
     load();
   };
 
   const removeMember = async (userId) => {
     if (!confirm("Удалить сотрудника из проекта?")) return;
-    await fetch(`/api/cabinets/${cabinetId}/members?user_id=${userId}`, { method: "DELETE" });
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members?user_id=${userId}`, { method: "DELETE" });
+    if (!r.ok) setError((await r.json()).error || "Не удалось удалить сотрудника");
     load();
   };
 
@@ -58,6 +65,7 @@ export default function TeamPage({ cabinetId }) {
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>👥 Команда</h1>
+      {error && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{error}</div>}
 
       {/* Сотрудники */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
@@ -65,8 +73,8 @@ export default function TeamPage({ cabinetId }) {
         {members.map((m) => (
           <div key={m.user_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${soft("line", 20)}` }}>
             <div>
-              <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email}</span>
-              <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>
+              <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email || "Сотрудник"}</span>
+              {m.email && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700, color: roleColor[m.role], background: `${roleColor[m.role]}22` }}>{roleLabel[m.role]}</span>

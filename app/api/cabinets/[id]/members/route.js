@@ -16,7 +16,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
      ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, u.email`,
     [cabinet.cabinet_id]
   );
-  return NextResponse.json({ items: rows });
+  // Контакты — только owner/manager; viewer видит состав команды без email/телефонов.
+  const canSeeContacts = cabinet.role === 'owner' || cabinet.role === 'manager';
+  const items = canSeeContacts ? rows : rows.map(r => ({ ...r, email: null, phone: null }));
+  return NextResponse.json({ items });
 });
 
 // Смена роли сотрудника.

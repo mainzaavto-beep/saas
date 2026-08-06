@@ -337,8 +337,8 @@ function TeamTab({ cabinetId }) {
 
   const load = () => {
     fetch(`/api/cabinets/${cabinetId}/me`).then(r => r.json()).then(d => setMyRole(d.role || null));
-    fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.json()).then(d => setMembers(d.items || []));
-    fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.json()).then(d => setInvites(d.items || []));
+    fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.ok ? r.json() : { items: [] }).then(d => setMembers(d.items || []));
+    fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.ok ? r.json() : { items: [] }).then(d => setInvites(d.items || []));
   };
 
   useEffect(() => { load(); }, [cabinetId]);
@@ -362,16 +362,20 @@ function TeamTab({ cabinetId }) {
   };
 
   const changeRole = async (userId, role) => {
-    await fetch(`/api/cabinets/${cabinetId}/members`, {
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, role }),
     });
+    if (!r.ok) setError((await r.json()).error || "Не удалось изменить роль");
     load();
   };
 
   const removeMember = async (userId) => {
     if (!confirm("Удалить сотрудника из проекта?")) return;
-    await fetch(`/api/cabinets/${cabinetId}/members?user_id=${userId}`, { method: "DELETE" });
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members?user_id=${userId}`, { method: "DELETE" });
+    if (!r.ok) setError((await r.json()).error || "Не удалось удалить сотрудника");
     load();
   };
 
@@ -391,8 +395,8 @@ function TeamTab({ cabinetId }) {
               padding: "10px 14px", background: C.surfaceAlt, borderRadius: 8,
             }}>
               <div>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email}</span>
-                {m.name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>}
+                <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email || "Сотрудник"}</span>
+                {m.email && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>}
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {m.role === "owner" ? (
