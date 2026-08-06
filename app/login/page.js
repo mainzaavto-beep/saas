@@ -20,7 +20,9 @@ function LoginForm() {
       });
       const data = await r.json();
       if (!r.ok) { setErr(data.error || 'Ошибка входа'); return; }
-      const next = params.get('next') || data.next || '/';
+      const rawNext = params.get('next') || data.next || '/';
+      // Только внутренние пути: внешний ?next= (открытый редирект) — вектор фишинга.
+      const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
       router.push(next);
       router.refresh();
     } catch { setErr('Сетевая ошибка'); }
