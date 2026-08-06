@@ -49,11 +49,16 @@ export async function POST(req) {
       next: cabinet ? '/' : '/onboarding',
     });
   } catch (e) {
-    // Заблокированный аккаунт (status != active) — тот же ответ, что и неверный
-    // пароль: разный текст позволял бы перебирать существующие аккаунты.
-    hit(acctKey, LIMITS.loginAccount);
-    hit(ipKey, LIMITS.loginIp);
-    console.warn('[login]', e.message, email, 'ip', ip);
-    return NextResponse.json({ error: 'Неверный email или пароль' }, { status: 401 });
+    if (e.code === 'inactive') {
+      // Заблокированный аккаунт — тот же ответ, что и неверный пароль:
+      // разный текст позволял бы перебирать существующие аккаунты.
+      hit(acctKey, LIMITS.loginAccount);
+      hit(ipKey, LIMITS.loginIp);
+      console.warn('[login] неактивный аккаунт', email, 'ip', ip);
+      return NextResponse.json({ error: 'Неверный email или пароль' }, { status: 401 });
+    }
+    // Настоящий сбой (БД и т.п.) — честная 500 и лимит не расходуем.
+    console.error('[login]', e.message, email, 'ip', ip);
+    return NextResponse.json({ error: 'Внутренняя ошибка, попробуйте позже' }, { status: 500 });
   }
 }
