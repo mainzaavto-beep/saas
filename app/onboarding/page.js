@@ -93,30 +93,36 @@ export default function OnboardingPage() {
       // Пропускаем уже добавленные в прошлой попытке (см. addedShops выше) —
       // /shops не идемпотентен, повторный POST задвоил бы магазин и сбор данных.
       // setAddedShops асинхронен, поэтому копим отметки в локальном done и
-      // синхронизируем состояние одним вызовом (перед return и после цикла).
+      // синхронизируем состояние в finally — гарантированно, каким бы путём
+      // цикл ни завершился (ошибка ответа, сетевое исключение из fetch,
+      // нормальное завершение). Без finally сетевой сбой (обрыв связи/таймаут
+      // на самом fetch, не на ответе) улетал бы мимо любых точечных
+      // setAddedShops(...) и терял отметки об уже добавленных магазинах.
       const done = new Set(addedShops);
-      for (let i = 0; i < shops.length; i++) {
-        if (done.has(i)) continue;
-        const s = shops[i];
-        const shopR = await fetch(`/api/cabinets/${cabinetId}/shops`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mp_code: s.mp_code,
-            shop_name: s.shop_name,
-            legal_name: s.legal_name,
-            tax_mode: s.tax,
-            api_creds: { [s.mp_code]: s.creds },
-          }),
-        });
-        if (!shopR.ok) {
-          const d = await shopR.json().catch(() => ({}));
-          setAddedShops(done);
-          setErr(`Проект создан, но магазин «${s.shop_name || s.mp_code}» не добавлен: ${d.error || 'ошибка сервера'}. Добавьте его в настройках проекта.`);
-          return;
+      try {
+        for (let i = 0; i < shops.length; i++) {
+          if (done.has(i)) continue;
+          const s = shops[i];
+          const shopR = await fetch(`/api/cabinets/${cabinetId}/shops`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mp_code: s.mp_code,
+              shop_name: s.shop_name,
+              legal_name: s.legal_name,
+              tax_mode: s.tax,
+              api_creds: { [s.mp_code]: s.creds },
+            }),
+          });
+          if (!shopR.ok) {
+            const d = await shopR.json().catch(() => ({}));
+            setErr(`Проект создан, но магазин «${s.shop_name || s.mp_code}» не добавлен: ${d.error || 'ошибка сервера'}. Добавьте его в настройках проекта.`);
+            return;
+          }
+          done.add(i);
         }
-        done.add(i);
+      } finally {
+        setAddedShops(new Set(done));
       }
-      setAddedShops(done);
 
       router.push(`/cabinets/${cabinetId}`);
       router.refresh();
