@@ -24,6 +24,7 @@ const pool = new pg.Pool({
 const q = (sql, p) => pool.query(sql, p).then(r => r.rows);
 
 let failed = 0;
+let cleanupFailed = false;
 function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`);
   if (!cond) failed++;
@@ -111,12 +112,16 @@ try {
   check('повторный приём того же инвайта: 403', reuse.status === 403, `got ${reuse.status}`);
 } finally {
   // ── Уборка (в обратном порядке FK) ──
-  await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [cabinetId]).catch(() => {});
-  await q(`DELETE FROM auth.memberships WHERE cabinet_id = $1`, [cabinetId]).catch(() => {});
-  await q(`DELETE FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]).catch(() => {});
+  await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [cabinetId]).catch(e => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; });
+  await q(`DELETE FROM auth.memberships WHERE cabinet_id = $1`, [cabinetId]).catch(e => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; });
+  await q(`DELETE FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]).catch(e => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; });
   await q(`DELETE FROM auth.users WHERE email IN ($1, $2, $3)`,
-    [`owner-${run}@smoke.test`, `invitee-${run}@smoke.test`, `stranger-${run}@smoke.test`]).catch(() => {});
+    [`owner-${run}@smoke.test`, `invitee-${run}@smoke.test`, `stranger-${run}@smoke.test`]).catch(e => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; });
   await pool.end();
 }
 console.log(failed ? `\n${failed} FAIL` : '\nALL PASS');
+if (cleanupFailed) {
+  console.log('\nCLEANUP: не все тестовые записи удалены, проверь auth.users WHERE email LIKE \'%@smoke.test\'');
+  process.exit(1);
+}
 process.exit(failed ? 1 : 0);
