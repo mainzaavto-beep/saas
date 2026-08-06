@@ -136,8 +136,11 @@ order_costs → metrics → prices → stocks (зависимости по FK).
 
 ## Конфигурация / env
 
-- `.env.local` — DB-креды, `SAAS_SESSION_SECRET`, `SAAS_CRED_MASTER_KEY`,
-  `SAAS_INVITE_CODE`.
+- `.env.local` — DB-креды, `SAAS_SESSION_SECRET`, `SAAS_CRED_MASTER_KEY`.
+  Регистрация открытая (фаза 2): `SAAS_INVITE_CODE` удалён.
+  Фаза 3 (пробный период): `SAAS_TRIAL_DAYS` (дефолт 14).
+  Фаза 4 (лимиты входа): `SAAS_RL_LOGIN_ACCOUNT` (дефолт 5/мин),
+  `SAAS_RL_LOGIN_IP` (дефолт 20/мин), `SAAS_RL_REGISTER_IP` (дефолт 30/мин).
 - `/etc/saas-worker.env` + `/etc/collectors.env` — env для воркера (читают
   `run_saas_*.sh` и `run_orchestrator.py`): `POSTGRES_PASSWORD`,
   `SAAS_APP_DB_PASSWORD`, `SAAS_CRED_MASTER_KEY`.
