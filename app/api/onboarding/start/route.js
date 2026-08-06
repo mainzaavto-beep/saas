@@ -63,24 +63,29 @@ export async function POST(req) {
   const { getPool } = await import('@/lib/db.js');
   const pool = getPool();
 
-  // Кап на владельца: считаем «живые» кабинеты (active/provisioning) отдельным
-  // запросом ДО транзакции создания — дешёвая проверка, не держит соединение
-  // под BEGIN дольше необходимого.
-  const { rows: cntRows } = await pool.query(
-    `SELECT count(*)::int AS n FROM auth.cabinets
-     WHERE owner_user_id = $1 AND status IN ('active', 'provisioning')`,
-    [userId]
-  );
-  if ((cntRows[0]?.n || 0) >= MAX_CABINETS_PER_OWNER) {
-    return NextResponse.json(
-      { error: 'Достигнут лимит проектов. Напишите в поддержку, если нужно больше.' },
-      { status: 403 }
-    );
-  }
-
   const cl = await pool.connect();
   try {
     await cl.query('BEGIN');
+
+    // Сериализуем создание проектов одного владельца: без этого параллельные
+    // запросы читают одинаковый счётчик кабинетов и все проходят кап (гонка,
+    // найдена в ре-ревью фикс-волны 2026-08-06 — прежняя проверка была ДО BEGIN
+    // отдельным запросом и без блокировки). pg_advisory_xact_lock живёт до конца
+    // транзакции — снимается сам на COMMIT/ROLLBACK.
+    await cl.query('SELECT pg_advisory_xact_lock($1)', [userId]);
+    const { rows: cnt } = await cl.query(
+      `SELECT count(*)::int AS n FROM auth.cabinets
+       WHERE owner_user_id = $1 AND status IN ('active', 'provisioning')`,
+      [userId]
+    );
+    if (cnt[0].n >= MAX_CABINETS_PER_OWNER) {
+      await cl.query('ROLLBACK');
+      return NextResponse.json(
+        { error: 'Достигнут лимит проектов. Напишите в поддержку, если нужно больше.' },
+        { status: 403 }
+      );
+    }
+
     const { rows } = await cl.query(
       `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, tax_mode, status, trial_ends_at)
        VALUES ($1, $2, $3, $4, 'active', now() + make_interval(days => $5))

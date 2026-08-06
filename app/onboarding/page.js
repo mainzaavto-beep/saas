@@ -24,13 +24,23 @@ export default function OnboardingPage() {
   // без этого повторный сабмит после ошибки заново звал бы /api/onboarding/start
   // и плодил второй кабинет + второй backfill-job (см. фикс-волну 2026-08-06, №4).
   const [createdCabinetId, setCreatedCabinetId] = useState(null);
+  // Индексы магазинов, уже добавленных в предыдущей попытке сабмита — POST
+  // /shops не идемпотентен, повтор без этой отметки задваивал бы магазин
+  // (а с ним и сбор данных — прямое нарушение правила «расхождение цифр =
+  // наш баг»). Индексная схема валидна, только пока состав shops не менялся
+  // между попытками — сбрасываем при любом добавлении/удалении магазина.
+  const [addedShops, setAddedShops] = useState(() => new Set());
 
   const addShop = (mpCode) => {
     // Лимит общий на проект — любая комбинация WB/Ozon, не более 4 всего.
     if (shops.length >= MAX_SHOPS_PER_CABINET) return;
     setShops([...shops, { mp_code: mpCode, shop_name: '', legal_name: '', tax: DEFAULT_TAX(), creds: {} }]);
+    setAddedShops(new Set()); // состав изменился — индексы «уже добавленных» больше не валидны
   };
-  const removeShop = (idx) => setShops(shops.filter((_, i) => i !== idx));
+  const removeShop = (idx) => {
+    setShops(shops.filter((_, i) => i !== idx));
+    setAddedShops(new Set());
+  };
   const updateShop = (idx, field, val) => {
     setShops(shops.map((s, i) => i === idx ? { ...s, [field]: val } : s));
   };
@@ -80,7 +90,14 @@ export default function OnboardingPage() {
 
       // Добавляем магазины с налоговым режимом. Ошибку не проглатываем:
       // проект уже создан, но без магазина данные собираться не будут.
-      for (const s of shops) {
+      // Пропускаем уже добавленные в прошлой попытке (см. addedShops выше) —
+      // /shops не идемпотентен, повторный POST задвоил бы магазин и сбор данных.
+      // setAddedShops асинхронен, поэтому копим отметки в локальном done и
+      // синхронизируем состояние одним вызовом (перед return и после цикла).
+      const done = new Set(addedShops);
+      for (let i = 0; i < shops.length; i++) {
+        if (done.has(i)) continue;
+        const s = shops[i];
         const shopR = await fetch(`/api/cabinets/${cabinetId}/shops`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -93,10 +110,13 @@ export default function OnboardingPage() {
         });
         if (!shopR.ok) {
           const d = await shopR.json().catch(() => ({}));
+          setAddedShops(done);
           setErr(`Проект создан, но магазин «${s.shop_name || s.mp_code}» не добавлен: ${d.error || 'ошибка сервера'}. Добавьте его в настройках проекта.`);
           return;
         }
+        done.add(i);
       }
+      setAddedShops(done);
 
       router.push(`/cabinets/${cabinetId}`);
       router.refresh();
