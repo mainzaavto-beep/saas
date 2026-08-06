@@ -70,7 +70,7 @@ const run = Date.now();
 const email = `verify-${run}@smoke.test`;
 const PASS1 = 'smoke-pass-123';
 const PASS2 = 'smoke-pass-456';
-let cabinetId = null, userId = null;
+let cabinetId = null, userId = null, unvCab = null;
 
 try {
   if (process.env.SAAS_MAIL_SINK !== '1' && !process.env.SAAS_SMTP_HOST) {
@@ -91,7 +91,7 @@ try {
   check('в письме ссылка /verify?token=', !!vToken, String(mail1 && mail1.slice(0, 120)));
   const tokRow = vToken ? (await q(`SELECT kind, used_at FROM auth.user_tokens WHERE user_id = $1 AND kind = 'verify_email'`, [userId]))[0] : null;
   check('токен лежит в БД непогашенным', !!tokRow && tokRow.used_at === null, JSON.stringify(tokRow));
-  check('сырой токен в БД не хранится', !!vToken && !(await q(`SELECT 1 FROM auth.user_tokens WHERE token_hash = $1`, [vToken])).length);
+  check('сырой токен в БД не хранится', !!vToken && !(await q(`SELECT 1 FROM auth.user_tokens WHERE token_hash = $1`, [vToken])).length, 'найдена строка с сырым токеном');
 
   // ── 2. Подтверждение по токену ──
   const ver = await api('POST', '/api/auth/verify', { body: { token: vToken } });
@@ -114,7 +114,7 @@ try {
   const unvEmail = `unverified-${run}@smoke.test`;
   const unv = await api('POST', '/api/auth/register', { body: { email: unvEmail, password: PASS1 } });
   const unvOnb = await api('POST', '/api/onboarding/start', { cookie: unv.cookie, body: { display_name: `smoke-p3u-${run}`, marketplaces: ['wb'] } });
-  const unvCab = unvOnb.json?.cabinet?.cabinet_id;
+  unvCab = unvOnb.json?.cabinet?.cabinet_id;
   const inviteTry = await api('POST', `/api/cabinets/${unvCab}/invites`, { cookie: unv.cookie, body: { role: 'viewer' } });
   if (gateOn) {
     check('неподтверждённый не может создать инвайт: 403 email_unverified',
@@ -122,12 +122,6 @@ try {
   } else {
     check('гейт выключен — инвайт создаётся: 200', inviteTry.status === 200, `${inviteTry.status} ${JSON.stringify(inviteTry.json)}`);
     note('SAAS_REQUIRE_VERIFIED_EMAIL не выставлен — гейт подтверждения email НЕ проверен (включить вместе с SMTP)');
-  }
-  if (unvCab) {
-    await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [unvCab]).catch(() => {});
-    await q(`DELETE FROM jobs.collect_jobs WHERE cabinet_id = $1`, [unvCab]).catch(() => {});
-    await q(`DELETE FROM auth.memberships WHERE cabinet_id = $1`, [unvCab]).catch(() => {});
-    await q(`DELETE FROM auth.cabinets WHERE cabinet_id = $1`, [unvCab]).catch(() => {});
   }
 
   // ── 6. Забыли пароль: одинаковый ответ для существующего и нет ──
@@ -159,11 +153,11 @@ try {
   check('повторный сброс тем же токеном: 400', rst2.status === 400, `got ${rst2.status}`);
 } finally {
   const cf = (e) => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; };
-  if (cabinetId) {
-    await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [cabinetId]).catch(cf);
-    await q(`DELETE FROM jobs.collect_jobs WHERE cabinet_id = $1`, [cabinetId]).catch(cf);
-    await q(`DELETE FROM auth.memberships WHERE cabinet_id = $1`, [cabinetId]).catch(cf);
-    await q(`DELETE FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]).catch(cf);
+  for (const cid of [cabinetId, unvCab].filter(Boolean)) {
+    await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [cid]).catch(cf);
+    await q(`DELETE FROM jobs.collect_jobs WHERE cabinet_id = $1`, [cid]).catch(cf);
+    await q(`DELETE FROM auth.memberships WHERE cabinet_id = $1`, [cid]).catch(cf);
+    await q(`DELETE FROM auth.cabinets WHERE cabinet_id = $1`, [cid]).catch(cf);
   }
   await q(`DELETE FROM auth.user_tokens WHERE user_id IN (SELECT user_id FROM auth.users WHERE email LIKE $1)`, [`%-${run}@smoke.test`]).catch(cf);
   await q(`DELETE FROM auth.users WHERE email LIKE $1`, [`%-${run}@smoke.test`]).catch(cf);
