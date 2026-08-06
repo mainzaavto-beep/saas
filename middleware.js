@@ -5,6 +5,9 @@ import { readSessionFromCookie } from './lib/session.js';
 
 const PUBLIC_PATHS = ['/', '/login', '/register'];
 const PUBLIC_API = ['/api/auth/login', '/api/auth/register', '/api/auth/logout'];
+// /api/invite/<token> публичен: GET — валидация инвайта до регистрации,
+// POST сам проверяет сессию (401 внутри роута).
+const PUBLIC_API_PREFIXES = ['/api/invite/'];
 
 export async function middleware(req) {
   const { pathname } = req.nextUrl;
@@ -14,6 +17,7 @@ export async function middleware(req) {
     return NextResponse.next();
   }
   if (PUBLIC_API.some((p) => pathname === p)) return NextResponse.next();
+  if (PUBLIC_API_PREFIXES.some((p) => pathname.startsWith(p))) return NextResponse.next();
   // Next-внутренности и статика.
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon')) {
     return NextResponse.next();
