@@ -150,6 +150,8 @@ function MainTab() {
   const [newPass, setNewPass] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
   const [passMsg, setPassMsg] = useState(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyMsg, setVerifyMsg] = useState(null);
 
   useEffect(() => {
     fetch("/api/profile").then(r => r.json()).then(d => d.error ? setError(d.error) : setData(d));
@@ -184,8 +186,37 @@ function MainTab() {
     else setPassMsg(`❌ ${d.error}`);
   };
 
+  const resendVerify = async () => {
+    setVerifyBusy(true); setVerifyMsg(null);
+    try {
+      const r = await fetch("/api/auth/verify/resend", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      setVerifyMsg(r.ok
+        ? { ok: true, text: "Письмо отправлено — проверьте почту" }
+        : { ok: false, text: d.error || "Не удалось отправить письмо" });
+    } catch {
+      setVerifyMsg({ ok: false, text: "Сетевая ошибка" });
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "grid", gap: 20 }}>
+      {data && !data.email_verified_at && (
+        <div style={{ background: "rgba(255,193,7,.12)", border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 14 }}>
+            Почта <b>{data.email}</b> не подтверждена. Без подтверждения нельзя подключать API-ключи маркетплейсов и приглашать сотрудников.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button type="button" onClick={resendVerify} disabled={verifyBusy} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: verifyBusy ? "default" : "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>
+              {verifyBusy ? "Отправляем…" : "Выслать письмо ещё раз"}
+            </button>
+            {verifyMsg && <span style={{ fontSize: 13, color: verifyMsg.ok ? C.pos : C.neg }}>{verifyMsg.text}</span>}
+          </div>
+        </div>
+      )}
+
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 24 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 16px" }}>Личные данные</h2>
         <div style={{ display: "grid", gap: 12 }}>

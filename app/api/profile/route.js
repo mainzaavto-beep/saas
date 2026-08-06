@@ -11,7 +11,7 @@ export async function GET() {
   const session = await getSession();
   if (!session?.user_id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const rows = await query(
-    `SELECT user_id, email, first_name, last_name, patronymic, phone, name FROM auth.users WHERE user_id = $1`,
+    `SELECT user_id, email, first_name, last_name, patronymic, phone, name, email_verified_at FROM auth.users WHERE user_id = $1`,
     [session.user_id]
   );
   if (!rows.length) return NextResponse.json({ error: "not found" }, { status: 404 });
