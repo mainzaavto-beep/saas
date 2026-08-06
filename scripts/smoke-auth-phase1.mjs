@@ -121,6 +121,10 @@ try {
   const exp = await api('POST', `/api/invite/${tokExpired}`, { cookie: regOut.cookie });
   check('истёкший токен: 403', exp.status === 403, `got ${exp.status} ${JSON.stringify(exp.json)}`);
 
+  // ── 8б. Сожжённый токен (tokViewer принят emp'ом ранее) для постороннего — 403 ──
+  const burned = await api('POST', `/api/invite/${tokViewer}`, { cookie: regOut.cookie });
+  check('сожжённый токен постороннему: 403 «Уже использовано»', burned.status === 403 && /использовано/i.test(burned.json?.error || ''), `${burned.status} ${JSON.stringify(burned.json)}`);
+
   // ── 9. Создание инвайта отдаёт ссылку нового формата ──
   const inv = await api('POST', `/api/cabinets/${cabinetId}/invites`, { cookie: ownerCookie, body: { role: 'viewer' } });
   check('ссылка инвайта ведёт на /invite/<token>', typeof inv.json?.url === 'string' && inv.json.url.endsWith(`/invite/${inv.json?.token}`), String(inv.json?.url));

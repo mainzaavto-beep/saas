@@ -119,9 +119,10 @@ try {
   check('...active_cabinet_id = кабинет приглашения', login.json?.active_cabinet_id === cabinetId, `got ${login.json?.active_cabinet_id}`);
   check("...next не '/onboarding'", login.json?.next !== '/onboarding', `next=${login.json?.next}`);
 
-  // ── 6. Повторное использование токена отклоняется ──
+  // ── 6. Повторный приём тем же пользователем — идемпотентное «уже участник» ──
+  // (семантика фазы 1: membership не пересоздаётся, токен уже сожжён).
   const reuse = await api('POST', `/api/invite/${tokenViewer}`, { cookie: login.cookie });
-  check('повторный приём того же инвайта: 403', reuse.status === 403, `got ${reuse.status}`);
+  check('повторный приём тем же юзером: already_member', reuse.status === 200 && reuse.json?.already_member === true, `${reuse.status} ${JSON.stringify(reuse.json)}`);
 } finally {
   // ── Уборка (в обратном порядке FK) ──
   await q(`DELETE FROM auth.invitations WHERE cabinet_id = $1`, [cabinetId]).catch(e => { console.error('CLEANUP FAIL:', e.message); cleanupFailed = true; });
