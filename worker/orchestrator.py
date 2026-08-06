@@ -388,9 +388,14 @@ def run_cabinet(cabinet, collectors, verbose=False, date_from=None, date_to=None
     shops = cabinet.get("shops") or []
     print(f"\n=== Кабинет #{cid} «{name}» shops={len(shops)} ===", flush=True)
     if not shops:
-        print("  нет магазинов с кредами — пропуск", flush=True)
-        _record_run(cid, "_cabinet", "failed", error="no_shops")
-        return ["no_shops"]
+        # Незавершённый онбординг (проект создан, магазин ещё не добавлен) —
+        # это НЕ сбой сборки. С открытой регистрацией такое создаёт кто угодно,
+        # включая брошенные попытки — не должно ронять прогон в failed и будить
+        # OnFailure-алерт (см. фикс-волну 2026-08-06, находка №1). Статус skipped,
+        # как у GUARD_DEPS-пропусков, чтобы /health красил жёлтым, а не красным.
+        print("  нет магазинов с кредами — пропуск (незавершённый онбординг)", flush=True)
+        _record_run(cid, "_cabinet", "skipped", error="no_shops")
+        return []
 
     all_failed = []
     for shop in shops:
