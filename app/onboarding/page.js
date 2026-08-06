@@ -20,6 +20,10 @@ export default function OnboardingPage() {
   const [shops, setShops] = useState([]); // [{mp_code, shop_name, legal_name, tax, creds:{}}]
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // Проект уже создан (успешно), но добавление какого-то магазина упало —
+  // без этого повторный сабмит после ошибки заново звал бы /api/onboarding/start
+  // и плодил второй кабинет + второй backfill-job (см. фикс-волну 2026-08-06, №4).
+  const [createdCabinetId, setCreatedCabinetId] = useState(null);
 
   const addShop = (mpCode) => {
     // Лимит общий на проект — любая комбинация WB/Ozon, не более 4 всего.
@@ -58,17 +62,21 @@ export default function OnboardingPage() {
     }
     setBusy(true);
     try {
-      // Создаём проект. marketplaces[] = unique МП из выбранных магазинов —
-      // воркер по нему выбирает сборщиков, а онбординг-эндпоинт создаёт job
-      // на backfill за 75 дней.
-      const marketplaces = [...new Set(shops.map((s) => s.mp_code))];
-      const projectR = await fetch('/api/onboarding/start', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: displayName, marketplaces }),
-      });
-      const projectData = await projectR.json();
-      if (!projectR.ok) { setErr(projectData.error || 'Ошибка'); return; }
-      const cabinetId = projectData.cabinet.cabinet_id;
+      let cabinetId = createdCabinetId;
+      if (!cabinetId) {
+        // Создаём проект. marketplaces[] = unique МП из выбранных магазинов —
+        // воркер по нему выбирает сборщиков, а онбординг-эндпоинт создаёт job
+        // на backfill за 75 дней.
+        const marketplaces = [...new Set(shops.map((s) => s.mp_code))];
+        const projectR = await fetch('/api/onboarding/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ display_name: displayName, marketplaces }),
+        });
+        const projectData = await projectR.json();
+        if (!projectR.ok) { setErr(projectData.error || 'Ошибка'); return; }
+        cabinetId = projectData.cabinet.cabinet_id;
+        setCreatedCabinetId(cabinetId);
+      }
 
       // Добавляем магазины с налоговым режимом. Ошибку не проглатываем:
       // проект уже создан, но без магазина данные собираться не будут.
