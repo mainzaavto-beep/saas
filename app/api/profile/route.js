@@ -1,6 +1,6 @@
 // /api/profile — профиль пользователя (ФИО, телефон, смена пароля).
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/session.js";
+import { getLiveSession } from "@/lib/session.js";
 import { query } from "@/lib/db.js";
 import { hashPassword, verifyPassword } from "@/lib/auth.js";
 
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const session = await getSession();
+  const session = await getLiveSession();
   if (!session?.user_id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const rows = await query(
     `SELECT user_id, email, first_name, last_name, patronymic, phone, name, email_verified_at FROM auth.users WHERE user_id = $1`,
@@ -19,7 +19,7 @@ export async function GET() {
 }
 
 export async function PUT(req) {
-  const session = await getSession();
+  const session = await getLiveSession();
   if (!session?.user_id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const b = await req.json();
   const sets = [];
@@ -40,7 +40,7 @@ export async function PUT(req) {
 
 // Смена пароля: POST {old_password, new_password}
 export async function POST(req) {
-  const session = await getSession();
+  const session = await getLiveSession();
   if (!session?.user_id) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { old_password, new_password } = await req.json();
   if (!old_password || !new_password) return NextResponse.json({ error: "old_password + new_password required" }, { status: 400 });
