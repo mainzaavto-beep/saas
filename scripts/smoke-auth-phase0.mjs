@@ -8,6 +8,11 @@ import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
+const { types } = pg;
+// Применить те же парсеры типов, что в lib/db.js
+types.setTypeParser(20, (val) => val === null ? null : Number(val));        // int8/bigint
+types.setTypeParser(1700, (val) => val === null ? null : Number(val));      // numeric/decimal
+
 const BASE = process.argv[2] || 'http://localhost:3210';
 
 // env из .env.local (как у Next)
