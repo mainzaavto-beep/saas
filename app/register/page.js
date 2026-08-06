@@ -49,19 +49,13 @@ function RegisterInner() {
           first_name: firstName || undefined,
           last_name: lastName || undefined,
           invite_code: inviteCode || undefined,
+          invite_token: inviteToken || undefined,
         }),
       });
       const data = await r.json();
       if (!r.ok) { setErr(data.error || 'Ошибка регистрации'); return; }
-
-      // Если есть инвайт-токен — принять его. user_id сервер берёт из сессии
-      // (её создал /api/auth/register), тело запроса не нужно.
-      if (inviteToken && inviteInfo?.valid && data.user?.user_id) {
-        await fetch(`/api/invite/${inviteToken}`, { method: 'POST' });
-      }
-
-      // Редирект: если был инвайт → в проект, иначе → онбординг.
-      router.push(data.next || (inviteInfo ? '/cabinets' : '/onboarding'));
+      // Инвайт принят сервером регистрации; идём куда он сказал.
+      router.push(data.next || '/onboarding');
       router.refresh();
     } catch { setErr('Сетевая ошибка'); }
     finally { setBusy(false); }
