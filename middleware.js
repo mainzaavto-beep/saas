@@ -3,7 +3,7 @@
 import { NextResponse } from 'next/server';
 import { readSessionFromCookie } from './lib/session.js';
 
-const PUBLIC_PATHS = ['/', '/login', '/register'];
+const PUBLIC_PATHS = ['/', '/login', '/register', '/invite'];
 const PUBLIC_API = ['/api/auth/login', '/api/auth/register', '/api/auth/logout'];
 // /api/invite/<token> публичен: GET — валидация инвайта до регистрации,
 // POST сам проверяет сессию (401 внутри роута).

@@ -11,10 +11,17 @@ export default function RegisterPageWrapper() {
 }
 
 function RegisterInner() {
-  
+
   const router = useRouter();
   const sp = useSearchParams();
   const inviteToken = sp.get('invite') || '';
+  const fromInvite = sp.get('from') === 'invite';
+  // Старые ссылки /register?invite=X ведут на страницу приглашения — там есть
+  // ветка «у меня уже есть аккаунт». Сюда возвращаются кнопкой «Создать аккаунт»
+  // (она добавляет from=invite).
+  useEffect(() => {
+    if (inviteToken && !fromInvite) router.replace(`/invite/${inviteToken}`);
+  }, [inviteToken, fromInvite, router]);
 
   const [lastName, setLastName] = useState('');
   const [firstName, setFirstName] = useState('');

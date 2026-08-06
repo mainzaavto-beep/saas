@@ -32,7 +32,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
      VALUES ($1, $2, $3, $4, $5)`,
     [token, cabinet.cabinet_id, role, b.email || null, session.user_id]
   );
-  const inviteUrl = `${process.env.NEXT_PUBLIC_URL || "https://sysell.ru"}/register?invite=${token}`;
+  const inviteUrl = `${process.env.NEXT_PUBLIC_URL || "https://sysell.ru"}/invite/${token}`;
   return NextResponse.json({ ok: true, token, url: inviteUrl, role });
 }, { requireRole: 'owner' });
 
