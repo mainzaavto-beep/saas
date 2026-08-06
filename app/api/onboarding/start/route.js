@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session.js';
 import { normalizeTaxMode } from '@/lib/tax.js';
+import { hit, LIMITS } from '@/lib/rate-limit.js';
 
 // Сколько дней истории тянуть при подключении нового кабинета.
 const BACKFILL_DAYS = 75;
@@ -19,14 +20,30 @@ const BACKFILL_DAYS = 75;
 // блокировка появится вместе с оплатой подписки (отдельная спека).
 const TRIAL_DAYS = Number(process.env.SAAS_TRIAL_DAYS) || 14;
 
+// Кап на владельца: с открытой регистрацией (фаза 2) один аккаунт мог бы
+// наплодить неограниченно кабинетов — каждый ставит onboarding-job в очередь
+// backfill и задерживает реальных клиентов (спек фикс-волны 2026-08-06, №2).
+const MAX_CABINETS_PER_OWNER = 5;
+
 export async function POST(req) {
   const session = await getSession();
   if (!session?.user_id) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
+  const userId = session.user_id;
+
+  // Лимит частоты: не больше N попыток создания проекта в минуту на пользователя —
+  // защита очереди backfill (drain берёт по одной job с паузой 8с) от спама.
+  const rl = hit(`onboard:user:${userId}`, LIMITS.onboardUser);
+  if (rl.limited) {
+    return NextResponse.json(
+      { error: 'Слишком много попыток создания проекта. Попробуйте через минуту.' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter || 60) } }
+    );
+  }
+
   let body;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Неверный JSON' }, { status: 400 }); }
 
-  const userId = session.user_id;
   const displayName = String(body.display_name || '').trim();
   if (!displayName) return NextResponse.json({ error: 'Укажите название проекта' }, { status: 400 });
 
@@ -45,6 +62,22 @@ export async function POST(req) {
 
   const { getPool } = await import('@/lib/db.js');
   const pool = getPool();
+
+  // Кап на владельца: считаем «живые» кабинеты (active/provisioning) отдельным
+  // запросом ДО транзакции создания — дешёвая проверка, не держит соединение
+  // под BEGIN дольше необходимого.
+  const { rows: cntRows } = await pool.query(
+    `SELECT count(*)::int AS n FROM auth.cabinets
+     WHERE owner_user_id = $1 AND status IN ('active', 'provisioning')`,
+    [userId]
+  );
+  if ((cntRows[0]?.n || 0) >= MAX_CABINETS_PER_OWNER) {
+    return NextResponse.json(
+      { error: 'Достигнут лимит проектов. Напишите в поддержку, если нужно больше.' },
+      { status: 403 }
+    );
+  }
+
   const cl = await pool.connect();
   try {
     await cl.query('BEGIN');
