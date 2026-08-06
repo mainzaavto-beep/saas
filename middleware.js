@@ -29,8 +29,12 @@ export async function middleware(req) {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
     const url = req.nextUrl.clone();
+    // Сохраняем и путь, и параметры: без search человек после входа терял
+    // фильтры/период, с которыми пришёл по ссылке.
+    const target = pathname + req.nextUrl.search;
     url.pathname = '/login';
-    url.searchParams.set('next', pathname);
+    url.search = '';
+    url.searchParams.set('next', target);
     return NextResponse.redirect(url);
   }
   return NextResponse.next();

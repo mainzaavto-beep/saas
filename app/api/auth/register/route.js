@@ -6,10 +6,20 @@ import { NextResponse } from 'next/server';
 import { registerUser } from '@/lib/auth.js';
 import { getSession } from '@/lib/session.js';
 import { query, getPool } from '@/lib/db.js';
+import { clientIp, hit, LIMITS } from '@/lib/rate-limit.js';
 
 export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Неверный JSON' }, { status: 400 }); }
+
+  const rl = hit(`register:ip:${clientIp(req)}`, LIMITS.registerIp);
+  if (rl.limited) {
+    return NextResponse.json(
+      { error: 'Слишком много регистраций подряд. Попробуйте через минуту.' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter || 60) } }
+    );
+  }
+
   try {
     // Валидный персональный инвайт либо предоставляет автоматический membership.
     let invite = null;
@@ -68,6 +78,7 @@ export async function POST(req) {
     session.email = user.email;
     session.name = user.name;
     session.active_cabinet_id = invite ? invite.cabinet_id : null;
+    session.touched_at = Date.now();
     await session.save();
     return NextResponse.json({
       ok: true, user,
