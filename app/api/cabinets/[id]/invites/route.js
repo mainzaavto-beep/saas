@@ -34,7 +34,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   );
   const inviteUrl = `${process.env.NEXT_PUBLIC_URL || "https://sysell.ru"}/invite/${token}`;
   return NextResponse.json({ ok: true, token, url: inviteUrl, role });
-}, { requireRole: 'owner' });
+}, { requireRole: 'owner', requireVerifiedEmail: true });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);

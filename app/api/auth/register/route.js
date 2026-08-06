@@ -7,6 +7,8 @@ import { registerUser } from '@/lib/auth.js';
 import { getSession } from '@/lib/session.js';
 import { query, getPool } from '@/lib/db.js';
 import { clientIp, hit, LIMITS } from '@/lib/rate-limit.js';
+import { createToken } from '@/lib/tokens.js';
+import { sendMail } from '@/lib/mailer.js';
 
 export async function POST(req) {
   let body;
@@ -70,6 +72,25 @@ export async function POST(req) {
         throw e;
       } finally {
         client.release();
+      }
+    }
+
+    // Приглашённый переходил по персональной ссылке из своей почты — адрес
+    // считаем подтверждённым сразу. Остальным шлём письмо; сбой почты
+    // регистрацию не отменяет (человек уже внутри, письмо перезапросит сам).
+    if (invite) {
+      await query(`UPDATE auth.users SET email_verified_at = now() WHERE user_id = $1`, [user.user_id]);
+    } else {
+      try {
+        const token = await createToken(user.user_id, 'verify_email');
+        const base = process.env.NEXT_PUBLIC_URL || 'https://sysell.ru';
+        await sendMail({
+          to: user.email,
+          subject: 'Подтвердите почту в SySell',
+          text: `Здравствуйте!\n\nПодтвердите адрес, чтобы подключать магазины и приглашать сотрудников:\n${base}/verify?token=${token}\n\nСсылка действует 7 дней. Если вы не регистрировались — просто удалите это письмо.`,
+        });
+      } catch (e) {
+        console.error('[register] письмо с подтверждением не ушло:', e.message);
       }
     }
 

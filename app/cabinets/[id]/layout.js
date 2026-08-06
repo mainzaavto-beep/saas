@@ -65,9 +65,10 @@ export default async function CabinetLayout({ children, params }) {
   if (!session?.user_id) redirect("/login");
 
   const mem = await query(
-    `SELECT c.display_name, c.marketplaces, c.trial_ends_at
+    `SELECT c.display_name, c.marketplaces, c.trial_ends_at, u.email_verified_at
      FROM auth.memberships m
      JOIN auth.cabinets c ON c.cabinet_id = m.cabinet_id
+     JOIN auth.users u ON u.user_id = m.user_id
      WHERE m.user_id = $1 AND m.cabinet_id = $2`,
     [session.user_id, cabinetId]
   );
@@ -200,6 +201,16 @@ export default async function CabinetLayout({ children, params }) {
           borderBottom: "1px solid var(--border)",
         }}>
           {trialText}
+        </div>
+      )}
+      {!cab.email_verified_at && (
+        <div style={{
+          padding: "8px 16px", textAlign: "center", fontSize: 13,
+          background: "rgba(255,193,7,.12)", color: "var(--warn, #d9a400)",
+          borderBottom: "1px solid var(--border)",
+        }}>
+          Подтвердите почту — мы отправили письмо на {session.email}.{" "}
+          <a href="/settings" style={{ color: "inherit", textDecoration: "underline" }}>Выслать ещё раз</a>
         </div>
       )}
       <main className="main">{children}</main>

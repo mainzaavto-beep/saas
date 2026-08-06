@@ -118,7 +118,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   );
 
   return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id });
-}, { requireRole: 'owner' });
+}, { requireRole: 'owner', requireVerifiedEmail: true });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -168,4 +168,4 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     vals
   );
   return NextResponse.json({ ok: true });
-}, { requireRole: 'owner' });
+}, { requireRole: 'owner', requireVerifiedEmail: true });
