@@ -143,6 +143,14 @@ try {
   const payWhenLocked = await api('POST', `/api/cabinets/${cabinetId}/billing/pay`, { cookie: ownerCookie, body: { plan_code: PLAN } });
   check('оплатить из блокировки можно', payWhenLocked.status === 200, `got ${payWhenLocked.status}`);
 
+  // Страницы: заблокированный кабинет уводит на оплату, сама оплата открыта.
+  const lockedPage = await fetch(`${BASE}/cabinets/${cabinetId}/summary`, { headers: { cookie: ownerCookie }, redirect: 'manual' });
+  check('страница кабинета при блокировке: редирект на оплату',
+    lockedPage.status === 307 && (lockedPage.headers.get('location') || '').includes(`/cabinets/${cabinetId}/billing`),
+    `${lockedPage.status} ${lockedPage.headers.get('location')}`);
+  const billingPage = await fetch(`${BASE}/cabinets/${cabinetId}/billing`, { headers: { cookie: ownerCookie }, redirect: 'manual' });
+  check('страница оплаты при блокировке открывается (нет цикла)', billingPage.status === 200, `${billingPage.status} ${billingPage.headers.get('location')}`);
+
   // ── 10. Отсрочка: срок вышел вчера — доступ ещё есть ──
   await q(`UPDATE auth.cabinets SET paid_until = now() - interval '1 day' WHERE cabinet_id = $1`, [cabinetId]);
   const graceCall = await api('GET', `/api/cabinets/${cabinetId}/members`, { cookie: ownerCookie });

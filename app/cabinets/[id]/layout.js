@@ -89,13 +89,16 @@ export default async function CabinetLayout({ children, params }) {
     [session.user_id]
   );
 
-  // Текущий путь — для подсветки активного пункта меню.
+  // Текущий путь — для подсветки активного пункта меню (приходит из
+  // middleware.js: x-invoke-path — внутренний заголовок Next, наружу не идёт).
   const h = await headers();
-  const pathname = h.get("x-invoke-path") || h.get("referer") || "";
-  const current = pathname.replace(basePath, "") || "";
+  const pathname = h.get("x-pathname") || "";
+  const current = pathname.startsWith(basePath) ? pathname.slice(basePath.length) : "";
 
   // Состояние подписки — один расчёт на всю панель (lib/billing.js).
   const access = cabinetAccess(cab);
+  // Заблокированный кабинет пускаем только на страницу оплаты — иначе редирект
+  // на неё же зациклится.
   const isBilling = current.startsWith("/billing");
   if (access.state === "locked" && !isBilling) redirect(`${basePath}/billing`);
 

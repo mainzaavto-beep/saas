@@ -39,7 +39,11 @@ export async function middleware(req) {
     url.searchParams.set('next', target);
     return NextResponse.redirect(url);
   }
-  return NextResponse.next();
+  // Отдаём текущий путь серверным компонентам: в App Router layout иначе его
+  // не видит (x-invoke-path — внутренний заголовок Next и наружу не приходит).
+  const headers = new Headers(req.headers);
+  headers.set('x-pathname', pathname);
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {
