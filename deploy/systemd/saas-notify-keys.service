@@ -1,0 +1,10 @@
+[Unit]
+Description=SAAS — письма владельцам о сломанных ключах маркетплейсов
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/agents/saas
+Environment=TZ=Europe/Moscow
+ExecStart=/usr/bin/node scripts/notify-broken-keys.mjs
+User=root
