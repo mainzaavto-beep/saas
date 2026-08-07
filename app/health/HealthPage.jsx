@@ -147,6 +147,23 @@ export default function HealthPage() {
           </div>
         </div>
       )}
+      {Array.isArray(data.shops_auth) && data.shops_auth.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: "#ff6b6b" }}>
+            Магазины со сломанными ключами ({data.shops_auth.length})
+          </h2>
+          <div style={{ fontSize: 13 }}>
+            {data.shops_auth.map((s) => (
+              <div key={s.shop_id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                {s.display_name} · {s.mp_code} {s.shop_name ? `«${s.shop_name}»` : ""} ·{" "}
+                {s.auth_state === "paused" ? "пауза" : "сбои"} с{" "}
+                {s.auth_failed_at ? new Date(s.auth_failed_at).toLocaleDateString("ru-RU") : "—"}
+                {s.auth_last_error ? ` · ${s.auth_last_error}` : ""}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

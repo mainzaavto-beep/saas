@@ -52,6 +52,16 @@ export async function GET() {
   // было проверить тестом без операторской сессии). Пусто в норме.
   const paymentsMismatch = await mismatchPayments();
 
+  // Магазины со сломанными ключами — вместо ежедневных писем о падении воркера.
+  const shopsAuth = await query(
+    `SELECT s.shop_id, s.cabinet_id, c.display_name, s.mp_code, s.shop_name,
+            s.auth_state, s.auth_fail_count, s.auth_failed_at, s.auth_last_error
+       FROM auth.shops s
+       JOIN auth.cabinets c ON c.cabinet_id = s.cabinet_id
+      WHERE s.is_active = true AND s.auth_state <> 'ok'
+      ORDER BY s.auth_failed_at DESC NULLS LAST`
+  );
+
   return NextResponse.json({
     days,
     runs,
@@ -64,5 +74,6 @@ export async function GET() {
       last_payment_amount: b.last_payment_amount,
     })),
     payments_mismatch: paymentsMismatch,
+    shops_auth: shopsAuth,
   });
 }

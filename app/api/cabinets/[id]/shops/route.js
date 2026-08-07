@@ -153,6 +153,12 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     }
     sets.push(`api_creds = $${++i}`); vals.push(JSON.stringify(apiMeta));
     sets.push(`api_creds_enc = $${++i}`); vals.push(apiCredsEnc);
+    // Новые ключи — повод дать магазину ещё один шанс немедленно, не дожидаясь
+    // суточной контрольной попытки воркера.
+    sets.push(`auth_state = 'ok'`);
+    sets.push(`auth_fail_count = 0`);
+    sets.push(`auth_last_error = NULL`);
+    sets.push(`auth_notified_at = NULL`);
   }
 
   // Налоговый режим.

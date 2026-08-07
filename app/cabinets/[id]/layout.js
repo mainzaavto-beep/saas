@@ -79,6 +79,16 @@ export default async function CabinetLayout({ children, params }) {
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
 
+  // Магазины со сломанными ключами: данные по ним не собираются, и клиент
+  // должен узнать об этом сам, а не по устаревшим цифрам в отчётах.
+  const brokenShops = await query(
+    `SELECT mp_code, shop_name, auth_state, auth_failed_at
+       FROM auth.shops
+      WHERE cabinet_id = $1 AND is_active = true AND auth_state <> 'ok'
+      ORDER BY mp_code`,
+    [cabinetId]
+  );
+
   // Список всех проектов пользователя — для dropdown выбора.
   const allProjects = await query(
     `SELECT c.cabinet_id, c.display_name, c.marketplaces
@@ -109,6 +119,17 @@ export default async function CabinetLayout({ children, params }) {
     banners.push({ tone: "warn", text: `Подписка заканчивается ${access.until.toLocaleDateString("ru-RU")}` });
   } else if (access.state === "grace") {
     banners.push({ tone: "neg", text: `Срок подписки истёк. Доступ закроется ${access.graceUntil.toLocaleDateString("ru-RU")} — оплатите подписку.` });
+  }
+  for (const s of brokenShops) {
+    const mp = s.mp_code === "wb" ? "Wildberries" : s.mp_code === "ozon" ? "Ozon" : s.mp_code;
+    const since = s.auth_failed_at
+      ? ` — данные не обновляются с ${new Date(s.auth_failed_at).toLocaleDateString("ru-RU")}`
+      : "";
+    banners.push({
+      tone: "neg",
+      text: `${mp}: ключи не работают${since}.`,
+      link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
+    });
   }
   if (!cab.email_verified_at) {
     banners.push({ tone: "warn", text: `Подтвердите почту — мы отправили письмо на ${session.email}.`, link: { href: "/settings", label: "Выслать ещё раз" } });
