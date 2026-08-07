@@ -8,6 +8,9 @@ import { withCabinet } from "@/lib/withCabinet.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// allowLocked: роут перечислен в спеке среди тех, что работают всегда — без
+// него владелец заблокированного (locked) кабинета получал 402 на /settings,
+// и блок проекта/команды молча деградировал (роль приходила null).
 export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ role: cabinet.role });
-});
+}, { allowLocked: true });

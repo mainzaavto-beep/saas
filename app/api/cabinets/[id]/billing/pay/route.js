@@ -81,11 +81,15 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       [localId, cabinet.cabinet_id, session.user_id, plan.code, plan.months, plan.price_rub]
     );
 
+    // ЮKassa ограничивает описание платежа 128 символами: длинное название
+    // проекта иначе делает оплату невозможной.
+    const description = `Подписка SySell, ${plan.months} мес., проект «${cabinet.display_name}»`.slice(0, 128);
+
     let payment;
     try {
       payment = await createPayment({
         amountRub: plan.price_rub,
-        description: `Подписка SySell, ${plan.months} мес., проект «${cabinet.display_name}»`,
+        description,
         returnUrl: `${base}/cabinets/${cabinet.cabinet_id}/billing?paid=1`,
         idempotenceKey: localKey,
         customerEmail: users[0]?.email,

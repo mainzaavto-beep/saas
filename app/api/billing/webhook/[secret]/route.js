@@ -5,6 +5,7 @@
 import { NextResponse } from 'next/server';
 import { creditPayment } from '@/lib/billing-credit.js';
 import { query } from '@/lib/db.js';
+import { isMock } from '@/lib/yookassa.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,7 +21,10 @@ function ipInfo(req) {
 }
 
 function allowedIp(req, { nets, ip }) {
-  if (process.env.SAAS_YOOKASSA_MOCK === '1') return true; // мок ходит с localhost
+  // isMock(), а не голый флаг SAAS_YOOKASSA_MOCK: если владелец добавит боевые
+  // ключи и забудет убрать флаг мока, isMock() уже вернёт false (ключи в
+  // приоритете), и IP-фильтр не окажется молча выключенным на бою.
+  if (isMock()) return true; // мок ходит с localhost
   return nets.some((n) => ip.startsWith(n));
 }
 
