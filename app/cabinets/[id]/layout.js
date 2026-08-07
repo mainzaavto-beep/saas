@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import ThemeToggle from "@/app/ThemeToggle.jsx";
+import { cabinetAccess } from "@/lib/billing.js";
 import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
@@ -57,6 +58,7 @@ const MENU = [
   { href: "/alerts", label: "Оповещения", icon: "🔔" },
   { href: "/whats-new", label: "Что нового", icon: "✨" },
   { href: "/support", label: "Поддержка", icon: "💬" },
+  { href: "/billing", label: "Подписка", icon: "💳" },
 ];
 
 export default async function CabinetLayout({ children, params }) {
@@ -65,7 +67,7 @@ export default async function CabinetLayout({ children, params }) {
   if (!session?.user_id) redirect("/login");
 
   const mem = await query(
-    `SELECT c.display_name, c.marketplaces, c.trial_ends_at, u.email_verified_at
+    `SELECT c.display_name, c.marketplaces, c.trial_ends_at, c.paid_until, u.email_verified_at
      FROM auth.memberships m
      JOIN auth.cabinets c ON c.cabinet_id = m.cabinet_id
      JOIN auth.users u ON u.user_id = m.user_id
@@ -76,15 +78,6 @@ export default async function CabinetLayout({ children, params }) {
 
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
-
-  // Пробный период: показываем срок, доступ не ограничиваем (оплата — отдельно).
-  // У кабинетов, созданных до фазы 2, trial_ends_at = NULL — баннера нет.
-  const trialEnds = cab.trial_ends_at ? new Date(cab.trial_ends_at) : null;
-  const trialDaysLeft = trialEnds ? Math.ceil((trialEnds - Date.now()) / 86400000) : null;
-  const trialText = !trialEnds ? null
-    : trialDaysLeft > 0
-      ? `Пробный период — осталось ${trialDaysLeft} дн. (до ${trialEnds.toLocaleDateString('ru-RU')})`
-      : `Пробный период закончился ${trialEnds.toLocaleDateString('ru-RU')}`;
 
   // Список всех проектов пользователя — для dropdown выбора.
   const allProjects = await query(
@@ -100,6 +93,23 @@ export default async function CabinetLayout({ children, params }) {
   const h = await headers();
   const pathname = h.get("x-invoke-path") || h.get("referer") || "";
   const current = pathname.replace(basePath, "") || "";
+
+  // Состояние подписки — один расчёт на всю панель (lib/billing.js).
+  const access = cabinetAccess(cab);
+  const isBilling = current.startsWith("/billing");
+  if (access.state === "locked" && !isBilling) redirect(`${basePath}/billing`);
+
+  const banners = [];
+  if (access.state === "trial") {
+    banners.push({ tone: "warn", text: `Пробный период — осталось ${access.daysLeft} дн. (до ${access.until.toLocaleDateString("ru-RU")})` });
+  } else if (access.state === "active" && access.daysLeft <= 5) {
+    banners.push({ tone: "warn", text: `Подписка заканчивается ${access.until.toLocaleDateString("ru-RU")}` });
+  } else if (access.state === "grace") {
+    banners.push({ tone: "neg", text: `Срок подписки истёк. Доступ закроется ${access.graceUntil.toLocaleDateString("ru-RU")} — оплатите подписку.` });
+  }
+  if (!cab.email_verified_at) {
+    banners.push({ tone: "warn", text: `Подтвердите почту — мы отправили письмо на ${session.email}.`, link: { href: "/settings", label: "Выслать ещё раз" } });
+  }
 
   return (
     <div className="shell">
@@ -193,26 +203,20 @@ export default async function CabinetLayout({ children, params }) {
           </div>
         </div>
       </header>
-      {trialText && (
-        <div style={{
+      {banners.map((b, i) => (
+        <div key={i} style={{
           padding: "8px 16px", textAlign: "center", fontSize: 13,
-          background: trialDaysLeft > 0 ? "rgba(255,193,7,.12)" : "rgba(255,107,107,.12)",
-          color: trialDaysLeft > 0 ? "var(--warn, #d9a400)" : "var(--neg, #ff6b6b)",
+          background: b.tone === "neg" ? "rgba(255,107,107,.12)" : "rgba(255,193,7,.12)",
+          color: b.tone === "neg" ? "var(--neg, #ff6b6b)" : "var(--warn, #d9a400)",
           borderBottom: "1px solid var(--border)",
         }}>
-          {trialText}
+          {b.text}{" "}
+          {b.link && <a href={b.link.href} style={{ color: "inherit", textDecoration: "underline" }}>{b.link.label}</a>}
+          {(b.tone === "neg" || b.tone === "warn") && !b.link && (
+            <a href={`${basePath}/billing`} style={{ color: "inherit", textDecoration: "underline" }}>Оплатить</a>
+          )}
         </div>
-      )}
-      {!cab.email_verified_at && (
-        <div style={{
-          padding: "8px 16px", textAlign: "center", fontSize: 13,
-          background: "rgba(255,193,7,.12)", color: "var(--warn, #d9a400)",
-          borderBottom: "1px solid var(--border)",
-        }}>
-          Подтвердите почту — мы отправили письмо на {session.email}.{" "}
-          <a href="/settings" style={{ color: "inherit", textDecoration: "underline" }}>Выслать ещё раз</a>
-        </div>
-      )}
+      ))}
       <main className="main">{children}</main>
     </div>
   );
