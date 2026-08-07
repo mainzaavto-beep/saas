@@ -30,10 +30,21 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   const base = process.env.NEXT_PUBLIC_URL || 'https://sysell.ru';
 
   const client = await getPool().connect();
+  let locked = false;
   try {
+    // Ждём блокировку ограниченное время: параллельный клик должен получить
+    // понятный ответ, а не висеть, пока провайдер молчит.
+    await client.query("SET lock_timeout = '20s'");
+
     // Сериализуем создание платежей по кабинету: без этого два одновременных
     // клика уходят к провайдеру двумя платежами.
-    await client.query('SELECT pg_advisory_lock($1, $2)', [LOCK_NS, cabinet.cabinet_id]);
+    try {
+      await client.query('SELECT pg_advisory_lock($1, $2)', [LOCK_NS, cabinet.cabinet_id]);
+      locked = true;
+    } catch (e) {
+      console.warn('[billing/pay] не дождались блокировки', cabinet.cabinet_id, e.message);
+      return NextResponse.json({ error: 'Платёж по этому проекту уже создаётся. Обновите страницу через минуту.' }, { status: 409 });
+    }
 
     // Свежий неоплаченный платёж по тому же тарифу переиспользуем.
     const fresh = await client.query(
@@ -95,7 +106,9 @@ export const POST = withCabinet(async (req, { cabinet }) => {
 
     return NextResponse.json({ payment_id: payment.id, confirmation_url: payment.confirmation_url });
   } finally {
-    await client.query('SELECT pg_advisory_unlock($1, $2)', [LOCK_NS, cabinet.cabinet_id]).catch(() => {});
+    if (locked) {
+      await client.query('SELECT pg_advisory_unlock($1, $2)', [LOCK_NS, cabinet.cabinet_id]).catch(() => {});
+    }
     client.release();
   }
 }, { requireRole: 'owner', requireVerifiedEmail: true, allowLocked: true });
