@@ -16,6 +16,7 @@ User=root
 Group=root
 WorkingDirectory=/opt/agents/saas
 EnvironmentFile=/opt/agents/saas/.env.local
+Environment=TZ=Europe/Moscow
 ExecStart=/usr/bin/npm run start
 # Перезапуск при падении, не чаще чем раз в 5 секунд
 Restart=on-failure

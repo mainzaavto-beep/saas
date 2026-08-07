@@ -108,7 +108,7 @@ export default function BillingPage({ cabinetId }) {
           {data.payments.map((p) => (
             <div key={p.payment_id} style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: `1px solid ${C.line}`, fontSize: 13 }}>
               <span>{fmtDate(p.created_at)} — {p.months} мес.</span>
-              <span>{fmtMoney(p.amount_rub)} · {p.status === "succeeded" ? "оплачен" : p.status === "pending" ? "в обработке" : "отменён"}</span>
+              <span>{fmtMoney(p.amount_rub)} · {p.status === "succeeded" ? "оплачен" : p.status === "pending" ? "в обработке" : p.status === "mismatch" ? "требует разбора" : "отменён"}</span>
             </div>
           ))}
         </div>

@@ -48,6 +48,16 @@ export async function GET() {
       ORDER BY c.cabinet_id`
   );
 
+  // Платежи, где сумма провайдера разошлась с нашей ценой: деньги не зачислены,
+  // нужен ручной разбор. Пусто в норме — если непусто, это видно сразу.
+  const paymentsMismatch = await query(
+    `SELECT p.payment_id, p.cabinet_id, c.display_name, p.amount_rub, p.raw->'mismatch' AS mismatch, p.created_at
+       FROM billing.payments p
+       JOIN auth.cabinets c ON c.cabinet_id = p.cabinet_id
+      WHERE p.status = 'mismatch'
+      ORDER BY p.created_at DESC LIMIT 50`
+  );
+
   return NextResponse.json({
     days,
     runs,
@@ -59,5 +69,6 @@ export async function GET() {
       last_payment_at: b.last_payment_at,
       last_payment_amount: b.last_payment_amount,
     })),
+    payments_mismatch: paymentsMismatch,
   });
 }

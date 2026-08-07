@@ -132,6 +132,21 @@ export default function HealthPage() {
           </table>
         </>
       )}
+      {Array.isArray(data.payments_mismatch) && data.payments_mismatch.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: "#ff6b6b" }}>
+            Платежи с несошедшейся суммой ({data.payments_mismatch.length})
+          </h2>
+          <div style={{ fontSize: 13 }}>
+            {data.payments_mismatch.map((p) => (
+              <div key={p.payment_id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                {new Date(p.created_at).toLocaleDateString("ru-RU")} — {p.display_name}: ждали {p.amount_rub} ₽,
+                пришло {p.mismatch?.got ?? "—"} ₽ (платёж {p.payment_id})
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
