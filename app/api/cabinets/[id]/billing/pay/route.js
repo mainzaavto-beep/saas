@@ -32,18 +32,30 @@ export const POST = withCabinet(async (req, { cabinet }) => {
   const client = await getPool().connect();
   let locked = false;
   try {
-    // Ждём блокировку ограниченное время: параллельный клик должен получить
-    // понятный ответ, а не висеть, пока провайдер молчит.
-    await client.query("SET lock_timeout = '20s'");
-
     // Сериализуем создание платежей по кабинету: без этого два одновременных
-    // клика уходят к провайдеру двумя платежами.
+    // клика уходят к провайдеру двумя платежами. Ждём блокировку ограниченное
+    // время (lock_timeout), чтобы параллельный клик получил понятный ответ,
+    // а не висел, пока провайдер молчит.
+    //
+    // lock_timeout ставим через SET LOCAL внутри транзакции: сервер откатывает
+    // его сам при COMMIT/ROLLBACK, и соединение возвращается в пул чистым при
+    // любом исходе (обычный SET — сессионный и заражал бы пул). Сессионная
+    // advisory-блокировка при этом переживает COMMIT и держится до
+    // pg_advisory_unlock в finally.
     try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout = '20s'");
       await client.query('SELECT pg_advisory_lock($1, $2)', [LOCK_NS, cabinet.cabinet_id]);
       locked = true;
+      await client.query('COMMIT');
     } catch (e) {
-      console.warn('[billing/pay] не дождались блокировки', cabinet.cabinet_id, e.message);
-      return NextResponse.json({ error: 'Платёж по этому проекту уже создаётся. Обновите страницу через минуту.' }, { status: 409 });
+      await client.query('ROLLBACK').catch(() => {});
+      if (e.code === '55P03') { // lock_not_available: не дождались за lock_timeout
+        console.warn('[billing/pay] не дождались блокировки', cabinet.cabinet_id, e.message);
+        return NextResponse.json({ error: 'Платёж по этому проекту уже создаётся. Обновите страницу через минуту.' }, { status: 409 });
+      }
+      console.error('[billing/pay] сбой захвата блокировки', cabinet.cabinet_id, e);
+      return NextResponse.json({ error: 'Внутренняя ошибка, попробуйте позже' }, { status: 500 });
     }
 
     // Свежий неоплаченный платёж по тому же тарифу переиспользуем.
