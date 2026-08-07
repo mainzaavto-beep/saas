@@ -148,6 +148,9 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   `SAAS_GRACE_DAYS` (отсрочка после истечения, дефолт 3).
   Пока боевых ключей нет — `SAAS_YOOKASSA_MOCK=1` (оплата-заглушка).
   Тарифы живут в `billing.plans`, цены меняются SQL-ом без пересборки.
+  `saas-web` и `saas-billing-reconcile` запускаются с `Environment=TZ=Europe/Moscow`:
+  расчёт сроков подписки (`lib/billing.js`) идёт по локальному времени, и
+  системная зона не должна на него влиять.
 - `/etc/saas-worker.env` + `/etc/collectors.env` — env для воркера (читают
   `run_saas_*.sh` и `run_orchestrator.py`): `POSTGRES_PASSWORD`,
   `SAAS_APP_DB_PASSWORD`, `SAAS_CRED_MASTER_KEY`.
