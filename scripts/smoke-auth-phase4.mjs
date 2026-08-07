@@ -87,6 +87,23 @@ try {
     JSON.stringify(blockedTry.json) === JSON.stringify(wrongPass.json),
     `${JSON.stringify(blockedTry.json)} vs ${JSON.stringify(wrongPass.json)}`);
 
+  // Время ответа тоже не должно выдавать, есть ли такой аккаунт: сегодня
+  // несуществующий email отвечает мгновенно, живой — после проверки пароля.
+  const timeIt = async (email, password) => {
+    const t = [];
+    for (let i = 0; i < 3; i++) {
+      const started = Date.now();
+      await api('POST', '/api/auth/login', { body: { email, password } });
+      t.push(Date.now() - started);
+    }
+    return t.sort((a, b) => a - b)[1]; // медиана из трёх
+  };
+  const tGhost = await timeIt(`p4ghost2-${run}@smoke.test`, 'whatever-000');
+  const tReal = await timeIt(`p4owner-${run}@smoke.test`, 'wrong-pass-000');
+  check('время ответа не выдаёт существование аккаунта',
+    Math.abs(tReal - tGhost) < 60 && tGhost > 15,
+    `несуществующий ${tGhost}мс, существующий ${tReal}мс`);
+
   // ── 4. Ошибки управления командой — по-русски ──
   const badRole = await api('PUT', `/api/cabinets/${cabinetId}/members`, {
     cookie: ownerCookie, body: { user_id: ownerId, role: 'manager' },
@@ -112,8 +129,8 @@ try {
   const pay = await api('POST', `/api/cabinets/${cabinetId}/billing/pay`, { cookie: ownerCookie, body: { plan_code: planCode } });
   const payId = pay.json?.payment_id;
   check('платёж создан', !!payId, JSON.stringify(pay.json));
-  // «Провайдер» подтверждает оплату, но на другую сумму.
-  await q(`UPDATE billing.payments SET raw = coalesce(raw,'{}'::jsonb) || '{"mock_status":"succeeded"}'::jsonb, amount_rub = 777.00 WHERE payment_id = $1`, [payId]);
+  // «Провайдер» подтверждает оплату, но на другую сумму (наша цена 100).
+  await q(`UPDATE billing.payments SET raw = coalesce(raw,'{}'::jsonb) || '{"mock_status":"succeeded","mock_amount_rub":777}'::jsonb WHERE payment_id = $1`, [payId]);
   await api('POST', `/api/billing/webhook/${process.env.SAAS_YOOKASSA_WEBHOOK_SECRET}`, {
     body: { event: 'payment.succeeded', object: { id: payId } },
   });
