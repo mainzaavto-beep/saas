@@ -13,7 +13,9 @@ SaaS-сборщик КАБИНЕТНЫХ РАСХОДОВ WB → tenant.wb_cabin
 возмещения WB кодирует отрицательными — так P&L сходится по модулю.
 
 Маппинг cost_type → лейблы см. в app/api/cabinets/[id]/cabinet-costs/route.js (LABELS).
-Идемпотентно по (cabinet_id, cost_type, period_from, period_to). Без HTTP — чистый SQL.
+Период переписывается целиком (delete + insert, db_pg.replace_cabinet_costs_range):
+повторный прогон даёт состояние, точно равное finance_report, даже если правила
+разнесения по cost_type изменились. Без HTTP — чистый SQL.
 """
 import os
 import sys

@@ -56,17 +56,17 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
          -- попадала только утилизация, а выплаты не учитывались вовсе — деньги,
          -- которые WB перечислил, не показывались нигде.
          SUM(CASE WHEN supplier_oper_name='Удержание'
-                       AND bonus_type_name NOT LIKE '%Продвижение%'
-                       AND bonus_type_name NOT LIKE '%Джем%'
-                       AND bonus_type_name NOT LIKE '%Premium Plus%'
-                       AND bonus_type_name NOT LIKE '%Баллы за отзывы%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Продвижение%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Джем%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Premium Plus%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Баллы за отзывы%'
                        AND deduction > 0
                   THEN deduction ELSE 0 END) AS deductionOther,
          SUM(CASE WHEN supplier_oper_name='Удержание'
-                       AND bonus_type_name NOT LIKE '%Продвижение%'
-                       AND bonus_type_name NOT LIKE '%Джем%'
-                       AND bonus_type_name NOT LIKE '%Premium Plus%'
-                       AND bonus_type_name NOT LIKE '%Баллы за отзывы%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Продвижение%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Джем%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Premium Plus%'
+                       AND COALESCE(bonus_type_name,'') NOT LIKE '%Баллы за отзывы%'
                        AND deduction < 0
                   THEN deduction ELSE 0 END) AS deductionPayouts,
          SUM(CASE WHEN supplier_oper_name='Удержание'

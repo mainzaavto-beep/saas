@@ -589,10 +589,14 @@ def replace_cabinet_costs_range(rows, start, end):
     batch = [[cid] + [r.get(c) for c in _CAB_COLS] + [now] for r in rows]
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Удаляем по ПЕРЕСЕЧЕНИЮ с окном, а не по вложенности: читатель
+            # (/api/cabinets/[id]/cabinet-costs) тоже берёт строки по пересечению,
+            # и легаси-строка с многодневным периодом, задевающая край окна,
+            # пережила бы перезапись и задвоилась бы с дневными.
             cur.execute(
                 "DELETE FROM tenant.wb_cabinet_costs "
-                "WHERE cabinet_id = %s AND period_from >= %s AND period_to <= %s",
-                (cid, start, end),
+                "WHERE cabinet_id = %s AND period_from <= %s AND period_to >= %s",
+                (cid, end, start),
             )
             if batch:
                 cur.executemany(sql, batch)
