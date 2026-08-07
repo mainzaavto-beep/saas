@@ -117,6 +117,15 @@ try {
   const noFields = await api('PUT', `/api/cabinets/${cabinetId}/members`, { cookie: ownerCookie, body: {} });
   check('пустой запрос: текст по-русски', /[а-яА-Я]/.test(noFields.json?.error || ''), String(noFields.json?.error));
 
+  // ── 4б. Операторская страница закрыта для обычного клиента ──
+  // На /health видны все кабинеты, сроки подписок и платежи с расхождениями —
+  // туда пускает только allowlist SAAS_OPS_USER_IDS.
+  const healthAnon = await api('GET', '/api/health');
+  check('/api/health анониму: 401', healthAnon.status === 401, `got ${healthAnon.status}`);
+  const healthUser = await api('GET', '/api/health', { cookie: ownerCookie });
+  check('/api/health обычному клиенту: 403', healthUser.status === 403, `got ${healthUser.status} ${JSON.stringify(healthUser.json)}`);
+  check('...и никаких данных в ответе', !healthUser.json?.billing && !healthUser.json?.payments_mismatch && !healthUser.json?.runs, JSON.stringify(healthUser.json));
+
   // ── 5. Менеджер не может оплачивать подписку ──
   const mgrPay = await api('POST', `/api/cabinets/${cabinetId}/billing/pay`, {
     cookie: mgrCookie, body: { plan_code: 'whatever' },

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session.js';
 import { query } from '@/lib/db.js';
-import { cabinetAccess } from '@/lib/billing.js';
+import { cabinetAccess, mismatchPayments } from '@/lib/billing.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,15 +48,9 @@ export async function GET() {
       ORDER BY c.cabinet_id`
   );
 
-  // Платежи, где сумма провайдера разошлась с нашей ценой: деньги не зачислены,
-  // нужен ручной разбор. Пусто в норме — если непусто, это видно сразу.
-  const paymentsMismatch = await query(
-    `SELECT p.payment_id, p.cabinet_id, c.display_name, p.amount_rub, p.raw->'mismatch' AS mismatch, p.created_at
-       FROM billing.payments p
-       JOIN auth.cabinets c ON c.cabinet_id = p.cabinet_id
-      WHERE p.status = 'mismatch'
-      ORDER BY p.created_at DESC LIMIT 50`
-  );
+  // Платежи с несошедшейся суммой (запрос — в lib/billing.js, чтобы его можно
+  // было проверить тестом без операторской сессии). Пусто в норме.
+  const paymentsMismatch = await mismatchPayments();
 
   return NextResponse.json({
     days,
