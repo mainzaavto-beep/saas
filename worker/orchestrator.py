@@ -354,9 +354,21 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             reason = f"{dep} status={statuses[dep]} — агрегат не пересчитан (guard от затирания)"
             print(f"     [{coll}] SKIP: {reason}", flush=True)
             statuses[coll] = "skipped"
-            failed.append(coll)
             _record_run(cid, coll, "skipped", error=reason,
                         date_from=date_from, date_to=date_to)
+            if dep in auth_failed_collectors:
+                # Зависимость упала именно по отказу авторизации (сломанные
+                # ключи клиента, не наш сбой) — guard-пропуск наследует ту же
+                # классификацию и ниже уедет в blocked вместе с ней. Порядок
+                # WB_COLLECTORS/OZON_COLLECTORS гарантирует, что *_finance уже
+                # отработал и попал в auth_failed_collectors ДО того, как мы
+                # дошли до зависимого *_order_costs/*_cabinet_costs в этом же
+                # цикле (см. инвариант у объявления списков выше).
+                auth_failed_collectors.append(coll)
+            else:
+                # Настоящий сбой зависимости (сеть, 5xx, таймаут, partial) —
+                # это реальная проблема сборки, оставляем в failed.
+                failed.append(coll)
             continue
         cmd = [PY, "-m", f"worker.collectors.{coll}"]
         if date_from:

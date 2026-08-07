@@ -4,6 +4,14 @@
   ok → failing → paused, любой успех сбрасывает в ok.
 Пауза проверяется по времени: раз в сутки магазин пробуется снова — вдруг
 отказ был на стороне маркетплейса, а не у клиента.
+
+Два разных поля времени, не путать:
+  auth_failed_at       — НАЧАЛО эпизода (для баннера/письма клиенту).
+                          Ставится один раз, при первом отказе после ok.
+  auth_last_attempt_at — последняя попытка (для should_skip/cadence).
+                          Двигается на каждый отказ, включая суточные
+                          контрольные попытки — от него отсчитываются сутки
+                          до следующей попытки.
 """
 import os
 from datetime import datetime, timedelta, timezone
@@ -33,7 +41,8 @@ def load_state(shop_id):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT shop_id, mp_code, auth_state, auth_fail_count, auth_failed_at, "
-                "       auth_last_error FROM auth.shops WHERE shop_id = %s",
+                "       auth_last_attempt_at, auth_last_error "
+                "  FROM auth.shops WHERE shop_id = %s",
                 (shop_id,),
             )
             return cur.fetchone()
@@ -48,7 +57,15 @@ def mark_failure(shop_id, error):
                       SET auth_fail_count = auth_fail_count + 1,
                           auth_state = CASE WHEN auth_fail_count + 1 >= %s
                                             THEN 'paused' ELSE 'failing' END,
-                          auth_failed_at = now(),
+                          -- Дата начала эпизода, не последнего отказа: ставим
+                          -- только на переходе ok→failing (счётчик был 0),
+                          -- иначе суточные контрольные попытки переписывают
+                          -- дату и баннер/письмо занижают масштаб поломки.
+                          auth_failed_at = CASE WHEN auth_fail_count = 0
+                                            THEN now() ELSE auth_failed_at END,
+                          -- А это двигаем всегда — should_skip считает сутки
+                          -- паузы от последней попытки, не от начала эпизода.
+                          auth_last_attempt_at = now(),
                           auth_last_error = %s
                     WHERE shop_id = %s
                 RETURNING auth_state""",
@@ -64,6 +81,7 @@ def mark_ok(shop_id):
     with psycopg.connect(**PG) as conn:
         conn.execute(
             "UPDATE auth.shops SET auth_state = 'ok', auth_fail_count = 0, "
+            "       auth_failed_at = NULL, auth_last_attempt_at = NULL, "
             "       auth_last_error = NULL, auth_notified_at = NULL "
             " WHERE shop_id = %s AND (auth_state <> 'ok' OR auth_fail_count <> 0)",
             (shop_id,),
@@ -72,11 +90,18 @@ def mark_ok(shop_id):
 
 def should_skip(state_row, now=None):
     """Пропустить магазин в этом прогоне? Пауза держится сутки, потом даём
-    контрольную попытку (её результат снова пройдёт через mark_ok/mark_failure)."""
+    контрольную попытку (её результат снова пройдёт через mark_ok/mark_failure).
+
+    Считаем от auth_last_attempt_at (последняя попытка), а не auth_failed_at
+    (начало эпизода) — иначе после первых суток пауза переставала бы работать
+    вовсе: now() - <дата начала эпизода> рано или поздно навсегда превышает
+    RETRY_AFTER, и магазин снова пробовался бы на каждом прогоне (см. 038).
+    Fallback на auth_failed_at — для строк, обновлённых до миграции 038,
+    у которых auth_last_attempt_at ещё не заполнен."""
     if not state_row or state_row.get("auth_state") != "paused":
         return False
-    failed_at = state_row.get("auth_failed_at")
-    if not failed_at:
+    checked_at = state_row.get("auth_last_attempt_at") or state_row.get("auth_failed_at")
+    if not checked_at:
         return False
     now = now or datetime.now(timezone.utc)
-    return (now - failed_at) < RETRY_AFTER
+    return (now - checked_at) < RETRY_AFTER
