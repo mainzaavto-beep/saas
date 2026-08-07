@@ -46,6 +46,7 @@ const reg = (email) => api('POST', '/api/auth/register', { body: { email, passwo
 
 const run = Date.now();
 const PLAN = `smoke-1m-${run}`;
+const PLAN2 = `smoke-3m-${run}`;
 let cabinetId = null, ownerCookie = null, ownerId = null, viewerCookie = null, paymentId = null;
 
 try {
@@ -57,6 +58,11 @@ try {
   // ── Подготовка: тарифный план, владелец с кабинетом ──
   await q(`INSERT INTO billing.plans (code, months, price_rub, title, sort)
            VALUES ($1, 1, 100.00, 'Смоук-месяц', 999)`, [PLAN]);
+  // Второй тариф — для проверки продления ДО истечения (блок 7б ниже). Другой
+  // тариф нужен, потому что свежий pending-платёж по тому же plan_code
+  // переиспользуется 15 минут (см. billing/pay/route.js).
+  await q(`INSERT INTO billing.plans (code, months, price_rub, title, sort)
+           VALUES ($1, 3, 300.00, 'Смоук-3мес', 999)`, [PLAN2]);
   const owner = await reg(`billowner-${run}@smoke.test`);
   ownerCookie = owner.cookie; ownerId = owner.json?.user?.user_id;
   const onb = await api('POST', '/api/onboarding/start', {
@@ -124,6 +130,31 @@ try {
   const st2 = await api('GET', `/api/cabinets/${cabinetId}/billing`, { cookie: ownerCookie });
   check('состояние: active', st2.json?.state === 'active', JSON.stringify(st2.json?.state));
   check('...платёж виден в истории', Array.isArray(st2.json?.payments) && st2.json.payments.length === 1, JSON.stringify(st2.json?.payments));
+
+  // ── 7б. Продление ДО истечения не съедает остаток ──
+  // Кабинет сейчас active (paid_until в будущем). Оплата вторым тарифом
+  // должна продлить от ТЕКУЩЕГО paid_until, а не от «сегодня»: иначе клиент,
+  // оплативший заранее, теряет уже оплаченный остаток срока.
+  const paidUntilBefore = (await q(`SELECT paid_until FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]))[0]?.paid_until;
+  check('7б: paid_until до продления известен', !!paidUntilBefore, String(paidUntilBefore));
+
+  const pay2 = await api('POST', `/api/cabinets/${cabinetId}/billing/pay`, {
+    cookie: ownerCookie, body: { plan_code: PLAN2 },
+  });
+  check('7б: создание второго платежа: 200 + ссылка', pay2.status === 200 && typeof pay2.json?.confirmation_url === 'string', `${pay2.status} ${JSON.stringify(pay2.json)}`);
+  const paymentId2 = pay2.json?.payment_id;
+  await q(`UPDATE billing.payments SET raw = coalesce(raw,'{}'::jsonb) || '{"mock_status":"succeeded"}'::jsonb WHERE payment_id = $1`, [paymentId2]);
+  const hook2 = await api('POST', `/api/billing/webhook/${process.env.SAAS_YOOKASSA_WEBHOOK_SECRET}`, {
+    body: { event: 'payment.succeeded', object: { id: paymentId2 } },
+  });
+  check('7б: вебхук второго платежа принят: 200', hook2.status === 200, `${hook2.status} ${JSON.stringify(hook2.json)}`);
+
+  const paidUntilAfter = (await q(`SELECT paid_until FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]))[0]?.paid_until;
+  const expected = new Date(paidUntilBefore);
+  expected.setMonth(expected.getMonth() + 3);
+  const diffDays = paidUntilAfter ? Math.abs(new Date(paidUntilAfter).getTime() - expected.getTime()) / 86400000 : Infinity;
+  check('7б: новый paid_until = прежний + 3 мес. (не «сегодня + 3 мес.»)', diffDays <= 1,
+    `before=${paidUntilBefore} expected≈${expected.toISOString()} after=${paidUntilAfter} diffDays=${diffDays}`);
 
   // ── 8. Наблюдатель не может платить ──
   const viewer = await reg(`billviewer-${run}@smoke.test`);
