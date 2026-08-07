@@ -129,6 +129,12 @@ try {
   const inv = await api('POST', `/api/cabinets/${cabinetId}/invites`, { cookie: ownerCookie, body: { role: 'viewer' } });
   check('ссылка инвайта ведёт на /invite/<token>', typeof inv.json?.url === 'string' && inv.json.url.endsWith(`/invite/${inv.json?.token}`), String(inv.json?.url));
 
+  // ── 9б. Отзыв приглашения владельцем — токен должен перестать работать ──
+  const revoke = await api('DELETE', `/api/cabinets/${cabinetId}/invites?token=${inv.json?.token}`, { cookie: ownerCookie });
+  check('отзыв приглашения владельцем: 200', revoke.status === 200, `got ${revoke.status} ${JSON.stringify(revoke.json)}`);
+  const afterRevoke = await api('GET', `/api/invite/${inv.json?.token}`);
+  check('...после отзыва токен недействителен', afterRevoke.status === 404 && afterRevoke.json?.valid === false, `${afterRevoke.status} ${JSON.stringify(afterRevoke.json)}`);
+
   // ── 10. Контакты команды скрыты от viewer, видны owner ──
   const regV = await reg(`v-${run}@smoke.test`, 'Smoke V');
   await q(`INSERT INTO auth.memberships (user_id, cabinet_id, role) VALUES ($1, $2, 'viewer')`, [regV.json?.user?.user_id, cabinetId]);

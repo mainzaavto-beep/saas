@@ -59,6 +59,14 @@ export default function TeamPage({ cabinetId, embedded = false }) {
     load();
   };
 
+  const revokeInvite = async (token) => {
+    if (!confirm("Отозвать приглашение? Ссылка перестанет работать.")) return;
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/invites?token=${encodeURIComponent(token)}`, { method: "DELETE" });
+    if (!r.ok) setError((await r.json().catch(() => ({}))).error || "Не удалось отозвать приглашение");
+    load();
+  };
+
   const roleColor = { owner: C.accent, manager: C.pos, viewer: C.muted };
   const roleLabel = { owner: "Владелец", manager: "Менеджер", viewer: "Наблюдатель" };
 
@@ -116,8 +124,11 @@ export default function TeamPage({ cabinetId, embedded = false }) {
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontSize: 12, color: C.faint, marginBottom: 6 }}>Активные приглашения:</div>
                 {invites.map(inv => (
-                  <div key={inv.token} style={{ fontSize: 13, color: C.muted, padding: "4px 0" }}>
-                    {roleLabel[inv.role]} — истекает {new Date(inv.expires_at).toLocaleDateString("ru-RU")}
+                  <div key={inv.token} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0" }}>
+                    <span style={{ fontSize: 13, color: C.muted }}>
+                      {roleLabel[inv.role]} — истекает {new Date(inv.expires_at).toLocaleDateString("ru-RU")}
+                    </span>
+                    <button onClick={() => revokeInvite(inv.token)} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>Отозвать</button>
                   </div>
                 ))}
               </div>
