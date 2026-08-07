@@ -5,7 +5,6 @@
 import { NextResponse } from 'next/server';
 import { creditPayment } from '@/lib/billing-credit.js';
 import { query } from '@/lib/db.js';
-import { isMock } from '@/lib/yookassa.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,18 +35,10 @@ export async function POST(req, { params }) {
   if (!paymentId) return NextResponse.json({ ok: true, ignored: 'нет id платежа' });
 
   // Тело сохраняем как есть — пригодится при разборе спорных случаев.
-  // В мок-режиме у нас нет отдельного внешнего провайдера: раз мы уже здесь
-  // (секрет и сеть прошли), сам вебхук и есть тот сигнал, которым в проде
-  // служит реальный API ЮKassa — поэтому подставляем mock_status, чтобы
-  // getPayment внутри creditPayment нашёл платёж «оплаченным» при перепроверке.
-  // На инвариант «телу не верим» это не влияет: в проде статус берётся
-  // исключительно из ответа настоящего API, тело вебхука там ни на что не влияет.
-  const extra = { webhook: body };
-  if (isMock() && body?.event === 'payment.succeeded') extra.mock_status = 'succeeded';
   await query(
     `UPDATE billing.payments SET raw = coalesce(raw,'{}'::jsonb) || $2::jsonb, updated_at = now()
       WHERE payment_id = $1`,
-    [paymentId, JSON.stringify(extra)]
+    [paymentId, JSON.stringify({ webhook: body })]
   ).catch((e) => console.error('[billing webhook] не удалось сохранить тело', e.message));
 
   if (body?.event !== 'payment.succeeded') return NextResponse.json({ ok: true, ignored: body?.event });

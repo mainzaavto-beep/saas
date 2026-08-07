@@ -84,6 +84,19 @@ try {
   const beforeWebhook = (await q(`SELECT paid_until FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]))[0];
   check('до вебхука paid_until пуст', beforeWebhook?.paid_until === null, String(beforeWebhook?.paid_until));
 
+  // ── 3б. Вебхук без подтверждения у провайдера не зачисляет ──
+  const earlyHook = await api('POST', `/api/billing/webhook/${process.env.SAAS_YOOKASSA_WEBHOOK_SECRET}`, {
+    body: { event: 'payment.succeeded', object: { id: paymentId } },
+  });
+  const notCredited = (await q(`SELECT paid_until FROM auth.cabinets WHERE cabinet_id = $1`, [cabinetId]))[0];
+  check('вебхук без подтверждения провайдера не зачисляет', earlyHook.status === 200 && notCredited?.paid_until === null, `${earlyHook.status} ${notCredited?.paid_until}`);
+  const stillPending = (await q(`SELECT status FROM billing.payments WHERE payment_id = $1`, [paymentId]))[0];
+  check('...платёж остаётся pending', stillPending?.status === 'pending', String(stillPending?.status));
+
+  // Мок-провайдер: помечаем платёж оплаченным «на стороне ЮKassa». Вебхук
+  // сам этого делать не должен — он обязан узнать статус перепроверкой.
+  await q(`UPDATE billing.payments SET raw = coalesce(raw,'{}'::jsonb) || '{"mock_status":"succeeded"}'::jsonb WHERE payment_id = $1`, [paymentId]);
+
   // ── 4. Зачисление по вебхуку ──
   const hook1 = await api('POST', `/api/billing/webhook/${process.env.SAAS_YOOKASSA_WEBHOOK_SECRET}`, {
     body: { event: 'payment.succeeded', object: { id: paymentId } },
