@@ -31,7 +31,11 @@ export async function POST() {
   });
 }
 
-// GET — на всякий случай (если кто-то перейдёт по ссылке logout напрямую).
+// GET не разлогинивает: иначе достаточно было бы подсунуть пользователю
+// картинку с этим адресом, чтобы выбросить его из панели.
 export async function GET() {
-  return POST();
+  return new Response(JSON.stringify({ error: 'Выход выполняется методом POST' }), {
+    status: 405,
+    headers: { 'Content-Type': 'application/json', Allow: 'POST' },
+  });
 }
