@@ -28,8 +28,24 @@ const rows = await query(
 
 let sent = 0, failed = 0;
 for (const r of rows) {
+  // Бронируем право на отправку: условие в UPDATE закрывает гонку таймера
+  // с ручным запуском — второй процесс не получит строку.
+  const claimed = await query(
+    `UPDATE auth.shops SET auth_notified_at = now()
+      WHERE shop_id = $1 AND auth_notified_at IS NULL
+      RETURNING shop_id`,
+    [r.shop_id]
+  );
+  if (!claimed.length) continue;   // кто-то уже отправляет это письмо
+
   const mp = MP_NAME[r.mp_code] || r.mp_code;
   const since = r.auth_failed_at ? new Date(r.auth_failed_at).toLocaleDateString('ru-RU') : '';
+
+  // Убираем из текста внутренний префикс исключения (ozon_client.OzonError: …)
+  const humanError = String(r.auth_last_error || '')
+    .replace(/^[\w.]+(Error|Exception):\s*/, '')
+    .trim() || '—';
+
   const res = await sendMail({
     to: r.email,
     subject: `SySell: ${mp} — ключи не работают`,
@@ -38,13 +54,15 @@ for (const r of rows) {
       + `${since ? ` с ${since}` : ''}. Пока ключи не обновлены, отчёты по этому магазину не обновляются.\n\n`
       + `Обновить ключи: ${base}/settings?cabinet=${r.cabinet_id}&tab=settings\n\n`
       + `Что обычно помогает: выпустить новый токен в личном кабинете маркетплейса и`
-      + ` проверить, что у него есть нужные права.\n\nПоследняя ошибка: ${r.auth_last_error || '—'}`,
+      + ` проверить, что у него есть нужные права.\n\nПоследняя ошибка: ${humanError}`,
   });
+
   if (res.ok) {
-    await query(`UPDATE auth.shops SET auth_notified_at = now() WHERE shop_id = $1`, [r.shop_id]);
     sent++;
     console.log(`[notify-keys] письмо отправлено: кабинет ${r.cabinet_id}, магазин ${r.shop_id}`);
   } else {
+    // Отправка не удалась — снимаем бронь, иначе клиент не получит письмо никогда.
+    await query(`UPDATE auth.shops SET auth_notified_at = NULL WHERE shop_id = $1`, [r.shop_id]);
     failed++;
     console.error(`[notify-keys] не отправлено (кабинет ${r.cabinet_id}): ${res.error}`);
   }
