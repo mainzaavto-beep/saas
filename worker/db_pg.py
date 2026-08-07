@@ -570,6 +570,35 @@ def upsert_cabinet_costs_many(rows):
     return _batch_upsert("wb_cabinet_costs", ["cost_type", "period_from", "period_to"], _CAB_COLS, rows)
 
 
+def replace_cabinet_costs_range(rows, start, end):
+    """Переписать кабинетные расходы за период: сначала удалить, потом вставить.
+
+    Один upsert недостаточен: если правила разнесения по типам поменялись (или
+    строка в отчёте исчезла), старая запись с прежним cost_type останется висеть
+    и будет учтена повторно. Сборщик всегда пересчитывает период целиком из
+    finance_report, поэтому «удалить и записать заново» — единственный способ
+    получить состояние, точно равное источнику. Обе операции в одной транзакции:
+    период не должен оставаться пустым, если вставка не удалась.
+    """
+    cid = _cabinet_id()
+    now = datetime.now().isoformat(timespec="seconds")
+    all_cols = ["cabinet_id"] + _CAB_COLS + ["updated_at"]
+    placeholders = ", ".join(["%s"] * len(all_cols))
+    sql = (f"INSERT INTO tenant.wb_cabinet_costs ({', '.join(all_cols)}) "
+           f"VALUES ({placeholders})")
+    batch = [[cid] + [r.get(c) for c in _CAB_COLS] + [now] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM tenant.wb_cabinet_costs "
+                "WHERE cabinet_id = %s AND period_from >= %s AND period_to <= %s",
+                (cid, start, end),
+            )
+            if batch:
+                cur.executemany(sql, batch)
+    return len(rows)
+
+
 # =====================================================================
 #  «Портрет покупателя» (подписка «Джем» WB, миграция 027, с 2026-07-19).
 #  Колонки сверены живым probe'ом на cabinet #1 — это реальные поля ответа

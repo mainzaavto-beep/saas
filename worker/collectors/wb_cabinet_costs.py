@@ -45,6 +45,12 @@ WITH classified AS (
                 OR bonus_type_name LIKE '%%Premium Plus%%')              THEN 'subscription'
       WHEN supplier_oper_name = 'Удержание'
            AND bonus_type_name LIKE '%%утилиз%%'                         THEN 'deduction_other'
+      -- Прочие «Удержания» разделяем по знаку, как это делает /pnl: положительное —
+      -- удержание с продавца (расход), отрицательное — разовая выплата продавцу
+      -- (например компенсация за пострадавший товар). В одном типе они гасили друг
+      -- друга, и «Сводка» показывала итог, не сходящийся со «Сводкой по прибыли».
+      WHEN supplier_oper_name = 'Удержание'
+           AND COALESCE(deduction, 0) < 0                                THEN 'payout_other'
       WHEN supplier_oper_name = 'Удержание'                              THEN 'deduction_other'
       WHEN supplier_oper_name LIKE 'Возмещение издержек по перевозке%%'  THEN 'transport_compensation'
       WHEN supplier_oper_name LIKE 'Возмещение за выдачу%%'              THEN 'pvz_compensation'
@@ -97,7 +103,9 @@ def collect(start=None, end=None):
     print(f"[wb_cabinet_costs] агрегация {start}…{end} из finance_report", flush=True)
     db_pg.init()
     rows = _aggregate_sql(start, end)
-    n = db_pg.upsert_cabinet_costs_many(rows)
+    # Переписываем период целиком: upsert оставил бы висеть строки со старым
+    # cost_type, если правила разнесения поменялись или операция исчезла из отчёта.
+    n = db_pg.replace_cabinet_costs_range(rows, start, end)
     print(f"[wb_cabinet_costs] записано {n} строк → tenant.wb_cabinet_costs", flush=True)
     return n
 
