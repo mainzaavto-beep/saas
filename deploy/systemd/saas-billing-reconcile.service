@@ -1,0 +1,9 @@
+[Unit]
+Description=SAAS — сверка платежей с ЮKassa
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/agents/saas
+ExecStart=/usr/bin/node scripts/billing-reconcile.mjs
+User=root

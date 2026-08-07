@@ -3,11 +3,13 @@
 import { NextResponse } from 'next/server';
 import { readSessionFromCookie } from './lib/session.js';
 
-const PUBLIC_PATHS = ['/', '/login', '/register', '/invite', '/verify', '/forgot', '/reset'];
+const PUBLIC_PATHS = ['/', '/login', '/register', '/invite', '/verify', '/forgot', '/reset', '/billing'];
 const PUBLIC_API = ['/api/auth/login', '/api/auth/register', '/api/auth/logout', '/api/auth/verify', '/api/auth/forgot', '/api/auth/reset'];
 // /api/invite/<token> публичен: GET — валидация инвайта до регистрации,
 // POST сам проверяет сессию (401 внутри роута).
-const PUBLIC_API_PREFIXES = ['/api/invite/'];
+// /api/billing/<...> — вебхук ЮKassa (секрет в URL) и мок-подтверждение
+// (сам себя закрывает 404 вне мок-режима); внутри роуты не доверяют вызывающему.
+const PUBLIC_API_PREFIXES = ['/api/invite/', '/api/billing/'];
 
 export async function middleware(req) {
   const { pathname } = req.nextUrl;
