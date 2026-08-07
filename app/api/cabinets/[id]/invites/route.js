@@ -39,7 +39,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
-  if (!token) return NextResponse.json({ error: "token required" }, { status: 400 });
+  if (!token) return NextResponse.json({ error: "Не указано приглашение" }, { status: 400 });
   await query(`DELETE FROM auth.invitations WHERE token = $1 AND cabinet_id = $2`, [token, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
 }, { requireRole: 'owner' });

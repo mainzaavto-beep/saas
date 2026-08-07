@@ -25,12 +25,12 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 // Смена роли сотрудника.
 export const PUT = withCabinet(async (req, { cabinet }) => {
   const b = await req.json();
-  if (!b.user_id || !b.role) return NextResponse.json({ error: "user_id + role required" }, { status: 400 });
-  if (!["manager", "viewer"].includes(b.role)) return NextResponse.json({ error: "role must be manager|viewer" }, { status: 400 });
+  if (!b.user_id || !b.role) return NextResponse.json({ error: "Укажите сотрудника и роль" }, { status: 400 });
+  if (!["manager", "viewer"].includes(b.role)) return NextResponse.json({ error: "Роль может быть «Менеджер» или «Наблюдатель»" }, { status: 400 });
   // Нельзя менять роль owner'а.
   const existing = await query(`SELECT role FROM auth.memberships WHERE user_id = $1 AND cabinet_id = $2`, [b.user_id, cabinet.cabinet_id]);
-  if (!existing.length) return NextResponse.json({ error: "not a member" }, { status: 404 });
-  if (existing[0].role === "owner") return NextResponse.json({ error: "cannot change owner role" }, { status: 403 });
+  if (!existing.length) return NextResponse.json({ error: "Этот пользователь не состоит в проекте" }, { status: 404 });
+  if (existing[0].role === "owner") return NextResponse.json({ error: "Роль владельца проекта изменить нельзя" }, { status: 403 });
   await query(`UPDATE auth.memberships SET role = $1 WHERE user_id = $2 AND cabinet_id = $3`, [b.role, b.user_id, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
 }, { requireRole: 'owner' });
@@ -39,11 +39,11 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
 export const DELETE = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const userId = Number(url.searchParams.get("user_id"));
-  if (!userId) return NextResponse.json({ error: "user_id required" }, { status: 400 });
+  if (!userId) return NextResponse.json({ error: "Не указан сотрудник" }, { status: 400 });
   // Нельзя удалить owner'а.
   const existing = await query(`SELECT role FROM auth.memberships WHERE user_id = $1 AND cabinet_id = $2`, [userId, cabinet.cabinet_id]);
-  if (!existing.length) return NextResponse.json({ error: "not a member" }, { status: 404 });
-  if (existing[0].role === "owner") return NextResponse.json({ error: "cannot remove owner" }, { status: 403 });
+  if (!existing.length) return NextResponse.json({ error: "Этот пользователь не состоит в проекте" }, { status: 404 });
+  if (existing[0].role === "owner") return NextResponse.json({ error: "Владельца проекта удалить нельзя" }, { status: 403 });
   await query(`DELETE FROM auth.memberships WHERE user_id = $1 AND cabinet_id = $2`, [userId, cabinet.cabinet_id]);
   return NextResponse.json({ ok: true });
 }, { requireRole: 'owner' });

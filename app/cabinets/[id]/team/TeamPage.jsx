@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 
-export default function TeamPage({ cabinetId }) {
+export default function TeamPage({ cabinetId, embedded = false }) {
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
   const [myRole, setMyRole] = useState(null); // 'owner' | 'manager' | 'viewer'
@@ -63,8 +63,10 @@ export default function TeamPage({ cabinetId }) {
   const roleLabel = { owner: "Владелец", manager: "Менеджер", viewer: "Наблюдатель" };
 
   return (
-    <div style={{ width: "100%", maxWidth: 700, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
-      <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>👥 Команда</h1>
+    <div style={embedded
+      ? { width: "100%", fontFamily: FONT, color: C.ink }
+      : { width: "100%", maxWidth: 700, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
+      {!embedded && <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>👥 Команда</h1>}
       {error && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{error}</div>}
 
       {/* Сотрудники */}

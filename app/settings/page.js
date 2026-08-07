@@ -5,6 +5,7 @@ import { C } from "@/lib/palette.js";
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
+import TeamPage from "@/app/cabinets/[id]/team/TeamPage.jsx";
 
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
@@ -124,7 +125,7 @@ function ProfileHub() {
         {tab === "main" && <MainTab />}
         {tab === "settings" && cabinetId && <SettingsTab cabinetId={cabinetId} />}
         {tab === "settings" && !cabinetId && <NoProject />}
-        {tab === "team" && cabinetId && <TeamTab cabinetId={cabinetId} />}
+        {tab === "team" && cabinetId && <TeamPage cabinetId={cabinetId} embedded />}
         {tab === "team" && !cabinetId && <NoProject />}
       </div>
     </div>
@@ -351,133 +352,6 @@ function SettingsTab({ cabinetId }) {
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
             <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// --- Вкладка: Команда ---
-function TeamTab({ cabinetId }) {
-  const [members, setMembers] = useState([]);
-  const [invites, setInvites] = useState([]);
-  const [myRole, setMyRole] = useState(null);
-  const [error, setError] = useState(null);
-  const [msg, setMsg] = useState(null);
-  const [inviteRole, setInviteRole] = useState("viewer");
-
-  const load = () => {
-    fetch(`/api/cabinets/${cabinetId}/me`).then(r => r.json()).then(d => setMyRole(d.role || null));
-    fetch(`/api/cabinets/${cabinetId}/members`).then(r => r.ok ? r.json() : { items: [] }).then(d => setMembers(d.items || []));
-    fetch(`/api/cabinets/${cabinetId}/invites`).then(r => r.ok ? r.json() : { items: [] }).then(d => setInvites(d.items || []));
-  };
-
-  useEffect(() => { load(); }, [cabinetId]);
-  // Управлять командой может только владелец.
-  const canManage = myRole === "owner";
-
-  const createInvite = async () => {
-    setMsg(null);
-    const r = await fetch(`/api/cabinets/${cabinetId}/invites`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: inviteRole }),
-    });
-    const d = await r.json();
-    if (r.ok && d.url) {
-      navigator.clipboard.writeText(d.url).catch(() => {});
-      setMsg(`✅ Ссылка скопирована: ${d.url}`);
-      load();
-    } else {
-      setMsg(`❌ ${d.error || "Ошибка"}`);
-    }
-  };
-
-  const changeRole = async (userId, role) => {
-    setError(null);
-    const r = await fetch(`/api/cabinets/${cabinetId}/members`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId, role }),
-    });
-    if (!r.ok) setError((await r.json()).error || "Не удалось изменить роль");
-    load();
-  };
-
-  const removeMember = async (userId) => {
-    if (!confirm("Удалить сотрудника из проекта?")) return;
-    setError(null);
-    const r = await fetch(`/api/cabinets/${cabinetId}/members?user_id=${userId}`, { method: "DELETE" });
-    if (!r.ok) setError((await r.json()).error || "Не удалось удалить сотрудника");
-    load();
-  };
-
-  const roleLabel = (r) => r === "owner" ? "Владелец" : r === "manager" ? "Менеджер" : "Наблюдатель";
-
-  return (
-    <div style={{ display: "grid", gap: 20 }}>
-      {error && <div style={{ color: C.neg, padding: 12 }}>{error}</div>}
-
-      {/* Сотрудники */}
-      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
-        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Сотрудники ({members.length})</h2>
-        <div style={{ display: "grid", gap: 8 }}>
-          {members.map(m => (
-            <div key={m.user_id} style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "10px 14px", background: C.surfaceAlt, borderRadius: 8,
-            }}>
-              <div>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>{m.name || m.email || "Сотрудник"}</span>
-                {m.email && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>}
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                {m.role === "owner" ? (
-                  <span style={{ fontSize: 12, color: C.muted, padding: "4px 10px", background: C.surface, borderRadius: 6 }}>{roleLabel(m.role)}</span>
-                ) : canManage ? (
-                  <>
-                    <select value={m.role} onChange={e => changeRole(m.user_id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontSize: 12, fontFamily: "inherit" }}>
-                      <option value="manager">Менеджер</option>
-                      <option value="viewer">Наблюдатель</option>
-                    </select>
-                    <button onClick={() => removeMember(m.user_id)} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 12, color: C.muted, padding: "4px 10px", background: C.surface, borderRadius: 6 }}>{roleLabel(m.role)}</span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Приглашения */}
-      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
-        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Пригласить сотрудника</h2>
-        {canManage ? (
-          <>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <select value={inviteRole} onChange={e => setInviteRole(e.target.value)} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" }}>
-                <option value="manager">Менеджер</option>
-                <option value="viewer">Наблюдатель</option>
-              </select>
-              <button onClick={createInvite} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать ссылку</button>
-              {msg && <span style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, wordBreak: "break-all" }}>{msg}</span>}
-            </div>
-            {invites.length > 0 && (
-              <div style={{ marginTop: 16, display: "grid", gap: 8 }}>
-                {invites.map(inv => (
-                  <div key={inv.token} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.surfaceAlt, borderRadius: 8 }}>
-                    <span style={{ fontSize: 12, color: C.muted }}>{inv.role} — истекает {new Date(inv.expires_at).toLocaleDateString("ru-RU")}</span>
-                    <button onClick={async () => {
-                      await fetch(`/api/cabinets/${cabinetId}/invites?token=${inv.token}`, { method: "DELETE" });
-                      load();
-                    }} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>Отозвать</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          <p style={{ color: C.muted, fontSize: 14 }}>Приглашать сотрудников может только владелец проекта.</p>
         )}
       </div>
     </div>
