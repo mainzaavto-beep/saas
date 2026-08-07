@@ -59,8 +59,8 @@ try {
   ownerCookie = regOwner.cookie;
   ownerId = regOwner.json?.user?.user_id;
   cabinetId = (await q(
-    `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, status)
-     VALUES ($1, $2, '{wb}', 'active') RETURNING cabinet_id`,
+    `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, status, trial_ends_at)
+     VALUES ($1, $2, '{wb}', 'active', now() + interval '14 days') RETURNING cabinet_id`,
     [ownerId, `smoke-cab-${run}`]
   ))[0].cabinet_id;
   await q(`INSERT INTO auth.memberships (user_id, cabinet_id, role) VALUES ($1, $2, 'owner')`, [ownerId, cabinetId]);
