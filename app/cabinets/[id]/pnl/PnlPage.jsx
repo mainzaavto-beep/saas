@@ -40,8 +40,10 @@ const buildRows = (taxLabel) => [
   { label: "Удержания прочие", field: "deductionOther", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: taxLabel || "Налог", field: "tax", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "ЧИСТАЯ ПРИБЫЛЬ", field: "netProfit", kind: "h0", showPct: false },
-  // Прочие доходы WB (возмещения ПВЗ/перевозки + сторно «Баллы за отзывы») — приток,
-  // не входит в P&L-каскад, показываем справочно под чистой прибылью.
+  // Прочие доходы WB (возмещения ПВЗ/перевозки + сторно «Баллы за отзывы» + разовые
+  // выплаты продавцу, приходящие отрицательными «Удержаниями», — например компенсация
+  // за пострадавший товар) — приток, не входит в P&L-каскад, показываем справочно
+  // под чистой прибылью.
   { label: "в т.ч. прочие доходы WB", field: "otherIncome", color: C.pos, kind: "plain", showPct: false },
 ];
 

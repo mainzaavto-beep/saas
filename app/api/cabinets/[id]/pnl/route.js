@@ -44,9 +44,26 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
                        AND (bonus_type_name LIKE '%Джем%' OR bonus_type_name LIKE '%Premium Plus%')
                   THEN deduction ELSE 0 END) AS subscription,
          SUM(CASE WHEN supplier_oper_name='Штраф' THEN penalty ELSE 0 END) AS penalty,
+         -- Прочие «Удержания» (всё, что не продвижение/подписка/баллы за отзывы):
+         -- утилизация и разовые операции WB. Разделяем по знаку: положительные —
+         -- это удержание с продавца (расход), отрицательные — выплата продавцу
+         -- (например «Добровольная выплата за товары, пострадавшие…»). Раньше сюда
+         -- попадала только утилизация, а выплаты не учитывались вовсе — деньги,
+         -- которые WB перечислил, не показывались нигде.
          SUM(CASE WHEN supplier_oper_name='Удержание'
-                       AND bonus_type_name LIKE '%утилиз%'
+                       AND bonus_type_name NOT LIKE '%Продвижение%'
+                       AND bonus_type_name NOT LIKE '%Джем%'
+                       AND bonus_type_name NOT LIKE '%Premium Plus%'
+                       AND bonus_type_name NOT LIKE '%Баллы за отзывы%'
+                       AND deduction > 0
                   THEN deduction ELSE 0 END) AS deductionOther,
+         SUM(CASE WHEN supplier_oper_name='Удержание'
+                       AND bonus_type_name NOT LIKE '%Продвижение%'
+                       AND bonus_type_name NOT LIKE '%Джем%'
+                       AND bonus_type_name NOT LIKE '%Premium Plus%'
+                       AND bonus_type_name NOT LIKE '%Баллы за отзывы%'
+                       AND deduction < 0
+                  THEN deduction ELSE 0 END) AS deductionPayouts,
          SUM(CASE WHEN supplier_oper_name='Удержание'
                        AND bonus_type_name LIKE '%Баллы за отзывы%'
                   THEN deduction ELSE 0 END) AS reviewsStorno,
@@ -83,9 +100,12 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
     const subscription = Number(f.subscription) || 0;
     const penalty = Number(f.penalty) || 0;
     const deductionOther = Number(f.deductionOther) || 0;
-    // Прочие доходы WB = возмещения (перевозка/ПВЗ) + сторно «Баллы за отзывы».
+    // Прочие доходы WB = возмещения (перевозка/ПВЗ) + сторно «Баллы за отзывы»
+    // + разовые выплаты продавцу, приходящие как отрицательные «Удержания».
     // WB хранит их отрицательными (приток продавцу) → берём модуль для строки «доход».
-    const otherIncome = Math.abs((Number(f.refunds) || 0) + (Number(f.reviewsStorno) || 0));
+    const otherIncome = Math.abs(
+      (Number(f.refunds) || 0) + (Number(f.reviewsStorno) || 0) + (Number(f.deductionPayouts) || 0)
+    );
     // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
     // Кабинетные расходы в базу УСН не включаем (они не уменьшают налоговую базу по
     // нашей модели — это платные услуги/подписки, см. обсуждение с хозяином).
