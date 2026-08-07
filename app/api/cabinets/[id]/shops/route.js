@@ -154,11 +154,20 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     sets.push(`api_creds = $${++i}`); vals.push(JSON.stringify(apiMeta));
     sets.push(`api_creds_enc = $${++i}`); vals.push(apiCredsEnc);
     // Новые ключи — повод дать магазину ещё один шанс немедленно, не дожидаясь
-    // суточной контрольной попытки воркера.
-    sets.push(`auth_state = 'ok'`);
-    sets.push(`auth_fail_count = 0`);
-    sets.push(`auth_last_error = NULL`);
-    sets.push(`auth_notified_at = NULL`);
+    // суточной контрольной попытки воркера. Но пауза снимается только если
+    // реально передали непустые ключи: иначе пустой объект «чинил» бы магазин,
+    // не задав ничего рабочего (форма шлёт { [mp_code]: { client_id, api_key, ... } },
+    // прямой вызов API мог бы прислать {} или пустые строки).
+    const credsFilled = b.api_creds && typeof b.api_creds === 'object'
+      && Object.values(b.api_creds).some((v) => typeof v === 'object' && v
+        ? Object.values(v).some((x) => String(x || '').trim())
+        : String(v || '').trim());
+    if (credsFilled) {
+      sets.push(`auth_state = 'ok'`);
+      sets.push(`auth_fail_count = 0`);
+      sets.push(`auth_last_error = NULL`);
+      sets.push(`auth_notified_at = NULL`);
+    }
   }
 
   // Налоговый режим.
