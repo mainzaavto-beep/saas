@@ -7,6 +7,12 @@ const COLORS = {
   failed: "#ef4444", timeout: "#ef4444", no_token: "#ef4444", none: "#3f3f46",
 };
 const RANK = { ok: 0, skipped: 1, partial: 2, no_token: 3, timeout: 4, failed: 5 };
+const BILLING_STATE = {
+  trial: "Пробный", active: "Оплачен", grace: "Отсрочка", locked: "Закрыт",
+};
+const BILLING_COLOR = {
+  trial: "#3b82f6", active: "#22c55e", grace: "#eab308", locked: "#ef4444",
+};
 
 export default function HealthPage() {
   const [data, setData] = useState(null);
@@ -91,6 +97,41 @@ export default function HealthPage() {
           {r.error ? ` — ${r.error}` : ""}
         </div>
       ))}
+      {Array.isArray(data.billing) && (
+        <>
+          <h2 style={{ fontSize: 16, margin: "24px 0 8px" }}>Подписки</h2>
+          <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", paddingRight: 12 }}>Проект</th>
+                <th style={{ textAlign: "left", paddingRight: 12 }}>Состояние</th>
+                <th style={{ textAlign: "left", paddingRight: 12 }}>До</th>
+                <th style={{ textAlign: "left", paddingRight: 12 }}>Последний платёж</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.billing.map((b) => (
+                <tr key={b.cabinet_id}>
+                  <td style={{ paddingRight: 12, whiteSpace: "nowrap" }}>
+                    #{b.cabinet_id} {b.display_name || ""}
+                  </td>
+                  <td style={{ paddingRight: 12, color: BILLING_COLOR[b.state] || "#e4e4e7" }}>
+                    {BILLING_STATE[b.state] || b.state}
+                  </td>
+                  <td style={{ paddingRight: 12, color: "#a1a1aa" }}>
+                    {b.until ? String(b.until).slice(0, 10) : "—"}
+                  </td>
+                  <td style={{ paddingRight: 12, color: "#a1a1aa" }}>
+                    {b.last_payment_at
+                      ? `${String(b.last_payment_at).slice(0, 10)} — ${b.last_payment_amount} ₽`
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   );
 }

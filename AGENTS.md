@@ -142,6 +142,12 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   Лимиты попыток: `SAAS_RL_LOGIN_ACCOUNT` (дефолт 5 неудачных входов/мин на
   аккаунт), `SAAS_RL_LOGIN_IP` (дефолт 20/мин с IP), `SAAS_RL_REGISTER_IP`
   (дефолт 30 регистраций/мин с IP).
+- Оплата подписки: `SAAS_YOOKASSA_SHOP_ID`, `SAAS_YOOKASSA_SECRET_KEY`,
+  `SAAS_YOOKASSA_WEBHOOK_SECRET` (сегмент URL вебхука),
+  `SAAS_YOOKASSA_VAT_CODE` (ставка НДС в чеке, 1 = без НДС),
+  `SAAS_GRACE_DAYS` (отсрочка после истечения, дефолт 3).
+  Пока боевых ключей нет — `SAAS_YOOKASSA_MOCK=1` (оплата-заглушка).
+  Тарифы живут в `billing.plans`, цены меняются SQL-ом без пересборки.
 - `/etc/saas-worker.env` + `/etc/collectors.env` — env для воркера (читают
   `run_saas_*.sh` и `run_orchestrator.py`): `POSTGRES_PASSWORD`,
   `SAAS_APP_DB_PASSWORD`, `SAAS_CRED_MASTER_KEY`.

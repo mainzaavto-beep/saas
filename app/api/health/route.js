@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session.js';
 import { query } from '@/lib/db.js';
+import { cabinetAccess } from '@/lib/billing.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,5 +33,31 @@ export async function GET() {
      ORDER BY r.started_at DESC`,
     [days]
   );
-  return NextResponse.json({ days, runs });
+
+  // Подписки — только владельцу сервиса (allowlist уже проверен выше).
+  const billing = await query(
+    `SELECT c.cabinet_id, c.display_name, c.trial_ends_at, c.paid_until,
+            p.created_at AS last_payment_at, p.amount_rub AS last_payment_amount
+       FROM auth.cabinets c
+       LEFT JOIN LATERAL (
+         SELECT created_at, amount_rub FROM billing.payments
+          WHERE cabinet_id = c.cabinet_id AND status = 'succeeded'
+          ORDER BY created_at DESC LIMIT 1
+       ) p ON true
+      WHERE c.status <> 'deleted'
+      ORDER BY c.cabinet_id`
+  );
+
+  return NextResponse.json({
+    days,
+    runs,
+    billing: billing.map((b) => ({
+      cabinet_id: b.cabinet_id,
+      display_name: b.display_name,
+      state: cabinetAccess(b).state,
+      until: cabinetAccess(b).until,
+      last_payment_at: b.last_payment_at,
+      last_payment_amount: b.last_payment_amount,
+    })),
+  });
 }
