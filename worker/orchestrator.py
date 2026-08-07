@@ -35,6 +35,9 @@ import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime, timezone
 
+from worker import shop_auth
+from worker.auth_errors import is_auth_error
+
 # Воркер подключается как postgres (читает api_creds — auth.* без RLS).
 # Сборщики внутри subprocess подключаются как saas_app (RLS изоляция).
 PG_SUPER = {
@@ -47,6 +50,12 @@ PG_SUPER = {
 
 # Метка прогона для jobs.collector_runs; выставляется в main() из --run-kind.
 RUN_KIND = "manual"
+
+# Таймаут одного сборщика. Замер по журналу за 14 дней: самый долгий успешный
+# прогон — wb_ads 5 мин 9 с, остальные до 20 с. Часовой лимит остался от
+# отключённого wb_jem, который висел намертво. Значение вынесено в env, чтобы
+# поднять без правки кода, если у крупного кабинета сбор окажется дольше.
+COLLECTOR_TIMEOUT = int(os.environ.get("SAAS_COLLECTOR_TIMEOUT_SEC", "900"))
 
 # ── Контракт exit-кодов сборщиков ────────────────────────────────────
 # 0 = ok · 3 = partial (собрано, но часть окон пропущена — см. wb_finance.py)
@@ -294,17 +303,31 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     if not shop_collectors:
         return [], []
 
+    # Магазин со сломанными ключами не должен тратить окно прогона: пока он в
+    # паузе, сборщики не запускаем вовсе. Раз в сутки shop_auth.should_skip
+    # пропустит одну контрольную попытку — вдруг чинил не клиент, а маркетплейс.
+    shop_id = shop.get("shop_id")
+    state = shop_auth.load_state(shop_id) if shop_id else None
+    if shop_auth.should_skip(state):
+        since = state.get("auth_failed_at")
+        print(f"    shop #{shop_id} {mp}: ключи не работают, пауза (с {since}) — пропуск", flush=True)
+        _record_run(cid, f"{mp}:credentials", "skipped",
+                    error=f"auth_paused: {state.get('auth_last_error') or 'отказ авторизации'}")
+        return [], []
+
     # Проверка: есть ли нужный токен для этого shop? Иначе сборщик упадёт с RuntimeError.
     if mp == "wb" and not env.get("WB_TOKEN"):
-        print(f"    shop #{shop.get('shop_id')} {mp}: нет WB_TOKEN — пропуск", flush=True)
-        _record_run(cid, "wb:credentials", "no_token",
-                    error=f"shop #{shop.get('shop_id')}: нет WB_TOKEN")
-        return [], [f"{mp}:no_token"]
+        print(f"    shop #{shop_id} {mp}: нет WB_TOKEN — пропуск", flush=True)
+        _record_run(cid, "wb:credentials", "no_token", error=f"shop #{shop_id}: нет WB_TOKEN")
+        if shop_id:
+            shop_auth.mark_failure(shop_id, "нет сохранённого токена WB")
+        return [], []
     if mp == "ozon" and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
-        print(f"    shop #{shop.get('shop_id')} {mp}: нет OZON creds — пропуск", flush=True)
-        _record_run(cid, "ozon:credentials", "no_token",
-                    error=f"shop #{shop.get('shop_id')}: нет OZON creds")
-        return [], [f"{mp}:no_token"]
+        print(f"    shop #{shop_id} {mp}: нет OZON creds — пропуск", flush=True)
+        _record_run(cid, "ozon:credentials", "no_token", error=f"shop #{shop_id}: нет OZON creds")
+        if shop_id:
+            shop_auth.mark_failure(shop_id, "нет сохранённых ключей Ozon")
+        return [], []
 
     legacy = " (legacy cab-creds)" if shop.get("_legacy") else ""
     print(f"  -- shop #{shop.get('shop_id')} [{mp}]{legacy}: {shop_collectors}", flush=True)
@@ -313,6 +336,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
 
     ok, failed = [], []
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
+    auth_error_texts = []      # тексты ошибок, похожих на отказ авторизации
+    auth_failed_collectors = []  # какие сборщики упали именно по авторизации
 
     # Guard от затирания (спек п.3): order_costs И cabinet_costs агрегируют из
     # finance_report безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО
@@ -338,7 +363,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         label = f"     [{coll}]"
         started = datetime.now(timezone.utc)
         try:
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=3600)
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=COLLECTOR_TIMEOUT)
             if r.returncode == 0:
                 out = (r.stdout or "").strip().splitlines()
                 last = out[-1] if out else "ok"
@@ -366,11 +391,15 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 _record_run(cid, coll, "failed",
                             error=(err[-1] if err else f"exit {r.returncode}"),
                             date_from=date_from, date_to=date_to, started_at=started)
+                err_text = "\n".join(err[-3:]) if err else ""
+                if is_auth_error(err_text):
+                    auth_error_texts.append(err_text.strip().splitlines()[-1])
+                    auth_failed_collectors.append(coll)
         except subprocess.TimeoutExpired:
-            print(f"{label} TIMEOUT (>3600s)", flush=True)
+            print(f"{label} TIMEOUT (>{COLLECTOR_TIMEOUT}s)", flush=True)
             failed.append(coll)
             statuses[coll] = "timeout"
-            _record_run(cid, coll, "timeout", error="timeout >3600s",
+            _record_run(cid, coll, "timeout", error=f"timeout >{COLLECTOR_TIMEOUT}s",
                         date_from=date_from, date_to=date_to, started_at=started)
         except Exception as e:
             print(f"{label} ERROR: {e}", flush=True)
@@ -378,6 +407,20 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             statuses[coll] = "failed"
             _record_run(cid, coll, "failed", error=str(e)[:500],
                         date_from=date_from, date_to=date_to, started_at=started)
+
+    # Состояние ключей: отказ авторизации хотя бы в одном сборщике — засчитываем
+    # неудачу, любой успех — сбрасываем. Сетевые сбои и 429 состояние не трогают:
+    # маркетплейсы падают регулярно, останавливать из-за этого сбор нельзя.
+    if shop_id:
+        auth_errors_seen = [e for e in auth_error_texts if is_auth_error(e)]
+        if auth_errors_seen:
+            new_state = shop_auth.mark_failure(shop_id, auth_errors_seen[0])
+            if new_state == "paused":
+                print(f"    shop #{shop_id} {mp}: ключи не работают — магазин на паузе", flush=True)
+            # Отказ авторизации не считаем сбоем сборки: чинит его клиент.
+            failed = [f for f in failed if f not in auth_failed_collectors]
+        elif ok:
+            shop_auth.mark_ok(shop_id)
     return ok, failed
 
 
