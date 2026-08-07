@@ -291,7 +291,10 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     env-injection: токен + cabinet_id выставляются ДО импорта сборщика.
     date_from/date_to (YYYY-MM-DD) — пробрасываются как argv в сборщики (backfill).
     Сборщики, не принимающие дат (catalog/stocks/prices), их игнорируют.
-    Возвращает (ok_list, failed_list)."""
+    Возвращает (ok_list, failed_list, blocked_list). failed — настоящие сбои сборки
+    (валят прогон, будят алерт). blocked — работа не выполнена не по вине сервиса:
+    пауза по ключам, отсутствие кредов, отказ авторизации в сборщике (чинит клиент,
+    прогон не роняет, но и готовой работой считать нельзя — см. drain_queue)."""
     cid = cabinet["cabinet_id"]
     env, mp = _env_for_shop(shop)
     env["WB_SaaS_CABINET_ID"] = str(cid)
@@ -301,7 +304,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     # ДО проверки кредов, иначе получаем бессмысленный no_token на каждый холостой прогон.
     shop_collectors = _collectors_for_mp(mp, collectors)
     if not shop_collectors:
-        return [], []
+        return [], [], []
 
     # Магазин со сломанными ключами не должен тратить окно прогона: пока он в
     # паузе, сборщики не запускаем вовсе. Раз в сутки shop_auth.should_skip
@@ -313,7 +316,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         print(f"    shop #{shop_id} {mp}: ключи не работают, пауза (с {since}) — пропуск", flush=True)
         _record_run(cid, f"{mp}:credentials", "skipped",
                     error=f"auth_paused: {state.get('auth_last_error') or 'отказ авторизации'}")
-        return [], []
+        return [], [], [f"{mp}:auth_paused"]
 
     # Проверка: есть ли нужный токен для этого shop? Иначе сборщик упадёт с RuntimeError.
     if mp == "wb" and not env.get("WB_TOKEN"):
@@ -321,13 +324,13 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         _record_run(cid, "wb:credentials", "no_token", error=f"shop #{shop_id}: нет WB_TOKEN")
         if shop_id:
             shop_auth.mark_failure(shop_id, "нет сохранённого токена WB")
-        return [], []
+        return [], [], [f"{mp}:no_token"]
     if mp == "ozon" and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
         print(f"    shop #{shop_id} {mp}: нет OZON creds — пропуск", flush=True)
         _record_run(cid, "ozon:credentials", "no_token", error=f"shop #{shop_id}: нет OZON creds")
         if shop_id:
             shop_auth.mark_failure(shop_id, "нет сохранённых ключей Ozon")
-        return [], []
+        return [], [], [f"{mp}:no_token"]
 
     legacy = " (legacy cab-creds)" if shop.get("_legacy") else ""
     print(f"  -- shop #{shop.get('shop_id')} [{mp}]{legacy}: {shop_collectors}", flush=True)
@@ -393,7 +396,11 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                             date_from=date_from, date_to=date_to, started_at=started)
                 err_text = "\n".join(err[-3:]) if err else ""
                 if is_auth_error(err_text):
-                    auth_error_texts.append(err_text.strip().splitlines()[-1])
+                    # Храним ТОТ ЖЕ текст, по которому принято решение (может быть
+                    # многострочным — traceback WB), а не последнюю строку: иначе
+                    # повторная проверка ниже по auth_error_texts могла не совпасть
+                    # с исходным совпадением и тихо сбросить состояние в ok.
+                    auth_error_texts.append(err_text)
                     auth_failed_collectors.append(coll)
         except subprocess.TimeoutExpired:
             print(f"{label} TIMEOUT (>{COLLECTOR_TIMEOUT}s)", flush=True)
@@ -411,21 +418,33 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     # Состояние ключей: отказ авторизации хотя бы в одном сборщике — засчитываем
     # неудачу, любой успех — сбрасываем. Сетевые сбои и 429 состояние не трогают:
     # маркетплейсы падают регулярно, останавливать из-за этого сбор нельзя.
+    blocked = []
     if shop_id:
         auth_errors_seen = [e for e in auth_error_texts if is_auth_error(e)]
         if auth_errors_seen:
-            new_state = shop_auth.mark_failure(shop_id, auth_errors_seen[0])
+            # Фильтр сработал по тому же тексту, что и первичная проверка выше.
+            # Для БД берём последнюю непустую строку — короче и читаемее полного
+            # traceback'а, но на классификацию она уже не влияет.
+            lines = [l for l in auth_errors_seen[0].splitlines() if l.strip()]
+            last_line = lines[-1] if lines else auth_errors_seen[0]
+            new_state = shop_auth.mark_failure(shop_id, last_line)
             if new_state == "paused":
                 print(f"    shop #{shop_id} {mp}: ключи не работают — магазин на паузе", flush=True)
-            # Отказ авторизации не считаем сбоем сборки: чинит его клиент.
+            # Отказ авторизации не считаем сбоем сборки (чинит его клиент), но и
+            # успехом это не назовёшь — работа не выполнена, а «заблокирована».
             failed = [f for f in failed if f not in auth_failed_collectors]
+            blocked = list(auth_failed_collectors)
         elif ok:
             shop_auth.mark_ok(shop_id)
-    return ok, failed
+    return ok, failed, blocked
 
 
 def run_cabinet(cabinet, collectors, verbose=False, date_from=None, date_to=None):
-    """Запустить сборщики для всех shops кабинета. Возвращает список неудач."""
+    """Запустить сборщики для всех shops кабинета.
+    Возвращает (failed, blocked) — failed валит прогон (настоящие сбои сборки),
+    blocked — работа не выполнена не по нашей вине (пауза/нет кредов/отказ
+    авторизации): прогон не роняет, но и готовой работой (для drain_queue) не
+    считается."""
     cid = cabinet["cabinet_id"]
     name = cabinet.get("display_name") or f"#{cid}"
     shops = cabinet.get("shops") or []
@@ -438,14 +457,15 @@ def run_cabinet(cabinet, collectors, verbose=False, date_from=None, date_to=None
         # как у GUARD_DEPS-пропусков, чтобы /health красил жёлтым, а не красным.
         print("  нет магазинов с кредами — пропуск (незавершённый онбординг)", flush=True)
         _record_run(cid, "_cabinet", "skipped", error="no_shops")
-        return []
+        return [], []
 
-    all_failed = []
+    all_failed, all_blocked = [], []
     for shop in shops:
-        ok, failed = _run_one(shop, cabinet, collectors, verbose, date_from, date_to)
+        ok, failed, blocked = _run_one(shop, cabinet, collectors, verbose, date_from, date_to)
         all_failed += failed
-    print(f"  Итого #{cid}: failed={all_failed or 'нет'}", flush=True)
-    return all_failed
+        all_blocked += blocked
+    print(f"  Итого #{cid}: failed={all_failed or 'нет'} blocked={all_blocked or 'нет'}", flush=True)
+    return all_failed, all_blocked
 
 
 # =====================================================================
@@ -456,20 +476,28 @@ def drain_queue(verbose=False):
     """Прогнать onboarding-jobs (queued) — backfill за date_from..date_to из job.
     Берёт по одному job (FOR UPDATE SKIP LOCKED — безопасно при параллельных запусках),
     помечает running, гоняет сборщики, по успеху → done, по провалу → failed.
+    Заблокированный ключами job (пауза/нет кредов/отказ авторизации) — НЕ done и
+    НЕ failed: возвращаем в queued, чтобы после починки ключей backfill подтянулся
+    сам следующим прогоном. skip_ids не даёт этому же job'у зациклить ТЕКУЩИЙ
+    прогон (иначе while True никогда не увидит пустую очередь).
     Пауза DRAIN_PAUSE_SEC между jobs (rate-limit для очереди из нескольких клиентов)."""
+    skip_ids = []  # отложенные (blocked) в этом прогоне — не берём их снова сейчас
     while True:
-        # 1. Взять один queued job атомарно (с блокировкой строки).
+        # 1. Взять один queued job атомарно (с блокировкой строки), кроме уже
+        #    отложенных в этом прогоне.
         with psycopg.connect(**PG_SUPER, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT job_id, cabinet_id, date_from, date_to "
                     "FROM jobs.collect_jobs "
                     "WHERE job_type = 'onboarding' AND status = 'queued' "
+                    "  AND NOT (job_id = ANY(%s::bigint[])) "
                     "ORDER BY job_id "
-                    "FOR UPDATE SKIP LOCKED LIMIT 1")
+                    "FOR UPDATE SKIP LOCKED LIMIT 1",
+                    (skip_ids,))
                 job = cur.fetchone()
                 if not job:
-                    break  # очередь пуста
+                    break  # очередь пуста (с учётом отложенных)
                 cur.execute(
                     "UPDATE jobs.collect_jobs SET status='running', started_at=now(), error=NULL "
                     "WHERE job_id=%s",
@@ -485,6 +513,7 @@ def drain_queue(verbose=False):
         # 2. Загрузить кабинет (с shops) — без фильтра по статусу.
         cab = _read_one_cabinet(cid)
         err_msg = None
+        blocked_msg = None
         if not cab:
             err_msg = f"кабинет #{cid} не найден"
             print(f"    {err_msg}", flush=True)
@@ -495,10 +524,12 @@ def drain_queue(verbose=False):
                 err_msg = f"нет подключённых МП (marketplaces={mps})"
                 print(f"    {err_msg}", flush=True)
             else:
-                failed = run_cabinet(cab, collectors, verbose=verbose,
-                                     date_from=df, date_to=dt)
+                failed, blocked = run_cabinet(cab, collectors, verbose=verbose,
+                                              date_from=df, date_to=dt)
                 if failed:
                     err_msg = f"неудачные сборщики: {failed}"
+                elif blocked:
+                    blocked_msg = f"отложен: ключи магазина не работают ({blocked})"
 
         # 3. Финализировать job.
         with psycopg.connect(**PG_SUPER, row_factory=dict_row) as conn:
@@ -507,12 +538,20 @@ def drain_queue(verbose=False):
                     cur.execute(
                         "UPDATE jobs.collect_jobs SET status='failed', finished_at=now(), error=%s "
                         "WHERE job_id=%s", (err_msg[:1000], jid))
+                elif blocked_msg:
+                    # Не сбой сервиса и не готовая работа — job возвращаем в очередь
+                    # (started_at сбрасываем, иначе он выглядит «зависшим running»).
+                    cur.execute(
+                        "UPDATE jobs.collect_jobs SET status='queued', started_at=NULL, error=%s "
+                        "WHERE job_id=%s", (blocked_msg[:1000], jid))
+                    skip_ids.append(jid)
                 else:
                     cur.execute(
                         "UPDATE jobs.collect_jobs SET status='done', finished_at=now() "
                         "WHERE job_id=%s", (jid,))
             conn.commit()
-        print(f"<<< job #{jid}: {'DONE' if not err_msg else 'FAILED'}", flush=True)
+        status_label = "FAILED" if err_msg else ("ОТЛОЖЕН" if blocked_msg else "DONE")
+        print(f"<<< job #{jid}: {status_label}", flush=True)
 
         # Пауза перед следующим job (rate-limit по IP для очереди клиентов).
         time.sleep(DRAIN_PAUSE_SEC)
@@ -576,7 +615,9 @@ def main():
         if not colls:
             print(f"  #{cab['cabinet_id']}: нет подключённых МП, пропуск", flush=True)
             continue
-        failed = run_cabinet(cab, colls, verbose=args.verbose,
+        # blocked (пауза/нет кредов/отказ авторизации) на итоговый exit-код не
+        # влияет — как и раньше, эту категорию алерт будить не должен.
+        failed, _blocked = run_cabinet(cab, colls, verbose=args.verbose,
                              date_from=args.date_from, date_to=args.date_to)
         if failed:
             total_failed[cab["cabinet_id"]] = failed
