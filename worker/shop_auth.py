@@ -15,12 +15,15 @@ from psycopg.rows import dict_row
 FAIL_THRESHOLD = int(os.environ.get("SAAS_AUTH_FAIL_THRESHOLD", "2"))
 RETRY_AFTER = timedelta(hours=int(os.environ.get("SAAS_AUTH_RETRY_HOURS", "24")))
 
+# Параметры подключения повторяют PG_SUPER из worker/orchestrator.py. Держим
+# копию, а не импорт: с задачи 3 оркестратор импортирует этот модуль, и
+# обратный импорт замкнул бы цикл. При правке одного места правь оба.
 PG = {
     "host": os.environ.get("SAAS_DB_HOST", "localhost"),
-    "port": int(os.environ.get("SAAS_DB_PORT", "5432")),
+    "port": os.environ.get("SAAS_DB_PORT", "5432"),
     "dbname": os.environ.get("SAAS_DB", "saas"),
-    "user": os.environ.get("POSTGRES_USER", "postgres"),
-    "password": os.environ.get("POSTGRES_PASSWORD"),
+    "user": "postgres",
+    "password": os.environ.get("POSTGRES_PASSWORD", ""),
 }
 
 
