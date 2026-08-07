@@ -19,19 +19,27 @@ const pending = await query(
     ORDER BY created_at`
 );
 let credited = 0, failed = 0;
+const failedIds = [];
 for (const p of pending) {
   try {
     const res = await creditPayment(p.payment_id);
     if (res.ok && !res.already) { credited++; console.log('[reconcile] зачислен', p.payment_id); }
   } catch (e) {
     failed++;
+    failedIds.push(p.payment_id);
     console.error('[reconcile] ошибка', p.payment_id, e.message);
   }
 }
+// Платежи, по которым в ЭТОМ прогоне не удалось проверить статус (например,
+// API ЮKassa было недоступно), не отменяем: они могли быть оплачены, и
+// canceled навсегда выбросил бы их из очереди сверки. NOT (x = ANY('{}'))
+// истинно при пустом массиве — исключение не срабатывает, если ошибок не было.
 const stale = await query(
   `UPDATE billing.payments SET status = 'canceled', updated_at = now()
     WHERE status = 'pending' AND created_at < now() - interval '1 day'
-    RETURNING payment_id`
+      AND NOT (payment_id = ANY($1::text[]))
+    RETURNING payment_id`,
+  [failedIds]
 );
 console.log(`[reconcile] проверено ${pending.length}, зачислено ${credited}, отменено ${stale.length}, ошибок ${failed}`);
 process.exit(failed ? 1 : 0);

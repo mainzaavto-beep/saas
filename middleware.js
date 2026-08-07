@@ -3,10 +3,13 @@
 import { NextResponse } from 'next/server';
 import { readSessionFromCookie } from './lib/session.js';
 
-const PUBLIC_PATHS = ['/', '/login', '/register', '/invite', '/verify', '/forgot', '/reset', '/billing'];
+const PUBLIC_PATHS = ['/', '/login', '/register', '/invite', '/verify', '/forgot', '/reset', '/billing/mock'];
 const PUBLIC_API = ['/api/auth/login', '/api/auth/register', '/api/auth/logout', '/api/auth/verify', '/api/auth/forgot', '/api/auth/reset'];
 // /api/invite/<token> публичен: GET — валидация инвайта до регистрации,
 // POST сам проверяет сессию (401 внутри роута).
+// PUBLIC_PATHS содержит только '/billing/mock' (мок-страница подтверждения),
+// не весь '/billing' — иначе без сессии открылась бы и страница подписки
+// кабинета (/cabinets/[id]/billing).
 // /api/billing/<...> — вебхук ЮKassa (секрет в URL) и мок-подтверждение
 // (сам себя закрывает 404 вне мок-режима); внутри роуты не доверяют вызывающему.
 const PUBLIC_API_PREFIXES = ['/api/invite/', '/api/billing/'];
