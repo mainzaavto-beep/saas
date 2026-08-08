@@ -4,7 +4,7 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import { tenantQuery } from "@/lib/db.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { KNOWN_MP, MAX_SHOPS_PER_CABINET, BACKFILL_DAYS } from "@/lib/mpConfig.js";
-import { validateShopCreds } from "@/lib/mpValidate.js";
+import { validateShopCreds, trimCreds } from "@/lib/mpValidate.js";
 import { hit, LIMITS } from "@/lib/rate-limit.js";
 
 export const runtime = "nodejs";
@@ -59,6 +59,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
 export const POST = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
+  // Обрезать пробелы/переводы строк ДО проверки и ДО сохранения — иначе токен,
+  // скопированный с хвостовым переводом строки, ломает заголовок запроса и
+  // вместо понятного отказа даёт «маркетплейс не отвечает».
+  if (b.api_creds) b.api_creds = trimCreds(b.api_creds);
   if (!b.mp_code) return NextResponse.json({ error: "mp_code required" }, { status: 400 });
   if (!KNOWN_MP.includes(b.mp_code)) {
     return NextResponse.json({ error: `Неизвестный маркетплейс: ${b.mp_code}` }, { status: 400 });
@@ -92,7 +96,9 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   if (credsForCheck && Object.keys(credsForCheck).length > 0) {
     const v = await validateShopCreds({ mpCode: b.mp_code, creds: credsForCheck });
     if (!v.ok) {
-      const problems = v.checks.filter((c) => !c.ok && c.fatal);
+      // Только распознанные отказы ('denied') — иначе таймаут на соседнем вызове
+      // (verdict 'unknown') подмешался бы в текст как ложное «нет доступа».
+      const problems = v.checks.filter((c) => c.fatal && c.verdict === 'denied');
       return NextResponse.json(
         { error: problems.map((c) => c.message).join(' '), code: 'mp_creds_invalid', checks: v.checks },
         { status: 422 }
@@ -166,6 +172,7 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
 // Тело: { shop_id, api_creds?, tax_mode? }
 export const PUT = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
+  if (b.api_creds) b.api_creds = trimCreds(b.api_creds);
   if (!b.shop_id) return NextResponse.json({ error: "shop_id required" }, { status: 400 });
 
   const sets = [];
@@ -195,7 +202,7 @@ export const PUT = withCabinet(async (req, { cabinet, session }) => {
     if (credsForCheck && Object.keys(credsForCheck).length > 0) {
       const v = await validateShopCreds({ mpCode, creds: credsForCheck });
       if (!v.ok) {
-        const problems = v.checks.filter((c) => !c.ok && c.fatal);
+        const problems = v.checks.filter((c) => c.fatal && c.verdict === 'denied');
         return NextResponse.json(
           { error: problems.map((c) => c.message).join(' '), code: 'mp_creds_invalid', checks: v.checks },
           { status: 422 }

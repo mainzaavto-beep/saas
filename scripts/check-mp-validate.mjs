@@ -81,5 +81,38 @@ const basesFor = (base) => ({
   await s.stop();
 }
 
+// 8. 429 — троттлинг, не отказ по ключу. Тело намеренно совпадает с телом
+// «неверный ключ» (code:5, находка №8) — проверяем, что порядок проверок в
+// classify() не путает троттлинг с распознанным отказом: сохраняем с
+// предупреждением, а не отказываем.
+{
+  const s = await startStub('rate_limited');
+  const r = await validateShopCreds({ mpCode: 'ozon', creds: { client_id: '1', api_key: 'k' }, bases: basesFor(s.base) });
+  check('ozon, 429: сохранить с предупреждением, НЕ отказ', r.ok === true && r.unreachable === true, JSON.stringify(r));
+  await s.stop();
+}
+
+// 9. WB, неверный ключ — отказ, в тексте сказано про токен (раньше проверялось
+// только для Ozon — находка №9).
+{
+  const s = await startStub('bad_key');
+  const r = await validateShopCreds({ mpCode: 'wb', creds: { token: 't' }, bases: basesFor(s.base) });
+  const msg = r.checks.filter((c) => !c.ok).map((c) => c.message).join(' ');
+  check('wb, неверный ключ: отказ', r.ok === false && r.unreachable === false, JSON.stringify(r));
+  check('wb, неверный ключ: текст про токен', /токен/i.test(msg), msg);
+  await s.stop();
+}
+
+// 10. WB, нет нужной роли — отказ, в тексте сказано про доступ (раньше
+// проверялось только для Ozon — находка №9).
+{
+  const s = await startStub('no_role');
+  const r = await validateShopCreds({ mpCode: 'wb', creds: { token: 't' }, bases: basesFor(s.base) });
+  const msg = r.checks.filter((c) => !c.ok).map((c) => c.message).join(' ');
+  check('wb, нет роли: отказ', r.ok === false, JSON.stringify(r));
+  check('wb, нет роли: текст про доступ', /доступ/i.test(msg), msg);
+  await s.stop();
+}
+
 console.log(failed ? `\n${failed} FAIL` : '\nALL PASS');
 process.exit(failed ? 1 : 0);

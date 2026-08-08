@@ -3,7 +3,7 @@
 // формы ответов взяты с боевых API (проверено вживую 2026-08-08).
 import http from 'node:http';
 
-// Режимы: ok | bad_key | no_role | expired | down | slow
+// Режимы: ok | bad_key | no_role | expired | down | slow | rate_limited
 export function startStub(mode = 'ok', { slowMs = 30_000 } = {}) {
   const server = http.createServer((req, res) => {
     const json = (code, body) => {
@@ -12,6 +12,12 @@ export function startStub(mode = 'ok', { slowMs = 30_000 } = {}) {
     };
     if (mode === 'slow') return;                    // ответа не будет вовсе
     if (mode === 'down') return json(503, { error: 'service unavailable' });
+    if (mode === 'rate_limited') {
+      // 429 с тем же телом, что и отказ Ozon по ключу (code:5) — граничный
+      // случай находки №8: порядок проверок в classify() не должен превратить
+      // троттлинг в ложный отказ, даже если тело совпадает с «неверный ключ».
+      return json(429, { code: 5, message: 'Too Many Requests' });
+    }
     if (mode === 'bad_key') {
       // Ozon на неверный ключ отвечает именно так: 404 + code 5 в теле.
       if (req.url.startsWith('/v3') || req.url.startsWith('/api/client/token')) {

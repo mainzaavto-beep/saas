@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import ThemeToggle from "@/app/ThemeToggle.jsx";
 import { cabinetAccess } from "@/lib/billing.js";
+import { classifyOnboarding } from "@/lib/onboardingStatus.js";
 import LoadingBanner from "./LoadingBanner.jsx";
 import "./cabinet.css";
 
@@ -91,8 +92,26 @@ export default async function CabinetLayout({ children, params }) {
   );
 
   // Первичная загрузка: задание в очереди означает, что данные ещё едут.
+  // Фильтр по job_type='onboarding' — иначе ежедневное/ресинк-задание того же
+  // кабинета ложно показало бы «загружаем историю за 75 дней» (находка №7:
+  // владелец вернул в очередь daily/resync-задание уже работающего кабинета).
   const pendingJobs = await query(
-    `SELECT 1 FROM jobs.collect_jobs WHERE cabinet_id = $1 AND status = 'queued' LIMIT 1`,
+    `SELECT 1 FROM jobs.collect_jobs
+      WHERE cabinet_id = $1 AND job_type = 'onboarding' AND status = 'queued' LIMIT 1`,
+    [cabinetId]
+  );
+
+  // Последнее задание onboarding и было ли хоть одно успешным — различает
+  // «клиент так и не увидел своих данных» (первое задание упало, данных нет)
+  // от «воркер один раз споткнулся на уже работающем кабинете» (был хотя бы
+  // один успешный backfill раньше, новых магазинов это не касается).
+  const onboardingHistory = await query(
+    `SELECT
+       (SELECT status FROM jobs.collect_jobs
+          WHERE cabinet_id = $1 AND job_type = 'onboarding'
+          ORDER BY job_id DESC LIMIT 1) AS last_status,
+       EXISTS (SELECT 1 FROM jobs.collect_jobs
+          WHERE cabinet_id = $1 AND job_type = 'onboarding' AND status = 'done') AS ever_succeeded`,
     [cabinetId]
   );
 
@@ -138,9 +157,27 @@ export default async function CabinetLayout({ children, params }) {
       link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
     });
   }
+  // Классификация состояния первичной загрузки — общая с /onboarding-status
+  // (lib/onboardingStatus.js), чтобы SSR-рендер и клиентский опрос не расходились.
   // Показываем «загружаем» только если ключи целы: задание сломанного магазина
   // висит в очереди намеренно, и «вечная загрузка» скрыла бы настоящую причину.
-  const showLoading = pendingJobs.length > 0 && brokenShops.length === 0;
+  const onboardingState = classifyOnboarding({
+    hasBrokenShops: brokenShops.length > 0,
+    hasQueuedJob: pendingJobs.length > 0,
+    lastJobStatus: onboardingHistory[0]?.last_status || null,
+    everSucceeded: !!onboardingHistory[0]?.ever_succeeded,
+  });
+  const showLoading = onboardingState === "loading";
+  if (onboardingState === "failed") {
+    // Реальный сбой сборки без ретраев (status='failed', см. worker/orchestrator.py
+    // --drain-queue) — клиент не должен молча решить, что сервис не работает.
+    // Владельцу алерт уже ушёл через systemd OnFailure — клиенту это знать не нужно.
+    banners.push({
+      tone: "neg",
+      text: "Не получилось загрузить историю заказов — сбой на нашей стороне, не в ваших ключах. Мы уже знаем о проблеме и разбираемся.",
+      link: { href: `${basePath}/support`, label: "Написать в поддержку" },
+    });
+  }
   if (!cab.email_verified_at) {
     banners.push({ tone: "warn", text: `Подтвердите почту — мы отправили письмо на ${session.email}.`, link: { href: "/settings", label: "Выслать ещё раз" } });
   }

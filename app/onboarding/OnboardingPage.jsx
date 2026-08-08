@@ -2,7 +2,7 @@
 import { C } from "@/lib/palette.js";
 // /onboarding — создание проекта с несколькими магазинами.
 // Поддержка: до 4 магазинов всего (любая комбинация WB/Ozon), разные юрлица, налоги per shop.
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from '@/lib/mpConfig.js';
 
@@ -24,22 +24,27 @@ export default function OnboardingPage() {
   // без этого повторный сабмит после ошибки заново звал бы /api/onboarding/start
   // и плодил второй кабинет + второй backfill-job (см. фикс-волну 2026-08-06, №4).
   const [createdCabinetId, setCreatedCabinetId] = useState(null);
-  // Индексы магазинов, уже добавленных в предыдущей попытке сабмита — POST
-  // /shops не идемпотентен, повтор без этой отметки задваивал бы магазин
-  // (а с ним и сбор данных — прямое нарушение правила «расхождение цифр =
-  // наш баг»). Индексная схема валидна, только пока состав shops не менялся
-  // между попытками — сбрасываем при любом добавлении/удалении магазина.
+  // uid магазинов, уже добавленных в предыдущей попытке сабмита — POST /shops
+  // не идемпотентен, повтор без этой отметки задваивал бы магазин (а с ним и
+  // сбор данных — прямое нарушение правила «расхождение цифр = наш баг»).
+  // Привязка к uid (а не к индексу в массиве) переживает изменение состава:
+  // магазин 1 сохранён → магазин 2 отклонён 422 → клиент удаляет магазин 2 и
+  // шлёт снова — раньше индексы съезжали и магазин 1 создавался повторно.
   const [addedShops, setAddedShops] = useState(() => new Set());
+  // Счётчик для uid — монотонно растёт, значения никогда не переиспользуются,
+  // поэтому даже после add/remove отметка «уже добавлен» не может залипнуть
+  // на чужом магазине.
+  const nextUid = useRef(0);
+  const [warnings, setWarnings] = useState([]);
 
   const addShop = (mpCode) => {
     // Лимит общий на проект — любая комбинация WB/Ozon, не более 4 всего.
     if (shops.length >= MAX_SHOPS_PER_CABINET) return;
-    setShops([...shops, { mp_code: mpCode, shop_name: '', legal_name: '', tax: DEFAULT_TAX(), creds: {} }]);
-    setAddedShops(new Set()); // состав изменился — индексы «уже добавленных» больше не валидны
+    const uid = `shop-${nextUid.current++}`;
+    setShops([...shops, { uid, mp_code: mpCode, shop_name: '', legal_name: '', tax: DEFAULT_TAX(), creds: {} }]);
   };
   const removeShop = (idx) => {
     setShops(shops.filter((_, i) => i !== idx));
-    setAddedShops(new Set());
   };
   const updateShop = (idx, field, val) => {
     setShops(shops.map((s, i) => i === idx ? { ...s, [field]: val } : s));
@@ -92,6 +97,8 @@ export default function OnboardingPage() {
       // проект уже создан, но без магазина данные собираться не будут.
       // Пропускаем уже добавленные в прошлой попытке (см. addedShops выше) —
       // /shops не идемпотентен, повторный POST задвоил бы магазин и сбор данных.
+      // Отметка привязана к uid магазина, а не к индексу — переживает
+      // удаление/добавление других магазинов между попытками (см. addShop).
       // setAddedShops асинхронен, поэтому копим отметки в локальном done и
       // синхронизируем состояние в finally — гарантированно, каким бы путём
       // цикл ни завершился (ошибка ответа, сетевое исключение из fetch,
@@ -99,10 +106,11 @@ export default function OnboardingPage() {
       // на самом fetch, не на ответе) улетал бы мимо любых точечных
       // setAddedShops(...) и терял отметки об уже добавленных магазинах.
       const done = new Set(addedShops);
+      const collectedWarnings = [];
       try {
         for (let i = 0; i < shops.length; i++) {
-          if (done.has(i)) continue;
           const s = shops[i];
+          if (done.has(s.uid)) continue;
           const shopR = await fetch(`/api/cabinets/${cabinetId}/shops`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -113,15 +121,24 @@ export default function OnboardingPage() {
               api_creds: { [s.mp_code]: s.creds },
             }),
           });
+          const d = await shopR.json().catch(() => ({}));
           if (!shopR.ok) {
-            const d = await shopR.json().catch(() => ({}));
             setErr(`Проект создан, но магазин «${s.shop_name || s.mp_code}» не добавлен: ${d.error || 'ошибка сервера'}. Добавьте его в настройках проекта.`);
             return;
           }
-          done.add(i);
+          if (d.warning) collectedWarnings.push(`${s.shop_name || MP_CONFIG[s.mp_code]?.label || s.mp_code}: ${d.warning}`);
+          done.add(s.uid);
         }
       } finally {
         setAddedShops(new Set(done));
+      }
+
+      // Предупреждение (маркетплейс недоступен, реклама не соберётся и т.п.) не
+      // должно тонуть в мгновенном редиректе — показываем и ждём осознанного
+      // клика, но это не блокирует уже успешное создание проекта и магазинов.
+      if (collectedWarnings.length) {
+        setWarnings(collectedWarnings);
+        return;
       }
 
       router.push(`/cabinets/${cabinetId}`);
@@ -130,12 +147,29 @@ export default function OnboardingPage() {
     finally { setBusy(false); }
   }
 
+  const goToCabinet = () => {
+    router.push(`/cabinets/${createdCabinetId}`);
+    router.refresh();
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "system-ui, sans-serif", display: "flex", justifyContent: "center", padding: "28px 20px" }}>
       <form onSubmit={submit} style={{ width: "100%", maxWidth: 640 }}>
         <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 4px" }}>Создание проекта</h1>
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Подключите магазины — мы начнём собирать аналитику автоматически</p>
         {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {warnings.length > 0 && (
+          <div style={{ background: "rgba(255,193,7,.12)", color: C.warn, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Проект создан, но обратите внимание:</div>
+            <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
+              {warnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}
+            </ul>
+            <button type="button" onClick={goToCabinet} style={{
+              padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff",
+              border: "none", cursor: "pointer", fontWeight: 700, fontFamily: "inherit", fontSize: 13,
+            }}>Перейти к проекту →</button>
+          </div>
+        )}
 
         {/* Название */}
         <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 16 }}>
@@ -167,7 +201,7 @@ export default function OnboardingPage() {
           {shops.map((s, idx) => {
             const cfg = MP_CONFIG[s.mp_code];
             return (
-              <div key={idx} style={{ background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, padding: 16, marginBottom: 12 }}>
+              <div key={s.uid} style={{ background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, padding: 16, marginBottom: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <span style={{ fontWeight: 700, fontSize: 14 }}>{cfg.label}</span>
                   <button type="button" onClick={() => removeShop(idx)} style={{ padding: "2px 10px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>

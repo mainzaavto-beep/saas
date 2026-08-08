@@ -127,7 +127,10 @@ function ShopRow({ shop, cabinetId, onSaved }) {
     });
     const d = await r.json();
     if (r.ok) {
-      setMsg("✅ Ключи сохранены");
+      // Ключи сохранены, но маркетплейс мог быть недоступен при проверке (или
+      // рекламные креды Ozon не подошли) — предупреждение тоном «внимание», не
+      // «ошибка»: сохранение всё равно успешно, скрывать это нельзя.
+      setMsg(d.warning ? `⚠️ Ключи сохранены. ${d.warning}` : "✅ Ключи сохранены");
       setCreds({});
       onSaved();
     } else {
@@ -263,7 +266,7 @@ function ShopRow({ shop, cabinetId, onSaved }) {
             </div>
           </div>
 
-          {msg && <div style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, marginTop: 10 }}>{msg}</div>}
+          {msg && <div style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : msg.startsWith("⚠️") ? C.warn : C.neg, marginTop: 10 }}>{msg}</div>}
         </div>
       )}
     </div>
@@ -281,12 +284,13 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
   const [tax, setTax] = useState({ type: "usn_income", rate: 6, vat: 0 });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [warn, setWarn] = useState("");
 
   const cfg = MP_CONFIG[mpCode] || { fields: [] };
 
   const reset = () => {
     setShopName(""); setLegalName(""); setCreds({});
-    setTax({ type: "usn_income", rate: 6, vat: 0 }); setErr("");
+    setTax({ type: "usn_income", rate: 6, vat: 0 }); setErr(""); setWarn("");
   };
 
   const submit = async () => {
@@ -309,8 +313,15 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
       });
       const d = await r.json();
       if (!r.ok) { setErr(d.error || "Ошибка"); return; }
-      reset(); setOpen(false);
       onAdded();
+      if (d.warning) {
+        // Магазин сохранён (успех), но маркетплейс недоступен/реклама не
+        // подошла — показываем и не закрываем форму молча: пусть клиент
+        // осознанно нажмёт «Понятно», а не потеряет предупреждение мгновенно.
+        setWarn(d.warning);
+      } else {
+        reset(); setOpen(false);
+      }
     } catch {
       setErr("Сетевая ошибка");
     } finally {
@@ -396,6 +407,15 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
       </div>
 
       {err && <div style={{ color: C.neg, fontSize: 13, marginTop: 10 }}>{err}</div>}
+      {warn && (
+        <div style={{ background: "rgba(255,193,7,.12)", color: C.warn, padding: "8px 12px", borderRadius: 8, fontSize: 13, marginTop: 10 }}>
+          <div>⚠️ Магазин добавлен. {warn}</div>
+          <button type="button" onClick={() => { reset(); setOpen(false); }} style={{
+            marginTop: 8, padding: "4px 12px", borderRadius: 6, border: `1px solid ${C.line}`,
+            background: "transparent", color: C.ink, cursor: "pointer", fontFamily: "inherit", fontSize: 12,
+          }}>Понятно</button>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button onClick={submit} disabled={saving} style={{
           padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
