@@ -57,10 +57,22 @@ RUN_KIND = "manual"
 # поднять без правки кода, если у крупного кабинета сбор окажется дольше.
 COLLECTOR_TIMEOUT = int(os.environ.get("SAAS_COLLECTOR_TIMEOUT_SEC", "900"))
 
+# Guard от затирания (спек п.3): order_costs И cabinet_costs агрегируют из
+# finance_report безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО
+# прогона не-ok, пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
+GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance",
+              "wb_cabinet_costs": "wb_finance"}
+
 # Сборщики, которые продолжают работать даже когда магазин на паузе из-за
 # сломанных ключей: у урезанного ключа ломается не всё. Проверено на кабинете
 # 1009 — ozon_efficiency собирался успешно, пока остальные шесть ловили 403.
 # Их результат состояние магазина не меняет (см. _run_one).
+#
+# ⚠️ Агрегирующие сборщики (ключи GUARD_DEPS) сюда попадать не должны: на паузе
+# их источник — *_finance — не запускается, guard видит «статуса нет» и не
+# срабатывает, а пересчёт по неполным данным затёр бы верные агрегаты. Это
+# прямой путь к расхождению цифр в отчётах, поэтому такие сборщики
+# отфильтровываются в _run_one принудительно, даже если их впишут в env.
 PAUSE_EXEMPT_COLLECTORS = {
     c.strip() for c in os.environ.get("SAAS_PAUSE_EXEMPT", "ozon_efficiency").split(",") if c.strip()
 }
@@ -331,7 +343,16 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     paused = shop_auth.should_skip(state)
     if paused:
         since = state.get("auth_failed_at")
-        exempt = [c for c in shop_collectors if c in PAUSE_EXEMPT_COLLECTORS]
+        # Агрегаты на паузе не пересчитываем никогда: их источник (*_finance) не
+        # запускается, guard в этом прогоне не сработает, и пересчёт по неполным
+        # данным затёр бы верные цифры. Фильтр стоит здесь, а не в env, чтобы
+        # ошибка в SAAS_PAUSE_EXEMPT не стоила клиенту искажённой прибыли.
+        exempt = [c for c in shop_collectors
+                  if c in PAUSE_EXEMPT_COLLECTORS and c not in GUARD_DEPS]
+        ignored = sorted(set(shop_collectors) & PAUSE_EXEMPT_COLLECTORS & set(GUARD_DEPS))
+        if ignored:
+            print(f"    shop #{shop_id} {mp}: {', '.join(ignored)} на паузе не запускаем — "
+                  f"агрегат без свежего {GUARD_DEPS[ignored[0]]} затёр бы верные данные", flush=True)
         skipped_note = f"auth_paused: {state.get('auth_last_error') or 'отказ авторизации'}"
         if exempt:
             skipped_note += f" (кроме {', '.join(exempt)})"
@@ -365,12 +386,6 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
     auth_error_texts = []      # тексты ошибок, похожих на отказ авторизации
     auth_failed_collectors = []  # какие сборщики упали именно по авторизации
-
-    # Guard от затирания (спек п.3): order_costs И cabinet_costs агрегируют из
-    # finance_report безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО
-    # прогона не-ok, пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
-    GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance",
-                  "wb_cabinet_costs": "wb_finance"}
 
     for coll in shop_collectors:
         dep = GUARD_DEPS.get(coll)
