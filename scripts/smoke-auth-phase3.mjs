@@ -5,15 +5,15 @@
 // Токены берёт из «почтовой раковины» /tmp/saas-mail (SAAS_MAIL_SINK=1) —
 // пока SMTP не настроен, письма пишутся туда файлами.
 import pg from 'pg';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { adminPgConfig } from './lib/pgpass.mjs';
+import { lastMailFor, tokenFrom } from './lib/mail-verify.mjs';
 
 const { types } = pg;
 types.setTypeParser(20, (v) => v === null ? null : Number(v));
 types.setTypeParser(1700, (v) => v === null ? null : Number(v));
 
 const BASE = process.argv[2] || 'http://localhost:3210';
-const SINK_DIR = '/tmp/saas-mail';
 for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')) {
   const m = line.match(/^([A-Z_0-9]+)=(.*)$/);
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
@@ -41,24 +41,6 @@ async function api(method, path, { body, cookie } = {}) {
   try { json = await res.json(); } catch {}
   return { status: res.status, json, setCookie, cookie: setCookie.split(';')[0] || cookie };
 }
-
-// Последнее письмо для адреса из раковины: возвращает текст или null.
-function lastMailFor(email) {
-  if (!existsSync(SINK_DIR)) return null;
-  const files = readdirSync(SINK_DIR)
-    .filter(f => f.endsWith('.txt'))
-    .map(f => `${SINK_DIR}/${f}`)
-    .sort();
-  for (let i = files.length - 1; i >= 0; i--) {
-    const body = readFileSync(files[i], 'utf8');
-    if (body.includes(email)) return body;
-  }
-  return null;
-}
-const tokenFrom = (mailBody, path) => {
-  const m = mailBody && mailBody.match(new RegExp(`${path}\\?token=([A-Za-z0-9_-]+)`));
-  return m ? m[1] : null;
-};
 
 const run = Date.now();
 const email = `verify-${run}@smoke.test`;

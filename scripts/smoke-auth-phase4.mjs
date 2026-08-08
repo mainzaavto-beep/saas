@@ -5,6 +5,7 @@
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { adminPgConfig } from './lib/pgpass.mjs';
+import { verifyEmailViaSink } from './lib/mail-verify.mjs';
 
 const { types } = pg;
 types.setTypeParser(20, (v) => v === null ? null : Number(v));
@@ -41,9 +42,18 @@ const run = Date.now();
 let cabinetId = null, ownerCookie = null, ownerId = null, mgrId = null, mgrCookie = null;
 
 try {
+  if (process.env.SAAS_MAIL_SINK !== '1' && !process.env.SAAS_SMTP_HOST) {
+    console.error('Ни SAAS_MAIL_SINK=1, ни SAAS_SMTP_HOST не заданы — писем не будет, смоук бессмысленен');
+    process.exit(2);
+  }
+
   // ── Подготовка: владелец с кабинетом и менеджер в нём ──
   const owner = await reg(`p4owner-${run}@smoke.test`);
   ownerCookie = owner.cookie; ownerId = owner.json?.user?.user_id;
+  // Оплата (проверка 6 ниже) требует подтверждённой почты владельца при
+  // SAAS_REQUIRE_VERIFIED_EMAIL=1 — подтверждаем тем же путём, что и живой
+  // клиент: письмо из раковины → POST /api/auth/verify.
+  await verifyEmailViaSink(api, `p4owner-${run}@smoke.test`);
   const onb = await api('POST', '/api/onboarding/start', {
     cookie: ownerCookie, body: { display_name: `smoke-p4-${run}`, marketplaces: ['wb'] },
   });
@@ -83,14 +93,20 @@ try {
 
   // Время ответа тоже не должно выдавать, есть ли такой аккаунт: сегодня
   // несуществующий email отвечает мгновенно, живой — после проверки пароля.
+  //
+  // Первый вызов /api/auth/login после старта сервера идёт по «холодному»
+  // пути (компиляция маршрута, прогрев пула соединений) и завышает замер на
+  // порядок — это шум измерения, а не сигнал об утечке. Поэтому один
+  // прогревочный запрос отбрасываем, а дальше берём медиану из пяти попыток.
+  await api('POST', '/api/auth/login', { body: { email: `p4warmup-${run}@smoke.test`, password: 'whatever-000' } });
   const timeIt = async (email, password) => {
     const t = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       const started = Date.now();
       await api('POST', '/api/auth/login', { body: { email, password } });
       t.push(Date.now() - started);
     }
-    return t.sort((a, b) => a - b)[1]; // медиана из трёх
+    return t.sort((a, b) => a - b)[2]; // медиана из пяти
   };
   const tGhost = await timeIt(`p4ghost2-${run}@smoke.test`, 'whatever-000');
   const tReal = await timeIt(`p4owner-${run}@smoke.test`, 'wrong-pass-000');

@@ -6,6 +6,7 @@
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { adminPgConfig } from './lib/pgpass.mjs';
+import { verifyEmailViaSink } from './lib/mail-verify.mjs';
 
 const { types } = pg;
 // Те же парсеры типов, что в lib/db.js — bigint/numeric как Number.
@@ -47,11 +48,20 @@ const run = Date.now();
 let cabinetId, ownerId, ownerCookie, tokViewer, tokViewer2, tokManager, tokExpired;
 
 try {
+  if (process.env.SAAS_MAIL_SINK !== '1' && !process.env.SAAS_SMTP_HOST) {
+    console.error('Ни SAAS_MAIL_SINK=1, ни SAAS_SMTP_HOST не заданы — писем не будет, смоук бессмысленен');
+    process.exit(2);
+  }
+
   // ── Подготовка: владелец через API (нужна сессия), кабинет и инвайты — SQL ──
   const regOwner = await reg(`owner-${run}@smoke.test`, 'Smoke Owner');
   check('подготовка: регистрация владельца 200', regOwner.status === 200, `got ${regOwner.status} ${JSON.stringify(regOwner.json)}`);
   ownerCookie = regOwner.cookie;
   ownerId = regOwner.json?.user?.user_id;
+  // Создание инвайта через API (проверка 9 ниже) требует подтверждённой почты
+  // владельца при SAAS_REQUIRE_VERIFIED_EMAIL=1 — проходим тот же путь, что и
+  // живой клиент: письмо из раковины → POST /api/auth/verify.
+  await verifyEmailViaSink(api, `owner-${run}@smoke.test`);
   cabinetId = (await q(
     `INSERT INTO auth.cabinets (owner_user_id, display_name, marketplaces, status, trial_ends_at)
      VALUES ($1, $2, '{wb}', 'active', now() + interval '14 days') RETURNING cabinet_id`,

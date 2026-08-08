@@ -6,6 +6,7 @@
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { adminPgConfig } from './lib/pgpass.mjs';
+import { verifyEmailViaSink } from './lib/mail-verify.mjs';
 
 const { types } = pg;
 types.setTypeParser(20, (v) => v === null ? null : Number(v));
@@ -48,6 +49,10 @@ try {
     console.error('Смоук требует SAAS_YOOKASSA_MOCK=1 (и сервер, поднятый с тем же флагом)');
     process.exit(2);
   }
+  if (process.env.SAAS_MAIL_SINK !== '1' && !process.env.SAAS_SMTP_HOST) {
+    console.error('Ни SAAS_MAIL_SINK=1, ни SAAS_SMTP_HOST не заданы — писем не будет, смоук бессмысленен');
+    process.exit(2);
+  }
 
   // ── Подготовка: тарифный план, владелец с кабинетом ──
   await q(`INSERT INTO billing.plans (code, months, price_rub, title, sort)
@@ -59,6 +64,10 @@ try {
            VALUES ($1, 3, 300.00, 'Смоук-3мес', 999)`, [PLAN2]);
   const owner = await reg(`billowner-${run}@smoke.test`);
   ownerCookie = owner.cookie; ownerId = owner.json?.user?.user_id;
+  // Оплата (проверки 2, 7б, 9 ниже) требует подтверждённой почты владельца при
+  // SAAS_REQUIRE_VERIFIED_EMAIL=1 — подтверждаем тем же путём, что и живой
+  // клиент: письмо из раковины → POST /api/auth/verify.
+  await verifyEmailViaSink(api, `billowner-${run}@smoke.test`);
   const onb = await api('POST', '/api/onboarding/start', {
     cookie: ownerCookie, body: { display_name: `smoke-bill-${run}`, marketplaces: ['wb'] },
   });
