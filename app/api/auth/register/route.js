@@ -105,7 +105,7 @@ export async function POST(req) {
     return NextResponse.json({
       ok: true, user,
       invited_cabinet_id: invite ? invite.cabinet_id : null,
-      next: invite ? `/cabinets/${invite.cabinet_id}` : '/onboarding',
+      next: invite ? `/cabinets/${invite.cabinet_id}` : '/verify-pending',
     });
   } catch (e) {
     if (e.code === 'email_taken') {
