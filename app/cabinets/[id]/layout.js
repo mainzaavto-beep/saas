@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import ThemeToggle from "@/app/ThemeToggle.jsx";
 import { cabinetAccess } from "@/lib/billing.js";
+import LoadingBanner from "./LoadingBanner.jsx";
 import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
@@ -89,6 +90,12 @@ export default async function CabinetLayout({ children, params }) {
     [cabinetId]
   );
 
+  // Первичная загрузка: задание в очереди означает, что данные ещё едут.
+  const pendingJobs = await query(
+    `SELECT 1 FROM jobs.collect_jobs WHERE cabinet_id = $1 AND status = 'queued' LIMIT 1`,
+    [cabinetId]
+  );
+
   // Список всех проектов пользователя — для dropdown выбора.
   const allProjects = await query(
     `SELECT c.cabinet_id, c.display_name, c.marketplaces
@@ -131,6 +138,9 @@ export default async function CabinetLayout({ children, params }) {
       link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
     });
   }
+  // Показываем «загружаем» только если ключи целы: задание сломанного магазина
+  // висит в очереди намеренно, и «вечная загрузка» скрыла бы настоящую причину.
+  const showLoading = pendingJobs.length > 0 && brokenShops.length === 0;
   if (!cab.email_verified_at) {
     banners.push({ tone: "warn", text: `Подтвердите почту — мы отправили письмо на ${session.email}.`, link: { href: "/settings", label: "Выслать ещё раз" } });
   }
@@ -227,6 +237,7 @@ export default async function CabinetLayout({ children, params }) {
           </div>
         </div>
       </header>
+      {showLoading && <LoadingBanner cabinetId={cabinetId} />}
       {banners.map((b, i) => (
         <div key={i} style={{
           padding: "8px 16px", textAlign: "center", fontSize: 13,
