@@ -4,6 +4,8 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import { tenantQuery } from "@/lib/db.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { KNOWN_MP, MAX_SHOPS_PER_CABINET, BACKFILL_DAYS } from "@/lib/mpConfig.js";
+import { validateShopCreds } from "@/lib/mpValidate.js";
+import { hit, LIMITS } from "@/lib/rate-limit.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,7 +57,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ items });
 });
 
-export const POST = withCabinet(async (req, { cabinet }) => {
+export const POST = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
   if (!b.mp_code) return NextResponse.json({ error: "mp_code required" }, { status: 400 });
   if (!KNOWN_MP.includes(b.mp_code)) {
@@ -72,6 +74,36 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       { error: `Максимум ${MAX_SHOPS_PER_CABINET} магазина на проект` },
       { status: 400 }
     );
+  }
+
+  // Проверяем ключи до сохранения: молча принятый нерабочий ключ оборачивается
+  // пустыми отчётами через несколько часов, и виноватым выглядит сервис.
+  // Форма проверки — сохранение магазина, поэтому лимит на пользователя: иначе
+  // это бесплатный перебор чужих ключей нашими руками.
+  const rl = hit(`shop-save:user:${session.user_id}`, LIMITS.shopSaveUser);
+  if (rl.limited) {
+    return NextResponse.json(
+      { error: 'Слишком много попыток. Подождите минуту.' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter || 60) } }
+    );
+  }
+  let credsWarning = null;
+  const credsForCheck = b.api_creds?.[b.mp_code];
+  if (credsForCheck && Object.keys(credsForCheck).length > 0) {
+    const v = await validateShopCreds({ mpCode: b.mp_code, creds: credsForCheck });
+    if (!v.ok) {
+      const problems = v.checks.filter((c) => !c.ok && c.fatal);
+      return NextResponse.json(
+        { error: problems.map((c) => c.message).join(' '), code: 'mp_creds_invalid', checks: v.checks },
+        { status: 422 }
+      );
+    }
+    if (v.unreachable) {
+      credsWarning = 'Проверить ключи сейчас не удалось — маркетплейс не отвечает. Мы сохранили их и попробуем собрать данные; если ключи неверны, вы увидите это в течение часа.';
+    } else {
+      const soft = v.checks.filter((c) => !c.ok && !c.fatal);
+      if (soft.length) credsWarning = soft.map((c) => c.message).join(' ');
+    }
   }
 
   // Шифрование API-кредов если есть.
@@ -117,7 +149,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     [cabinet.cabinet_id, dateFrom, dateTo]
   );
 
-  return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id });
+  return NextResponse.json({ ok: true, shop_id: rows[0]?.shop_id, warning: credsWarning });
 }, { requireRole: 'owner', requireVerifiedEmail: true });
 
 export const DELETE = withCabinet(async (req, { cabinet }) => {
@@ -132,18 +164,48 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
 
 // PUT — обновить API-ключи и/или налоговый режим магазина.
 // Тело: { shop_id, api_creds?, tax_mode? }
-export const PUT = withCabinet(async (req, { cabinet }) => {
+export const PUT = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
   if (!b.shop_id) return NextResponse.json({ error: "shop_id required" }, { status: 400 });
 
   const sets = [];
   const vals = [];
   let i = 0;
+  let putWarning = null;
 
   // API-креды (шифрование через pgcrypto).
   if (b.api_creds) {
     const encKey = process.env.SAAS_CRED_MASTER_KEY;
     if (!encKey) return NextResponse.json({ error: "SAAS_CRED_MASTER_KEY not set" }, { status: 500 });
+
+    const shopRows = await tenantQuery(
+      `SELECT mp_code FROM auth.shops WHERE shop_id = $1 AND cabinet_id = $2`,
+      [Number(b.shop_id), cabinet.cabinet_id]
+    );
+    if (!shopRows.length) return NextResponse.json({ error: 'Магазин не найден' }, { status: 404 });
+    const mpCode = shopRows[0].mp_code;
+    const rl = hit(`shop-save:user:${session.user_id}`, LIMITS.shopSaveUser);
+    if (rl.limited) {
+      return NextResponse.json(
+        { error: 'Слишком много попыток. Подождите минуту.' },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfter || 60) } }
+      );
+    }
+    const credsForCheck = b.api_creds?.[mpCode];
+    if (credsForCheck && Object.keys(credsForCheck).length > 0) {
+      const v = await validateShopCreds({ mpCode, creds: credsForCheck });
+      if (!v.ok) {
+        const problems = v.checks.filter((c) => !c.ok && c.fatal);
+        return NextResponse.json(
+          { error: problems.map((c) => c.message).join(' '), code: 'mp_creds_invalid', checks: v.checks },
+          { status: 422 }
+        );
+      }
+      if (v.unreachable) {
+        putWarning = 'Проверить ключи сейчас не удалось — маркетплейс не отвечает. Мы сохранили их и попробуем собрать данные.';
+      }
+    }
+
     const encRows = await tenantQuery(`SELECT pgp_sym_encrypt($1, $2)::text AS enc`, [JSON.stringify(b.api_creds), encKey]);
     const apiCredsEnc = encRows[0]?.enc;
     const apiMeta = {};
@@ -182,5 +244,5 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     `UPDATE auth.shops SET ${sets.join(", ")} WHERE shop_id = $${vals.length - 1} AND cabinet_id = $${vals.length}`,
     vals
   );
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, warning: putWarning });
 }, { requireRole: 'owner', requireVerifiedEmail: true });
