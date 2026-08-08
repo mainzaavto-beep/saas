@@ -189,6 +189,45 @@ try {
   check(`попытка #${limit + 1} (валидная, адрес свободен) блокируется лимитом: 429`, overLimit.status === 429, `got ${overLimit.status} ${JSON.stringify(overLimit.json)}`);
   const limitUserRow = (await q(`SELECT email FROM auth.users WHERE user_id = $1`, [limitUserId]))[0];
   check('адрес после блокировки НЕ изменился на "over"-вариант', !limitUserRow?.email?.includes('-over@'), JSON.stringify(limitUserRow));
+
+  // ── 19. Фикс-раунд 2: гонка (TOCTOU). Раньше проверка лимита (peek) и его
+  // списание (hit) были разделены тремя await — параллельные запросы видели
+  // один и тот же «старый» count и все проходили. Сейчас hit() списывает
+  // счётчик синхронно, одним вызовом, без await между проверкой и
+  // инкрементом — конкурентные запросы не могут обогнать друг друга.
+  // Регресс-тест: доводим бюджет успешных смен до 1 оставшейся попытки,
+  // затем стреляем NCONC параллельными PUT (Promise.all, БЕЗ await по
+  // одному) на разные свободные адреса — успешной должна оказаться ровно
+  // одна. На старой связке peek()+hit() этот тест ловил бы NCONC успехов
+  // вместо 1.
+  const raceEmail = `vp-race-${run}@smoke.test`;
+  const raceReg = await api('POST', '/api/auth/register', { body: { email: raceEmail, password: PASS1 } });
+  check('race: регистрация юзера для проверки гонки: 200', raceReg.status === 200, `got ${raceReg.status}`);
+  const raceUserId = raceReg.json?.user?.user_id;
+
+  // Последовательно тратим limit-1 попыток — остаётся ровно 1 слот бюджета.
+  for (let i = 0; i < limit - 1; i++) {
+    const r = await api('PUT', '/api/auth/email', { cookie: raceReg.cookie, body: { email: `vp-race-${run}-pre${i}@smoke.test` } });
+    check(`race: подготовительная смена #${i + 1}/${limit - 1} проходит`, r.status === 200, `got ${r.status} ${JSON.stringify(r.json)}`);
+  }
+
+  // Остался 1 слот. NCONC одновременных PUT на разные свободные адреса —
+  // без await между отправкой, все летят параллельно.
+  const NCONC = 5;
+  const raceResults = await Promise.all(
+    Array.from({ length: NCONC }, (_, i) =>
+      api('PUT', '/api/auth/email', { cookie: raceReg.cookie, body: { email: `vp-race-${run}-conc${i}@smoke.test` } })
+    )
+  );
+  const raceOkCount = raceResults.filter((r) => r.status === 200).length;
+  const race429Count = raceResults.filter((r) => r.status === 429).length;
+  check(`race: из ${NCONC} параллельных PUT при 1 оставшемся слоте успешна РОВНО 1`,
+    raceOkCount === 1, `успехов: ${raceOkCount}, 429: ${race429Count}, статусы: ${raceResults.map((r) => r.status).join(',')}`);
+  check(`race: остальные ${NCONC - 1} получили 429 (не 200 и не путаница с 409/500)`,
+    race429Count === NCONC - 1, `429: ${race429Count}, все статусы: ${raceResults.map((r) => r.status).join(',')}`);
+  const raceUserRow = (await q(`SELECT email FROM auth.users WHERE user_id = $1`, [raceUserId]))[0];
+  check('race: итоговый email в БД — один из конкурентных кандидатов (лимит не обойдён, данные не рассинхронились)',
+    !!raceUserRow?.email?.startsWith(`vp-race-${run}-conc`), JSON.stringify(raceUserRow));
 } catch (e) {
   console.error('UNCAUGHT:', e);
   failed++;
