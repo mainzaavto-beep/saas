@@ -2,10 +2,10 @@
 // scripts/smoke-auth-phase1.mjs — смоук фазы 1 auth: страница и правила приёма инвайтов.
 // Использование: node scripts/smoke-auth-phase1.mjs [base_url]
 // Пишет в БД только записи *@smoke.test и сам их чистит (прямой SQL — под postgres
-// из ~/.pgpass: у saas_app осознанно нет DELETE на auth.*).
+// через lib/pgpass.mjs, нужен PGPASSFILE: у saas_app осознанно нет DELETE на auth.*).
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { adminPgConfig } from './lib/pgpass.mjs';
 
 const { types } = pg;
 // Те же парсеры типов, что в lib/db.js — bigint/numeric как Number.
@@ -17,14 +17,8 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
   const m = line.match(/^([A-Z_0-9]+)=(.*)$/);
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
 }
-const pgpass = readFileSync(`${homedir()}/.pgpass`, 'utf8').split('\n')
-  .map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => l.split(':'))
-  .find(p => p[3] === 'postgres');
-if (!pgpass) { console.error('нет строки postgres в ~/.pgpass'); process.exit(2); }
-const pool = new pg.Pool({
-  host: 'localhost', port: Number(pgpass[1]) || 5432,
-  database: process.env.SAAS_DB || 'saas', user: 'postgres', password: pgpass[4],
-});
+// Прямой доступ к БД — через общий хелпер (нужен PGPASSFILE=/root/.pgpass-admin).
+const pool = new pg.Pool(adminPgConfig());
 const q = (sql, p) => pool.query(sql, p).then(r => r.rows);
 
 let failed = 0, cleanupFailed = false;
