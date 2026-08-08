@@ -132,9 +132,10 @@ try {
   check('email_verified_at проставлен', !!afterVerify?.email_verified_at, JSON.stringify(afterVerify));
 
   // ── 15. После подтверждения смена адреса через PUT закрыта (409) ──
-  // Отдельный свежий юзер: у reg.cookie к этому моменту уже 3 PUT-попытки
-  // (шаги 7, 8, 10) — лимит в час съеден, и проверка 409 была бы заслонена
-  // 429. Здесь важно поймать именно ветку «уже подтверждён», а не лимит.
+  // Отдельный свежий юзер — просто чтобы не зависеть от того, сколько
+  // попыток смены уже накопил reg.cookie в шагах выше (после фикс-раунда 1
+  // это в любом случае 1, но изоляция дешевле, чем случайно завязаться на
+  // порядок предыдущих шагов).
   const email3 = `vp-verified-${run}@smoke.test`;
   const reg3 = await api('POST', '/api/auth/register', { body: { email: email3, password: PASS1 } });
   check('регистрация третьего юзера (для проверки «уже подтверждён»): 200', reg3.status === 200, `got ${reg3.status}`);
@@ -156,20 +157,36 @@ try {
   check('/onboarding для подтверждённого отдаёт страницу (200), не редирект',
     onbVerified.status === 200, `got ${onbVerified.status} location=${onbVerified.location}`);
 
-  // ── 18. Лимит попыток смены адреса: свежий юзер, N+1-я попытка в пределах часа блокируется ──
+  // ── 18. Фикс-раунд 1: лимит списывается ТОЛЬКО за реально успешную смену.
+  // Регресс-тест на баг из ревью: клиент с опечаткой перебирает свои старые
+  // (уже занятые) адреса — такие попытки 409 не должны тратить лимит, иначе
+  // легитимный пользователь на честной 4-й (первой валидной!) попытке ловил
+  // бы 429 и оставался без единственного пути починить опечатку. Проверяем:
+  // 400 и 409 в произвольном количестве не приближают к лимиту, а лимит
+  // всё равно реален — 3 УСПЕШНЫХ смены проходят, 4-я блокируется 429.
   const limitEmail = `vp-limit-${run}@smoke.test`;
   const limitReg = await api('POST', '/api/auth/register', { body: { email: limitEmail, password: PASS1 } });
   check('регистрация юзера для проверки лимита: 200', limitReg.status === 200, `got ${limitReg.status}`);
   const limitUserId = limitReg.json?.user?.user_id;
   const limit = Number(process.env.SAAS_RL_EMAIL_CHANGE_USER) || 3;
-  let lastStatus = null;
+
+  // 18а. Перед каждой успешной сменой — по одной заведомо неудачной попытке
+  // (мусорный формат и чужой занятый адрес). Если бы они тратили лимит,
+  // мы бы не досчитались успехов ниже.
   for (let i = 0; i < limit; i++) {
+    const bad = await api('PUT', '/api/auth/email', { cookie: limitReg.cookie, body: { email: 'нет-собаки' } });
+    check(`перед сменой #${i + 1}: мусорный формат не тратит лимит (400)`, bad.status === 400, `got ${bad.status}`);
+    const taken = await api('PUT', '/api/auth/email', { cookie: limitReg.cookie, body: { email: emailTaken } });
+    check(`перед сменой #${i + 1}: занятый адрес не тратит лимит (409)`, taken.status === 409, `got ${taken.status} ${JSON.stringify(taken.json)}`);
+
     const r = await api('PUT', '/api/auth/email', { cookie: limitReg.cookie, body: { email: `vp-limit-${run}-${i}@smoke.test` } });
-    lastStatus = r.status;
-    check(`смена адреса #${i + 1}/${limit} в пределах лимита: 200`, r.status === 200, `got ${r.status} ${JSON.stringify(r.json)}`);
+    check(`успешная смена #${i + 1}/${limit} проходит несмотря на предыдущие 400/409`, r.status === 200, `got ${r.status} ${JSON.stringify(r.json)}`);
   }
+
+  // 18б. limit успешных смен исчерпаны — теперь ЛЮБАЯ попытка (даже валидная
+  // и на свободный адрес) блокируется лимитом, а не форматом/занятостью.
   const overLimit = await api('PUT', '/api/auth/email', { cookie: limitReg.cookie, body: { email: `vp-limit-${run}-over@smoke.test` } });
-  check(`попытка #${limit + 1} блокируется лимитом: 429`, overLimit.status === 429, `got ${overLimit.status} ${JSON.stringify(overLimit.json)}`);
+  check(`попытка #${limit + 1} (валидная, адрес свободен) блокируется лимитом: 429`, overLimit.status === 429, `got ${overLimit.status} ${JSON.stringify(overLimit.json)}`);
   const limitUserRow = (await q(`SELECT email FROM auth.users WHERE user_id = $1`, [limitUserId]))[0];
   check('адрес после блокировки НЕ изменился на "over"-вариант', !limitUserRow?.email?.includes('-over@'), JSON.stringify(limitUserRow));
 } catch (e) {

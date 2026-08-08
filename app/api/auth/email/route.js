@@ -8,7 +8,7 @@ import { getSession } from '@/lib/session.js';
 import { query } from '@/lib/db.js';
 import { createToken } from '@/lib/tokens.js';
 import { sendMail } from '@/lib/mailer.js';
-import { hit, LIMITS } from '@/lib/rate-limit.js';
+import { peek, hit, LIMITS } from '@/lib/rate-limit.js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,10 +19,20 @@ export async function PUT(req) {
   const session = await getSession();
   if (!session?.user_id) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
-  // Окно — час, задаём явно третьим аргументом hit(): гранулярность ключа
-  // сама по себе окно не определяет (см. lib/rate-limit.js).
-  const rl = hit(`email-change:user:${session.user_id}`, LIMITS.emailChangeUser, HOUR_MS);
-  if (rl.limited) {
+  // Окно — час, задаём явно третьим аргументом hit()/peek(): гранулярность
+  // ключа сама по себе окно не определяет (см. lib/rate-limit.js).
+  //
+  // Важно: попытку СПИСЫВАЕМ (hit) только когда смена реально состоялась —
+  // ниже, сразу после успешного UPDATE. Здесь только СМОТРИМ (peek, счётчик
+  // не трогает). Раньше hit() стоял тут же, до валидации формата и до
+  // проверки занятости — из-за этого клиент с опечаткой, перебирающий свои
+  // старые адреса (три из них заняты → 409), на четвёртой попытке, уже
+  // правильной, получал 429 и оставался без доступа на час, хотя ни разу не
+  // сменил адрес успешно. Единственный путь починить опечатку — этот же
+  // эндпоинт, так что тратить лимит на неудачные попытки нельзя.
+  const rlKey = `email-change:user:${session.user_id}`;
+  const rlPeek = peek(rlKey, LIMITS.emailChangeUser, HOUR_MS);
+  if (rlPeek.limited) {
     return NextResponse.json({ error: 'Слишком много попыток смены адреса. Попробуйте позже.' }, { status: 429 });
   }
 
@@ -49,6 +59,9 @@ export async function PUT(req) {
     }
     throw e;
   }
+
+  // Смена состоялась — только теперь списываем попытку.
+  hit(rlKey, LIMITS.emailChangeUser, HOUR_MS);
 
   session.email = email;
   await session.save();
