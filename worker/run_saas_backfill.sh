@@ -7,7 +7,7 @@
 # Идемпотентно (ON CONFLICT в сборщиках) — повторный прогон безопасен.
 # Пауза между jobs внутри drain (DRAIN_PAUSE_SEC) — rate-limit для очереди клиентов.
 #
-# Таймер saas-backfill.timer крутит это 4×/день — подхватывает новых клиентов.
+# Таймер saas-backfill.timer крутит это раз в 5 минут — подхватывает новых клиентов.
 set -uo pipefail
 export PYTHONIOENCODING=utf-8
 export NO_PROXY=*

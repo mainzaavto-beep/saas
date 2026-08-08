@@ -1,5 +1,5 @@
 [Unit]
-Description=SAAS Backfill — прогон onboarding-jobs (backfill за 75 дней, 4×/день)
+Description=SAAS Backfill — прогон onboarding-jobs (backfill за 75 дней, раз в 5 минут)
 After=network.target postgresql.service
 Requires=postgresql.service
 OnFailure=saas-failure@%n.service
