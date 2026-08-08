@@ -57,6 +57,14 @@ RUN_KIND = "manual"
 # поднять без правки кода, если у крупного кабинета сбор окажется дольше.
 COLLECTOR_TIMEOUT = int(os.environ.get("SAAS_COLLECTOR_TIMEOUT_SEC", "900"))
 
+# Сборщики, которые продолжают работать даже когда магазин на паузе из-за
+# сломанных ключей: у урезанного ключа ломается не всё. Проверено на кабинете
+# 1009 — ozon_efficiency собирался успешно, пока остальные шесть ловили 403.
+# Их результат состояние магазина не меняет (см. _run_one).
+PAUSE_EXEMPT_COLLECTORS = {
+    c.strip() for c in os.environ.get("SAAS_PAUSE_EXEMPT", "ozon_efficiency").split(",") if c.strip()
+}
+
 # ── Контракт exit-кодов сборщиков ────────────────────────────────────
 # 0 = ok · 3 = partial (собрано, но часть окон пропущена — см. wb_finance.py)
 # · прочее = failed. Маппинг в _run_one.
@@ -307,28 +315,44 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         return [], [], []
 
     # Магазин со сломанными ключами не должен тратить окно прогона: пока он в
-    # паузе, сборщики не запускаем вовсе. Раз в сутки shop_auth.should_skip
-    # пропустит одну контрольную попытку — вдруг чинил не клиент, а маркетплейс.
+    # паузе, сборщики не запускаем. Раз в сутки shop_auth.should_skip пропустит
+    # одну контрольную попытку — вдруг чинил не клиент, а маркетплейс.
+    #
+    # Исключение (решение владельца 2026-08-08): урезанный ключ ломает не всё.
+    # У кабинета 1009 ключ Ozon лишён роли для finance/orders/sales, но вызовы
+    # ozon_efficiency ей не требуют — сборщик работал успешно, и пауза его
+    # глушила, тихо теряя дневные снапшоты. Такие сборщики продолжают ходить
+    # и на паузе. Их результат состояние магазина НЕ меняет: успех не снимает
+    # паузу (иначе магазин каждый прогон возвращался бы к полному списку, и
+    # шум, ради устранения которого всё делалось, вернулся бы), отказ её не
+    # продлевает. Список правится переменной без правки кода.
     shop_id = shop.get("shop_id")
     state = shop_auth.load_state(shop_id) if shop_id else None
-    if shop_auth.should_skip(state):
+    paused = shop_auth.should_skip(state)
+    if paused:
         since = state.get("auth_failed_at")
-        print(f"    shop #{shop_id} {mp}: ключи не работают, пауза (с {since}) — пропуск", flush=True)
-        _record_run(cid, f"{mp}:credentials", "skipped",
-                    error=f"auth_paused: {state.get('auth_last_error') or 'отказ авторизации'}")
-        return [], [], [f"{mp}:auth_paused"]
+        exempt = [c for c in shop_collectors if c in PAUSE_EXEMPT_COLLECTORS]
+        skipped_note = f"auth_paused: {state.get('auth_last_error') or 'отказ авторизации'}"
+        if exempt:
+            skipped_note += f" (кроме {', '.join(exempt)})"
+        print(f"    shop #{shop_id} {mp}: ключи не работают, пауза (с {since}) — "
+              f"{'частичный пропуск' if exempt else 'пропуск'}", flush=True)
+        _record_run(cid, f"{mp}:credentials", "skipped", error=skipped_note)
+        if not exempt:
+            return [], [], [f"{mp}:auth_paused"]
+        shop_collectors = exempt
 
     # Проверка: есть ли нужный токен для этого shop? Иначе сборщик упадёт с RuntimeError.
     if mp == "wb" and not env.get("WB_TOKEN"):
         print(f"    shop #{shop_id} {mp}: нет WB_TOKEN — пропуск", flush=True)
         _record_run(cid, "wb:credentials", "no_token", error=f"shop #{shop_id}: нет WB_TOKEN")
-        if shop_id:
+        if shop_id and not paused:
             shop_auth.mark_failure(shop_id, "нет сохранённого токена WB")
         return [], [], [f"{mp}:no_token"]
     if mp == "ozon" and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
         print(f"    shop #{shop_id} {mp}: нет OZON creds — пропуск", flush=True)
         _record_run(cid, "ozon:credentials", "no_token", error=f"shop #{shop_id}: нет OZON creds")
-        if shop_id:
+        if shop_id and not paused:
             shop_auth.mark_failure(shop_id, "нет сохранённых ключей Ozon")
         return [], [], [f"{mp}:no_token"]
 
@@ -431,7 +455,14 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     # неудачу, любой успех — сбрасываем. Сетевые сбои и 429 состояние не трогают:
     # маркетплейсы падают регулярно, останавливать из-за этого сбор нельзя.
     blocked = []
-    if shop_id:
+    if shop_id and paused:
+        # Магазин уже на паузе, а отработали только сборщики-исключения. Их итог
+        # состояние не меняет (см. комментарий у проверки паузы), но отказ по
+        # авторизации остаётся проблемой клиента, а не сбоем сборки.
+        auth_failed = [c for c in auth_failed_collectors]
+        failed = [f for f in failed if f not in auth_failed]
+        blocked = auth_failed + [f"{mp}:auth_paused"]
+    elif shop_id:
         auth_errors_seen = [e for e in auth_error_texts if is_auth_error(e)]
         if auth_errors_seen:
             # Фильтр сработал по тому же тексту, что и первичная проверка выше.
