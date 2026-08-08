@@ -203,6 +203,9 @@ export const PUT = withCabinet(async (req, { cabinet, session }) => {
       }
       if (v.unreachable) {
         putWarning = 'Проверить ключи сейчас не удалось — маркетплейс не отвечает. Мы сохранили их и попробуем собрать данные.';
+      } else {
+        const soft = v.checks.filter((c) => !c.ok && !c.fatal);
+        if (soft.length) putWarning = soft.map((c) => c.message).join(' ');
       }
     }
 
