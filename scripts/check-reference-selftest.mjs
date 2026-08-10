@@ -68,6 +68,28 @@ try {
   check('строка "0" вместо числа отвергается', /должно быть число/i.test(e.message), e.message);
 }
 
+// M1: values: {} — полнота набора ключей проверяется по REQUIRED_KEYS, а не
+// по тому, что фактически лежит в JSON. Пустой объект не должен молча
+// проходить (раньше проходил — TypeError вылезал только в check-reference.mjs).
+try {
+  loadReference(new URL('./fixtures/reference-empty-values/', import.meta.url).pathname);
+  check('values: {} отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('values: {} отвергается', /ключ отсутствует в values/i.test(e.message), e.message);
+}
+
+// M1: удалённый (не null, а отсутствующий) ключ — та же явная ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-missing-key/', import.meta.url).pathname);
+  check('удалённый ключ отвергается', false, 'ошибки не было');
+} catch (e) {
+  check(
+    'удалённый ключ отвергается',
+    /wb\.for_pay \(ключ отсутствует в values\)/.test(e.message),
+    e.message
+  );
+}
+
 // Compare должна работать с отрицательными числами (возвраты, штрафы).
 check('отрицательная разница посчитана', (() => {
   const r = compare(1000, -50);

@@ -56,13 +56,23 @@ export function adminPgConfig(user = 'postgres') {
 // если вызывающий скрипт унаследовал PGPASSFILE=/root/.pgpass-admin из
 // окружения (например, скопировал команду смоука), readonlyPgConfig всё
 // равно возьмёт пароль read-only роли, а не админский.
+//
+// БД захардкожена в 'saas' (найдено ревью 2026-08-10, I3): раньше здесь тоже
+// стояло `process.env.SAAS_DB || 'saas'`, как в adminPgConfig. Для смоуков
+// это нужно (иногда гоняют против тестовой БД), но для read-only сторожа —
+// дыра: если в окружении, откуда запускают check-reference.mjs, случайно
+// оказалась переменная SAAS_DB (например, унаследована из другого запуска
+// или CI-джобы), сторож молча сверялся бы с чужой базой — например, с копией
+// со старыми данными — и мог бы дать зелёный при сломанном проде. Сторож
+// должен смотреть только в боевую 'saas' независимо от окружения; кто хочет
+// проверить другую базу — правит эту константу руками, а не через env.
 export function readonlyPgConfig(user = 'saas_ro') {
   const file = `${homedir()}/.pgpass`;
   const line = readPgpassLine(file, user);
   return {
     host: 'localhost',
     port: Number(line[1]) || 5432,
-    database: process.env.SAAS_DB || 'saas',
+    database: 'saas',
     user,
     password: line[4],
   };

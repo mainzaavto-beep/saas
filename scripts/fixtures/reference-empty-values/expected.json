@@ -1,0 +1,14 @@
+{
+  "cabinet_id": 1,
+  "note": "Тест на values: {} — пустой объект должен давать ту же явную ошибку, что и null (M1)",
+  "wb": {
+    "basis": "weekly_realization_reports",
+    "periods": [{ "date_from": "2026-07-06", "date_to": "2026-07-12", "report_id": 123 }],
+    "values": {}
+  },
+  "ozon": {
+    "basis": "calendar_month",
+    "periods": [{ "date_from": "2026-07-01", "date_to": "2026-07-31", "report_id": 123 }],
+    "values": { "ad_spend": 200 }
+  }
+}

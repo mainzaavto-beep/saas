@@ -1,6 +1,6 @@
 {
   "cabinet_id": 1,
-  "note": "Значения заполняются из официальных отчётов. null = не заполнено; сверка по такой величине не выполняется и сообщает об этом. В periods только недели, целиком попавшие в период эталона (июль).",
+  "note": "Значения заполняются из официальных отчётов. null = не заполнено; сверка по такой величине не выполняется и сообщает об этом. В periods только недели, целиком попавшие в период эталона (июль). Точная привязка ключ→отчёт→поле — reference/2026-07-cabinet-1/SOURCES.md. wb.commission обязателен для заполнения, но НЕ сверяется скриптом на уровне данных (нет надёжной отчётной колонки — см. шапку scripts/check-reference.mjs, блок C1). ozon.values сокращён до ad_spend: sales/returns/commission/logistics/payout сняты 2026-08-10 из-за дефектов сборщика tenant.ozon_finance_report (см. блок I1 там же) — не заполняйте их, пока ключи не вернутся в схему.",
   "wb": {
     "basis": "weekly_realization_reports",
     "periods": [
@@ -24,11 +24,6 @@
     "basis": "calendar_month",
     "periods": [{ "date_from": "2026-07-01", "date_to": "2026-07-31", "report_id": null }],
     "values": {
-      "sales": null,
-      "returns": null,
-      "commission": null,
-      "logistics": null,
-      "payout": null,
       "ad_spend": null
     }
   }
