@@ -61,9 +61,19 @@ def _op_row(op, posting_id, item):
         "item_name": item.get("name"),
         "item_qty": item.get("quantity"),
         "item_price": _to_float(item.get("price")),
-        "sale_amount": _to_float(op.get("amount")),
+        # sale_amount — валовая сумма продажи ДО вычетов. op["amount"] — это уже
+        # чистая сумма (начисление минус комиссия минус услуги), а не валовая
+        # выручка: подтверждено тождеством на боевых данных (кабинет 1, июль,
+        # «Доставка покупателю»: 545 525,00 − 253 492,82 − 34 723,87 = 257 308,31 —
+        # ровно то, что раньше попадало в sale_amount). Валовая сумма приходит
+        # отдельным полем accruals_for_sale — берём её напрямую, без доп. запросов.
+        "sale_amount": _to_float(op.get("accruals_for_sale")),
         "accruals_for_sale": _to_float(op.get("accruals_for_sale")),
         "commission_amount": commission,
+        # payout_amount — ЧИСТАЯ сумма по операции (amount = начисление минус
+        # комиссия минус услуги), а НЕ фактическая выплата продавцу. Настоящая
+        # выплата считается по отчёту о взаиморасчётах, где нетируются все типы
+        # операций за период — это поле лишь приближение на уровне одной операции.
         "payout_amount": _to_float(op.get("amount")),
         "services_amount": _services_sum(op.get("services") or []),
     }
