@@ -19,7 +19,7 @@ import re
 import json
 import psycopg
 from psycopg.rows import dict_row
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import contextmanager
 
 # Параметры подключения (читаются из env, воркер их выставляет).
@@ -140,7 +140,7 @@ def upsert_feedbacks(rows):
     cols = ["id", "marketplace", "nm_id", "imt_id", "rating", "text", "author",
             "created_at", "was_answered", "wb_answer", "product",
             "moderation_state", "is_hidden", "was_viewed"]
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     with get_connection() as conn:
         for r in rows:
@@ -174,7 +174,7 @@ def upsert_questions(rows):
     cols = ["id", "marketplace", "nm_id", "imt_id", "text", "author", "created_at",
             "was_answered", "mp_answer", "answer_editable", "product",
             "moderation_state", "is_warned", "is_hidden", "was_viewed"]
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     with get_connection() as conn:
         for r in rows:
@@ -246,7 +246,7 @@ def upsert_daily(nm_id, date, **fields):
     cols = [c for c in _DM_COLS if c in fields]
     if not cols:
         return
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id", "nm_id", "date"] + cols + ["updated_at"]
     vals = [cid, nm_id, date] + [fields[c] for c in cols] + [now]
@@ -267,7 +267,7 @@ def upsert_metric_30m(nm_id, date, ts, **fields):
     cols = [c for c in _M30M_COLS if c in fields]
     if not cols:
         return
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id", "nm_id", "date", "ts"] + cols + ["updated_at"]
     vals = [cid, nm_id, date, ts] + [fields[c] for c in cols] + [now]
@@ -299,7 +299,7 @@ def upsert_ad(nm_id, date, model, **fields):
     cols = [c for c in _AD_COLS if c in fields]
     if not cols:
         return
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id", "nm_id", "date", "model"] + cols + ["updated_at"]
     vals = [cid, nm_id, date, model] + [fields[c] for c in cols] + [now]
@@ -349,7 +349,7 @@ _FIN_COLS = ["rrd_id", "realizationreport_id", "date_from", "date_to", "rr_dt", 
 def upsert_finance_many(rows):
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id"] + _FIN_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
@@ -373,7 +373,7 @@ _STOCK_COLS = ["nm_id", "date", "warehouse", "warehouse_id", "quantity", "quanti
 def upsert_stock_many(rows):
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id"] + _STOCK_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
@@ -391,7 +391,7 @@ def _batch_upsert(table, pk_cols, data_cols, rows):
     """Общий батч-upsert для таблиц с однородной структурой."""
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id"] + data_cols + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
@@ -416,7 +416,7 @@ def _upsert_raw(table, pk_col, mapping, rows):
     добавляется автоматически в начало. Булевы → 0/1. Идемпотентно по (cabinet_id, pk)."""
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     data_cols = [c for c, _ in mapping] + ["updated_at"]
     all_cols = ["cabinet_id"] + data_cols
@@ -500,7 +500,7 @@ def upsert_order_costs_many(rows):
 # =====================================================================
 def upsert_cogs(nm_id, cost):
     cid = _cabinet_id()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with get_connection() as conn:
         conn.execute(
             _q("""INSERT INTO tenant.wb_cogs (cabinet_id, nm_id, cost, updated_at)
@@ -581,7 +581,7 @@ def replace_cabinet_costs_range(rows, start, end):
     период не должен оставаться пустым, если вставка не удалась.
     """
     cid = _cabinet_id()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     all_cols = ["cabinet_id"] + _CAB_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
     sql = (f"INSERT INTO tenant.wb_cabinet_costs ({', '.join(all_cols)}) "
@@ -741,7 +741,7 @@ def _upsert_raw_multi_pk(table, pk_cols, mapping, rows):
     cabinet_id добавляется автоматически. Булевы → 0/1. pk_cols — без cabinet_id."""
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     data_cols = [c for c, _ in mapping] + ["updated_at"]
     all_cols = ["cabinet_id"] + data_cols
@@ -768,7 +768,7 @@ _OZ_PRODUCT_COLS = ["product_id", "offer_id", "name", "barcode", "fbo_sku", "cat
 def upsert_product(product_id, name, **fields):
     """Регистрация/обновление товара Ozon. fields — опциональные колонки из _OZ_PRODUCT_COLS."""
     cid = _cabinet_id()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     row = {"product_id": product_id, "name": name}
     for c in _OZ_PRODUCT_COLS:
         if c in fields:
@@ -827,7 +827,7 @@ _OZ_FIN_COLS = ["posting_id", "operation_id", "operation_type_name", "operation_
 def upsert_ozon_finance_many(rows):
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id"] + _OZ_FIN_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
@@ -862,7 +862,7 @@ def upsert_ozon_order_costs_many(rows):
 # --- cogs (себестоимость Ozon) ---
 def upsert_ozon_cogs(product_id, cost):
     cid = _cabinet_id()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO tenant.ozon_cogs (cabinet_id, product_id, cost, updated_at) "
@@ -881,7 +881,7 @@ def upsert_ozon_daily(product_id, date, **fields):
     cols = [c for c in _OZ_DM_COLS if c in fields]
     if not cols:
         return
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     all_cols = ["cabinet_id", "product_id", "date"] + cols + ["updated_at"]
     vals = [cid, product_id, date] + [fields[c] for c in cols] + [now]
@@ -931,7 +931,7 @@ def upsert_shared_wb_warehouses(rows):
     сервисный, обновляем целиком."""
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cols = ["id", "name", "address", "work_time", "is_active", "is_transit_active", "region"]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
     # region, is_active, is_transit_active обновляем через COALESCE — stocks-report
@@ -965,7 +965,7 @@ def upsert_shared_wb_transit_tariffs(rows):
     box_tariff конвертируется в JSONB через psycopg (передаём как json.dumps)."""
     if not rows:
         return 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cols = ["transit_warehouse_name", "destination_warehouse_name",
             "active_from", "box_tariff", "pallet_tariff"]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
