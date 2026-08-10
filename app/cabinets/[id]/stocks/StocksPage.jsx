@@ -15,6 +15,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const money = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v) + " ₽";
 const num = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v);
+const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const fmtFull = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso.length <= 10 ? iso + "T00:00:00" : iso);
@@ -188,7 +189,7 @@ export default function StocksPage({ cabinetId }) {
 
       {/* Содержимое вкладок */}
       {tab === "warehouses" && (
-        <WarehousesTable rows={whF} totalFull={totalsForMp.quantity_full} trend={data.warehouseTrend} />
+        <WarehousesTable rows={whF} trend={data.warehouseTrend} />
       )}
       {tab === "oos" && (
         <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} />
@@ -213,8 +214,19 @@ export default function StocksPage({ cabinetId }) {
 // =====================================================================
 //  Вкладка 1: распределение по складам
 // =====================================================================
-function WarehousesTable({ rows, totalFull, trend }) {
+function WarehousesTable({ rows, trend }) {
   const maxFull = Math.max(...rows.map((r) => r.quantity_full || 0), 1);
+  // Доля склада — от суммы quantity_full ТЕКУЩЕГО отфильтрованного набора rows
+  // (а не от готового r.share_pct из API: тот всегда делит на «свой» МП, поэтому
+  // при фильтре «Все» доли WB и Ozon считаются от разных знаменателей и в сумме
+  // дают ~200%). Приём — как в FinancesTable.shareCap ниже: денормализованное
+  // поле с бэкенда игнорируем, знаменатель берём из того же rows, что и числитель.
+  const sumQty = rows.reduce((a, r) => a + (r.quantity || 0), 0);
+  const sumFull = rows.reduce((a, r) => a + (r.quantity_full || 0), 0);
+  const sumItems = rows.reduce((a, r) => a + (r.items || 0), 0);
+  const sumCost = rows.reduce((a, r) => a + (r.value_cost || 0), 0);
+  const sumRetail = rows.reduce((a, r) => a + (r.value_retail || 0), 0);
+  const shareOf = (r) => sumFull > 0 ? round2((r.quantity_full || 0) * 100 / sumFull) : 0;
   const { sort, toggle, apply } = useSort("quantity_full", "desc");
   const sorted = apply(rows, {
     platform:     (r) => r.platform,
@@ -222,16 +234,13 @@ function WarehousesTable({ rows, totalFull, trend }) {
     quantity:     (r) => r.quantity,
     quantity_full:(r) => r.quantity_full,
     items:        (r) => r.items,
-    share_pct:    (r) => r.share_pct,
+    share_pct:    shareOf,
     value_cost:   (r) => r.value_cost,
     value_retail: (r) => r.value_retail,
   });
-  // Итоги считаем от исходных rows (не зависят от порядка сортировки).
-  const sumQty = rows.reduce((a, r) => a + (r.quantity || 0), 0);
-  const sumFull = rows.reduce((a, r) => a + (r.quantity_full || 0), 0);
-  const sumItems = rows.reduce((a, r) => a + (r.items || 0), 0);
-  const sumCost = rows.reduce((a, r) => a + (r.value_cost || 0), 0);
-  const sumRetail = rows.reduce((a, r) => a + (r.value_retail || 0), 0);
+  // Фактическая сумма долей по всем строкам (не безусловные «100%» — если из-за
+  // округления получилось 99.9/100.1, это должно быть видно, а не замаскировано).
+  const shareSum = rows.reduce((a, r) => a + shareOf(r), 0);
 
   // Раскрытая строка тренда (drill-down): ключ = platform|warehouse.
   const [openKey, setOpenKey] = useState(null);
@@ -289,7 +298,7 @@ function WarehousesTable({ rows, totalFull, trend }) {
                           background: r.platform === "wb" ? C.accent : C.pink,
                         }} />
                       </div>
-                      <span style={{ fontSize: 11, color: C.muted, minWidth: 40, textAlign: "right" }}>{r.share_pct}%</span>
+                      <span style={{ fontSize: 11, color: C.muted, minWidth: 40, textAlign: "right" }}>{shareOf(r)}%</span>
                     </div>
                   </td>
                   <td style={{ ...tdRight, color: C.neg }}>{money(r.value_cost)}</td>
@@ -319,7 +328,7 @@ function WarehousesTable({ rows, totalFull, trend }) {
               <td style={tdFootRight}>{num(sumQty)}</td>
               <td style={{ ...tdFootRight, fontWeight: 700 }}>{num(sumFull)}</td>
               <td style={tdFootRight}>{num(sumItems)}</td>
-              <td style={tdFootLeft}>{totalFull > 0 ? "100%" : "—"}</td>
+              <td style={tdFootLeft}>{sumFull > 0 ? `${round2(shareSum)}%` : "—"}</td>
               <td style={{ ...tdFootRight, color: C.neg }}>{money(sumCost)}</td>
               <td style={tdFootRight}>{money(sumRetail)}</td>
             </tr>
