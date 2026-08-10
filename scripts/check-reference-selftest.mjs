@@ -28,5 +28,63 @@ try {
   check('незаполненный эталон отвергается', /не заполнен/i.test(e.message), e.message);
 }
 
+// Отсутствующий блок маркетплейса — ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-no-wb-block/', import.meta.url).pathname);
+  check('отсутствующий блок wb отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('отсутствующий блок wb отвергается', /блок отсутствует/i.test(e.message), e.message);
+}
+
+// Отсутствующий ключ periods — ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-no-periods/', import.meta.url).pathname);
+  check('отсутствующий periods отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('отсутствующий periods отвергается', /periods.*пусто или отсутствует/i.test(e.message), e.message);
+}
+
+// Пустой массив periods — ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-empty-periods/', import.meta.url).pathname);
+  check('пустой periods отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('пустой periods отвергается', /periods.*пусто или отсутствует/i.test(e.message), e.message);
+}
+
+// Строка вместо числа — ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-string-values/', import.meta.url).pathname);
+  check('строка вместо числа отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('строка вместо числа отвергается', /должно быть число/i.test(e.message), e.message);
+}
+
+// Строка "0" вместо числа — ошибка.
+try {
+  loadReference(new URL('./fixtures/reference-string-zero/', import.meta.url).pathname);
+  check('строка "0" вместо числа отвергается', false, 'ошибки не было');
+} catch (e) {
+  check('строка "0" вместо числа отвергается', /должно быть число/i.test(e.message), e.message);
+}
+
+// Compare должна работать с отрицательными числами (возвраты, штрафы).
+check('отрицательная разница посчитана', (() => {
+  const r = compare(1000, -50);
+  return r.ok === false && r.diffRub === -1050 && Math.abs(r.diffPct - (-105)) < 0.001;
+})());
+
+// Compare на нулевом эталоне: несовпадение — 100%.
+check('несовпадение на нулевом эталоне — 100%', (() => {
+  const r = compare(0, 100);
+  return r.ok === false && r.diffPct === 100;
+})());
+
+// Compare на нулевом эталоне и нулевом факте — совпадение.
+check('совпадение нуля с нулём', compare(0, 0).ok === true);
+
+// Малые числа: даже 0.1 рубля — это не расхождение, если меньше обоих порогов.
+check('0.1 ₽ на 1 ₽ — не расхождение', compare(1, 1.1).ok === true);
+
 console.log(failed ? `\n${failed} FAIL` : '\nALL PASS');
 process.exit(failed ? 1 : 0);

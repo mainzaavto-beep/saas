@@ -1,0 +1,31 @@
+{
+  "cabinet_id": 1,
+  "note": "Тест на пустой periods",
+  "wb": {
+    "basis": "weekly_realization_reports",
+    "periods": [],
+    "values": {
+      "sales": 1000,
+      "returns": 100,
+      "commission": 50,
+      "logistics": 20,
+      "storage": 10,
+      "penalty": 5,
+      "deduction": 2,
+      "for_pay": 813,
+      "ad_spend": 100
+    }
+  },
+  "ozon": {
+    "basis": "calendar_month",
+    "periods": [{ "date_from": "2026-07-01", "date_to": "2026-07-31", "report_id": 123 }],
+    "values": {
+      "sales": 1000,
+      "returns": 100,
+      "commission": 50,
+      "logistics": 20,
+      "payout": 830,
+      "ad_spend": 200
+    }
+  }
+}
