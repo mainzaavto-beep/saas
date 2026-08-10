@@ -84,6 +84,7 @@ def _collect_ads(since, to):
 
         spend_by_day = {}
         campaign_rows = []
+        bad_campaign_rows = 0
         win_start = since
         while win_start <= to:
             win_end = min(win_start + timedelta(days=59), to)
@@ -105,14 +106,23 @@ def _collect_ads(since, to):
             reader = csv.reader(io.StringIO(r.text), delimiter=";")
             next(reader, None)
             for row in reader:
-                if len(row) < 8:
+                # Порог для суммарного ad_spend — ПРЕЖНИЙ (< 7, нужен только
+                # индекс 5): это обязано вести себя как раньше, независимо
+                # от того, разбираем ли мы кампанию из этой же строки.
+                if len(row) < 7:
                     continue
                 d = (row[2] or "")[:10]
                 spend = _num(row[5])
                 spend_by_day[d] = spend_by_day.get(d, 0) + spend
+                # Разбор по кампаниям требует всех 8 колонок — свой,
+                # более строгий порог, не влияющий на ad_spend выше.
+                if len(row) < 8:
+                    bad_campaign_rows += 1
+                    continue
                 try:
                     campaign_id = int(row[0])
                 except (ValueError, TypeError):
+                    bad_campaign_rows += 1
                     continue
                 campaign_rows.append({
                     "campaign_id": campaign_id,
@@ -127,6 +137,13 @@ def _collect_ads(since, to):
             win_start = win_end + timedelta(days=1)
         if campaign_rows:
             db_pg.upsert_ozon_campaign_ad_many(campaign_rows)
+        # Не глотаем молча: если строки с кампанией не разобрались (короче
+        # 8 колонок или нечитаемый ID), это должно быть видно в логе, а не
+        # просто исчезнуть — ровно то, что годами маскировало другие сбои
+        # в этом воркере.
+        if bad_campaign_rows:
+            print(f"  Performance: {bad_campaign_rows} строк(и) не разобрано "
+                  f"в разрез по кампаниям (пропущены)", flush=True)
         cid = db_pg._cabinet_id()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for d, spend in spend_by_day.items():
