@@ -1,0 +1,36 @@
+{
+  "cabinet_id": 1,
+  "note": "Значения заполняются из официальных отчётов. null = не заполнено; сверка по такой величине не выполняется и сообщает об этом.",
+  "wb": {
+    "basis": "weekly_realization_reports",
+    "periods": [
+      { "date_from": "2026-06-29", "date_to": "2026-07-05", "report_id": null },
+      { "date_from": "2026-07-06", "date_to": "2026-07-12", "report_id": null },
+      { "date_from": "2026-07-13", "date_to": "2026-07-19", "report_id": null },
+      { "date_from": "2026-07-20", "date_to": "2026-07-26", "report_id": null }
+    ],
+    "values": {
+      "sales": null,
+      "returns": null,
+      "commission": null,
+      "logistics": null,
+      "storage": null,
+      "penalty": null,
+      "deduction": null,
+      "for_pay": null,
+      "ad_spend": null
+    }
+  },
+  "ozon": {
+    "basis": "calendar_month",
+    "periods": [{ "date_from": "2026-07-01", "date_to": "2026-07-31", "report_id": null }],
+    "values": {
+      "sales": null,
+      "returns": null,
+      "commission": null,
+      "logistics": null,
+      "payout": null,
+      "ad_spend": null
+    }
+  }
+}
