@@ -19,7 +19,7 @@ import re
 import json
 import psycopg
 from psycopg.rows import dict_row
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 
 # Параметры подключения (читаются из env, воркер их выставляет).
@@ -285,7 +285,17 @@ _AD_COLS = {"views", "clicks", "atbs", "orders", "spend"}
 
 
 def cleanup_metrics_30m(days=60):
-    """Удалить 30-минутные снапшоты старше `days` дней. Возвращает кол-во удалённых."""
+    """Удалить 30-минутные снапшоты старше `days` дней. Возвращает кол-во удалённых.
+
+    datetime.now() здесь НАМЕРЕННО наивный (не timezone.utc), в отличие от
+    updated_at в остальном файле: колонка `date` в wb_metrics_30m — не метка
+    времени записи, а календарная бизнес-дата, и она сама пишется из наивного
+    datetime.now() в worker/collectors/wb_metrics_30m.py (day_str). Если тут
+    считать порог от UTC-времени, а колонку — от местного, у полуночи будет
+    расхождение в дату и удержание в 60 дней станет то короче, то длиннее на
+    несколько часов. Чтобы порог совпадал по смыслу с тем, что в колонке,
+    оставляем ту же (наивную) шкалу времени с обеих сторон.
+    """
     cid = _cabinet_id()
     with get_connection() as conn:
         cur = conn.execute(

@@ -11,7 +11,7 @@ import sys
 import csv
 import io
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +38,7 @@ def _collect_sales(since, to):
         "GROUP BY d ORDER BY d",
         (since.strftime("%Y-%m-%d"), to.strftime("%Y-%m-%d")))
     cid = db_pg._cabinet_id()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for r in rows:
         with db_pg.get_connection() as conn:
             conn.execute(
@@ -103,7 +103,7 @@ def _collect_ads(since, to):
                 spend_by_day[d] = spend_by_day.get(d, 0) + spend
             win_start = win_end + timedelta(days=1)
         cid = db_pg._cabinet_id()
-        now = datetime.now().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for d, spend in spend_by_day.items():
             drr = None
             eff = db_pg.query("SELECT sales_sum FROM tenant.ozon_daily_efficiency WHERE date=%s", (d,))

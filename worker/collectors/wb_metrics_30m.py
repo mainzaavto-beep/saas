@@ -113,11 +113,16 @@ def collect():
         )
         written += 1
 
-    # Cleanup старых снапшотов (хранение 60 дней).
+    # Cleanup старых снапшотов (хранение 60 дней). Вспомогательная операция —
+    # её сбой не должен ронять прогон сбора метрик, но и молчать о сбое
+    # нельзя: раньше пустой except маскировал NameError (сломанный импорт
+    # timedelta в db_pg.py) и retention 60 дней ни разу не отрабатывал,
+    # при этом лог показывал «удалено старых: 0», как будто всё в порядке.
     try:
         removed = db_pg.cleanup_metrics_30m(days=60)
-    except Exception:
-        removed = 0
+    except Exception as e:
+        print(f"[wb_metrics_30m] cleanup старых снапшотов НЕ выполнен: {type(e).__name__}: {e}", flush=True)
+        removed = None
 
     print(f"[wb_metrics_30m] записано {written} снапшотов на слот {ts}, удалено старых: {removed}", flush=True)
     return written
