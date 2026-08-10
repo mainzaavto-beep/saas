@@ -859,6 +859,17 @@ def upsert_ozon_stock_many(rows):
     return _batch_upsert("ozon_daily_stock", ["product_id", "date", "warehouse"], _OZ_STOCK_COLS, rows)
 
 
+# --- daily_campaign_ad (реклама Ozon в разрезе кампаний, Performance API) ---
+# Уровень источника — кампания × день (товарного разреза в /statistics/daily
+# нет), см. db/migrations/039_ozon_campaign_ad.sql.
+_OZ_CAMPAIGN_AD_COLS = ["campaign_id", "date", "campaign_name", "views", "clicks",
+                        "spend", "orders", "orders_sum"]
+
+
+def upsert_ozon_campaign_ad_many(rows):
+    return _batch_upsert("ozon_daily_campaign_ad", ["campaign_id", "date"], _OZ_CAMPAIGN_AD_COLS, rows)
+
+
 # --- order_costs (прибыль по заказу Ozon) ---
 _OZ_OC_COLS = ["posting_number", "product_id", "size", "is_return", "order_dt", "sale_dt",
                "return_dt", "cost_value_retail", "commission", "acquiring", "logistics",

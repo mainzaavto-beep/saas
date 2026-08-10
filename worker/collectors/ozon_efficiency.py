@@ -76,7 +76,14 @@ def _collect_ads(since, to):
         # ⚠️ Грабля 2026-08-02: /statistics/daily отдаёт максимум 62 дня за
         # запрос («max statistics period: 62 days», причём ровно 62 тоже 400)
         # → длинный backfill режем окнами по 60 дней.
+        def _num(s):
+            try:
+                return float((s or "0").replace(",", "."))
+            except ValueError:
+                return 0.0
+
         spend_by_day = {}
+        campaign_rows = []
         win_start = since
         while win_start <= to:
             win_end = min(win_start + timedelta(days=59), to)
@@ -89,19 +96,37 @@ def _collect_ads(since, to):
                 print(f"  Performance /daily HTTP {r.status_code}: {r.text[:120]}", flush=True)
                 win_start = win_end + timedelta(days=1)
                 continue
-            # CSV: Дата в колонке, расход — «Расход, ₽» (русская запятая).
+            # CSV: 8 колонок — ID, Название, Дата, Показы, Клики, «Расход, ₽»
+            # (русская запятая), «Заказы, шт.», «Заказы, ₽». Уровень —
+            # кампания×день, товарного разреза нет (см. миграцию 039).
+            # Раньше строки выбрасывались — здесь сохраняем их целиком в
+            # tenant.ozon_daily_campaign_ad, ПОМИМО суммарного ad_spend/день
+            # ниже (его меняться не должно — на нём завязана прибыль/сверка).
             reader = csv.reader(io.StringIO(r.text), delimiter=";")
             next(reader, None)
             for row in reader:
-                if len(row) < 7:
+                if len(row) < 8:
                     continue
                 d = (row[2] or "")[:10]
-                try:
-                    spend = float((row[5] or "0").replace(",", "."))
-                except ValueError:
-                    spend = 0
+                spend = _num(row[5])
                 spend_by_day[d] = spend_by_day.get(d, 0) + spend
+                try:
+                    campaign_id = int(row[0])
+                except (ValueError, TypeError):
+                    continue
+                campaign_rows.append({
+                    "campaign_id": campaign_id,
+                    "date": d,
+                    "campaign_name": row[1] or None,
+                    "views": int(_num(row[3])),
+                    "clicks": int(_num(row[4])),
+                    "spend": spend,
+                    "orders": int(_num(row[6])),
+                    "orders_sum": _num(row[7]),
+                })
             win_start = win_end + timedelta(days=1)
+        if campaign_rows:
+            db_pg.upsert_ozon_campaign_ad_many(campaign_rows)
         cid = db_pg._cabinet_id()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for d, spend in spend_by_day.items():
