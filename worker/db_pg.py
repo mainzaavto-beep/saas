@@ -851,6 +851,21 @@ def upsert_ozon_finance_many(rows):
     return len(rows)
 
 
+# --- accruals (/v1/finance/accrual/by-day, метод начислений — задача 3
+#     плана «переезд финансов Ozon на методы начислений», 2026-08-11) ---
+_OZ_ACCRUALS_COLS = ["accrual_id", "line_no", "date", "unit_number", "accrued_category",
+                     "type_id", "sku", "quantity", "accrued", "seller_price",
+                     "sale_price", "sale_commission", "coinvestment", "bonus"]
+
+
+def upsert_ozon_accruals_many(rows):
+    """Batch-upsert строк начислений в tenant.ozon_accruals.
+    Ключ конфликта — (cabinet_id, accrual_id, line_no): один accrual_id может
+    состоять из нескольких строк (услуги доставки + комиссия / несколько
+    элементов item_fees.fees[]), line_no различает их внутри записи."""
+    return _batch_upsert("ozon_accruals", ["accrual_id", "line_no"], _OZ_ACCRUALS_COLS, rows)
+
+
 # --- daily_stock (остатки FBO) ---
 _OZ_STOCK_COLS = ["product_id", "date", "warehouse", "fbo_present", "fbo_reserved", "fbo_defect"]
 
@@ -1008,6 +1023,29 @@ def upsert_shared_wb_transit_tariffs(rows):
             r.get("pallet_tariff"),
             now,
         ])
+    with get_shared_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+    return len(rows)
+
+
+def upsert_ozon_accrual_types(rows):
+    """Batch-upsert справочника кодов типов начислений Ozon в
+    shared.ozon_accrual_types (общий для всех кабинетов, задача 3 плана
+    «переезд финансов Ozon на методы начислений», 2026-08-11).
+    rows: [{type_id, name, description}]. Ключ конфликта — type_id."""
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cols = ["type_id", "name", "description"]
+    placeholders = ", ".join(["%s"] * (len(cols) + 1))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols[1:] + ["updated_at"])
+    sql = (
+        f"INSERT INTO shared.ozon_accrual_types ({', '.join(cols)}, updated_at) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT (type_id) DO UPDATE SET {upd}"
+    )
+    batch = [[r.get(c) for c in cols] + [now] for r in rows]
     with get_shared_connection() as conn:
         with conn.cursor() as cur:
             cur.executemany(sql, batch)

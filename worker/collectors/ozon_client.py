@@ -385,6 +385,28 @@ class OzonClient:
                 break
             offset += limit
 
+    # --- ФИНАНСЫ: начисления (метод accrual, задача 3 плана переезда финансов
+    # Ozon на методы начислений, 2026-08-11; не путать с finance_transactions
+    # выше — тот метод /v3/finance/transaction/list, другая семантика) ---
+
+    def accrual_by_day(self, date) -> dict:
+        """POST /v1/finance/accrual/by-day — начисления за сутки по методу
+        начислений. body: {"date": "YYYY-MM-DD"}. Возвращает
+        {"accruals": [...], "last_id": ...}. На пробе (кабинет 1, 2026-08-05)
+        last_id пуст — одна страница на 79 записей, см.
+        docs/ozon-accrual-reconciliation.md. Пагинация через last_id не
+        реализована здесь: до появления кабинета с объёмом, требующим второй
+        страницы, реализовывать курсор без проверки живым ответом — гадать."""
+        return self._post(self.host, "/v1/finance/accrual/by-day",
+                          {"date": _date_iso(date)})
+
+    def accrual_types(self) -> list[dict]:
+        """POST /v1/finance/accrual/types — общий (не per-кабинет) справочник
+        кодов типов начислений: [{id, name, description}, ...]. На пробе —
+        119 типов. См. shared.ozon_accrual_types (миграция 040)."""
+        data = self._post(self.host, "/v1/finance/accrual/types", {})
+        return data.get("accrual_types", []) if isinstance(data, dict) else []
+
     # --- ОТЗЫВЫ: только чтение (ответ — побочное действие, в менеджере) ---
 
     def review_list(self, unanswered_only: bool = True, limit: int = 20) -> list[dict]:

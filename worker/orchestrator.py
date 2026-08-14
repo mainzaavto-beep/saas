@@ -126,6 +126,9 @@ OZON_COLLECTORS = [
     "ozon_orders",
     "ozon_sales",
     "ozon_finance",
+    "ozon_accruals",    # начисления /v1/finance/accrual/by-day — новый источник (задача 3
+                        # плана «переезд финансов Ozon на методы начислений», 2026-08-11),
+                        # ни от чего не зависит, ozon_order_costs его пока не использует
     "ozon_order_costs",
     "ozon_metrics",
     "ozon_stocks",
