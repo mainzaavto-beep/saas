@@ -35,6 +35,20 @@ seller_price ≡ sale_amount, sale_commission ≡ commission — дублиру�
 сбора) не роняет и не пропускает строку молча — строка пишется как обычно,
 а код лишь считается и печатается в итоговой строке лога.
 
+Два сторожка против молчаливой потери данных (добавлены по ревью задачи 3):
+  - `check_single_page` — /v1/finance/accrual/by-day отдаёт last_id, но
+    курсорная пагинация тут не реализована (форма курсора не подтверждена
+    живым ответом со второй страницей). Если за день last_id непуст —
+    сборщик падает громко на этом дне вместо того, чтобы молча недобрать
+    его: под задачи 4/5 копится ~год истории, а не подать сигнал об
+    обрезанном дне — гораздо хуже, чем упасть.
+  - `row_sum_mismatch` — рантайм-сверка Σaccrued строк записи с её
+    total_amount. Ловит любое неразобранное поле, в т.ч. container_fees
+    (есть в каждой записи фикстуры, всегда null, поэтому не разобран —
+    но если Ozon когда-нибудь заполнит его данными, тождество перестанет
+    сходиться и сверка это заметит без угадывания структуры поля заранее).
+    Расхождение не роняет сбор — считается и печатается в итоговой строке.
+
 Существующий сборщик worker/collectors/ozon_finance.py и таблица
 tenant.ozon_finance_report НЕ затрагиваются — другой источник
 (/v3/finance/transaction/list), другая семантика (см. §4 разбора: payout_amount
@@ -141,9 +155,48 @@ def parse_accrual(accrual: dict) -> list:
 
 
 def parse_accrual_types(raw_types: list) -> list:
-    """/v1/finance/accrual/types → строки для shared.ozon_accrual_types."""
+    """/v1/finance/accrual/types → строки для shared.ozon_accrual_types.
+    Записи без id пропускаем (PK type_id NOT NULL — незачем ловить сбой
+    вставки на мусорной записи справочника)."""
     return [{"type_id": t.get("id"), "name": t.get("name"),
-             "description": t.get("description")} for t in (raw_types or [])]
+             "description": t.get("description")}
+            for t in (raw_types or []) if t.get("id") is not None]
+
+
+def row_sum_mismatch(accrual: dict, rows: list, tolerance: float = 0.01):
+    """Сверка одной записи: сумма accrued разобранных строк должна равняться
+    total_amount записи (см. докстроку модуля — формула для POSTING проверена
+    на 37/37, но офлайн, на замороженной фикстуре). В рантайме структура
+    ответа может дать неразобранное поле (например, container_fees — есть в
+    каждой записи фикстуры, всегда null, но НИКОГДА не встречался заполненным
+    и потому не разобран; появись он с данными — тождество перестанет
+    сходиться) или незнакомую разновидность записи. Функция это ловит без
+    попытки угадать структуру непроверенных полей: если сумма строк не
+    сошлась с total_amount, возвращает разницу (row_sum - total_amount);
+    иначе — None."""
+    total_amount = _amount(accrual.get("total_amount"))
+    if total_amount is None:
+        return None
+    row_sum = sum(r["accrued"] or 0.0 for r in rows)
+    diff = row_sum - total_amount
+    return diff if abs(diff) > tolerance else None
+
+
+def check_single_page(data: dict, day) -> None:
+    """Бросает исключение, если ответ /v1/finance/accrual/by-day за день не
+    уместился в одну страницу (last_id непуст). Пагинация курсором тут не
+    реализована (форма курсора не подтверждена живым ответом со второй
+    страницей — см. докстроку OzonClient.accrual_by_day), поэтому молчаливый
+    недобор истории исключён нарочно: при накоплении года данных под задачи
+    4/5 лучше упасть громко на конкретном дне, чем незаметно записать его
+    неполным (см. ревью задачи 3 — история проекта уже знает случай, когда
+    похожая ошибка глоталась молча больше года)."""
+    last_id = data.get("last_id") if isinstance(data, dict) else None
+    if last_id:
+        raise RuntimeError(
+            f"[ozon_accruals] ответ за {day} не уместился в одну страницу "
+            f"(last_id={last_id!r}) — пагинация /v1/finance/accrual/by-day "
+            f"не реализована, останавливаемся, чтобы не собрать день частично")
 
 
 def collect(date_from=None, date_to=None):
@@ -179,15 +232,27 @@ def collect(date_from=None, date_to=None):
     #    1 запроса в секунду (проба показала code 8 на третьем подряд).
     rows = []
     unknown_types = set()
+    mismatches = 0
     n_days = 0
     day = d_from
     while day <= d_to:
         data = cli.accrual_by_day(day)
         n_days += 1
         time.sleep(REQUEST_PAUSE_SEC)
+        # Молчаливый недобор истории (задача 4/5 копит ~год данных) исключён
+        # нарочно — см. check_single_page.
+        check_single_page(data, day)
         accruals = data.get("accruals") or [] if isinstance(data, dict) else []
         for acc in accruals:
-            for row in parse_accrual(acc):
+            acc_rows = parse_accrual(acc)
+            diff = row_sum_mismatch(acc, acc_rows)
+            if diff is not None:
+                mismatches += 1
+                print(f"  расхождение: accrual_id={acc.get('accrual_id')} "
+                      f"category={acc.get('accrued_category')} строки на {diff:+.2f} "
+                      f"не совпали с total_amount (возможно, container_fees или другое "
+                      f"неразобранное поле записи)", file=sys.stderr, flush=True)
+            for row in acc_rows:
                 if row["type_id"] is not None and row["type_id"] not in known_type_ids:
                     unknown_types.add(row["type_id"])
                 rows.append(row)
@@ -197,6 +262,8 @@ def collect(date_from=None, date_to=None):
     msg = f"[ozon_accruals] дней {n_days}, строк {len(rows)}, записано {written}"
     if unknown_types:
         msg += f", незнакомых type_id: {len(unknown_types)} {sorted(unknown_types)}"
+    if mismatches:
+        msg += f", расхождений строки/total_amount: {mismatches}"
     print(msg, flush=True)
     return written
 

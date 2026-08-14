@@ -49,7 +49,8 @@ def main():
         sys.exit(1)
 
     try:
-        from worker.collectors.ozon_accruals import parse_accrual
+        from worker.collectors.ozon_accruals import (
+            parse_accrual, parse_accrual_types, row_sum_mismatch, check_single_page)
     except ImportError as e:
         print(f"FAIL  модуль worker.collectors.ozon_accruals не импортируется: {e}")
         sys.exit(1)
@@ -200,6 +201,76 @@ def main():
         err = repr(e)
     check("Отсутствие unit_number/sku не роняет разбор (синтетические записи)",
           robust, err)
+
+    # --- 6. Ревью задачи 3, важный финдинг №1: сторожок пагинации.
+    #        /v1/finance/accrual/by-day может отдать last_id — курсор не
+    #        реализован, недобор должен падать громко, а не молчать.
+    try:
+        check_single_page({"accruals": [], "last_id": "abc123"}, "2026-08-05")
+        page_guard_raises = False
+    except RuntimeError:
+        page_guard_raises = True
+    check("check_single_page: непустой last_id — исключение (не молчаливый недобор)",
+          page_guard_raises)
+
+    no_raise_ok = True
+    try:
+        check_single_page({"accruals": [], "last_id": ""}, "2026-08-05")
+        check_single_page({"accruals": []}, "2026-08-05")  # last_id вовсе отсутствует
+    except Exception as e:
+        no_raise_ok = False
+        print(f"  неожиданное исключение: {e!r}")
+    check("check_single_page: пустой/отсутствующий last_id — без исключения", no_raise_ok)
+
+    # Сверка на реальной фикстуре: last_id пуст на всех 79 записях (проба
+    # задачи 1), поэтому весь прогон check_single_page должен молча пройти.
+    fixture_page_ok = True
+    try:
+        check_single_page(fixture, "2026-08-05")
+    except RuntimeError as e:
+        fixture_page_ok = False
+        print(f"  {e}")
+    check("check_single_page: фикстура задачи 1 (last_id пуст) — без исключения",
+          fixture_page_ok)
+
+    # --- 7. Ревью задачи 3, важный финдинг №2: рантайм-сверка Σaccrued по
+    #        строкам записи против total_amount (ловит container_fees и любое
+    #        другое неразобранное поле, не требуя заранее знать его форму).
+    real_mismatches = [a for a in accruals if row_sum_mismatch(a, parse_accrual(a)) is not None]
+    check("row_sum_mismatch: на реальной фикстуре расхождений нет (0 из 79)",
+          len(real_mismatches) == 0, len(real_mismatches))
+
+    # Синтетическая запись, где total_amount включает вклад "неразобранного"
+    # container_fees (условно +15) сверх того, что даёт parse_accrual —
+    # имитирует день, когда Ozon впервые заполнит это поле данными.
+    non_item_with_container = {
+        "accrual_id": 3, "date": "2026-08-05", "accrued_category": "NON_ITEM",
+        "total_amount": {"amount": "-10", "currency": "RUB"},  # -25 (fee) + 15 (container, не разобран)
+        "posting": None, "item_fees": None,
+        "non_item_fee": {"type_id": 41, "accrued": {"amount": "-25", "currency": "RUB"}},
+        "container_fees": {"fees": [{"type_id": 999, "accrued": {"amount": "15", "currency": "RUB"}}]},
+    }
+    diff = row_sum_mismatch(non_item_with_container, parse_accrual(non_item_with_container))
+    check("row_sum_mismatch: ловит вклад неразобранного container_fees",
+          diff is not None and abs(diff - (-25 - (-10))) < 0.005, diff)
+
+    # Строка-контроль: диапазон допуска (0.01) не должен ловить обычное
+    # округление копейки.
+    rounding_ok_row = [{"accrued": -10.004}]
+    rounding_acc = {"total_amount": {"amount": "-10.00", "currency": "RUB"}}
+    check("row_sum_mismatch: копеечное округление в допуске — None",
+          row_sum_mismatch(rounding_acc, rounding_ok_row) is None)
+
+    # --- 8. Ревью задачи 3, minor: parse_accrual_types отфильтровывает
+    #        записи без id (PK type_id NOT NULL — не ловим NULL-insert).
+    raw_types_with_junk = [
+        {"id": 1, "name": "Acquiring", "description": "Эквайринг"},
+        {"name": "БезID", "description": "запись без id — должна быть отброшена"},
+        {"id": None, "name": "СИдNone", "description": "тоже должна быть отброшена"},
+    ]
+    type_rows = parse_accrual_types(raw_types_with_junk)
+    check("parse_accrual_types: записи без id отброшены (осталась 1 из 3)",
+          len(type_rows) == 1 and type_rows[0]["type_id"] == 1, type_rows)
 
     print()
     if failed:
