@@ -249,7 +249,24 @@ def resolve_window(date_from=None, date_to=None, *, today=None):
     return d_from, d_to
 
 
+# F4 ревью fixwave: счётчик расхождений строка/total_amount последнего
+# запуска collect() — __main__ проверяет его после вызова и завершается
+# кодом 3 (partial), см. worker/collectors/wb_finance.py::_SKIPPED_429 —
+# тот же приём.
+_MISMATCHES = 0
+
+
+def partial_exit_code(mismatches: int):
+    """Контракт exit-кодов (orchestrator.py:80-82): >0 расхождений
+    строка/total_amount → 3 (partial, строки при этом всё равно записаны —
+    падение не по данным, а по сигналу). Иначе None (обычный успех, __main__
+    ничего не делает с кодом возврата). Вынесено чистой функцией ради
+    юнит-теста без БД/API."""
+    return 3 if mismatches else None
+
+
 def collect(date_from=None, date_to=None):
+    global _MISMATCHES
     print("[ozon_accruals] начисления /v1/finance/accrual/by-day", flush=True)
     db_pg.init()
     cli = OzonClient()
@@ -304,6 +321,7 @@ def collect(date_from=None, date_to=None):
     if mismatches:
         msg += f", расхождений строки/total_amount: {mismatches}"
     print(msg, flush=True)
+    _MISMATCHES = mismatches
     return written
 
 
@@ -312,3 +330,8 @@ if __name__ == "__main__":
     s = sys.argv[1] if len(sys.argv) > 1 else None
     t = sys.argv[2] if len(sys.argv) > 2 else None
     collect(s, t)
+    code = partial_exit_code(_MISMATCHES)
+    if code is not None:
+        # Сообщение уже напечатано в stderr выше (по каждому расхождению) —
+        # новое не изобретаем, только код возврата.
+        sys.exit(code)

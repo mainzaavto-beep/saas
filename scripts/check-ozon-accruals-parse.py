@@ -51,7 +51,7 @@ def main():
     try:
         from worker.collectors.ozon_accruals import (
             parse_accrual, parse_accrual_types, row_sum_mismatch, check_single_page,
-            resolve_window, MIN_LOOKBACK_DAYS)
+            resolve_window, MIN_LOOKBACK_DAYS, partial_exit_code)
     except ImportError as e:
         print(f"FAIL  модуль worker.collectors.ozon_accruals не импортируется: {e}")
         sys.exit(1)
@@ -313,6 +313,13 @@ def main():
     check("resolve_window: принимает date-объекты, узкое окно раздвигается до пола",
           d_from == _date(2026, 8, 10) - _timedelta(days=45) and d_to == _date(2026, 8, 10),
           (d_from, d_to))
+
+    # --- 10. Ревью fixwave, F4: расхождения строка/total_amount → exit 3
+    #         (partial по контракту orchestrator.py:80-82), строки не теряются.
+    check("partial_exit_code(0): нет расхождений — None (обычный успех)",
+          partial_exit_code(0) is None)
+    check("partial_exit_code(3): есть расхождения — код 3 (partial)",
+          partial_exit_code(3) == 3, partial_exit_code(3))
 
     print()
     if failed:
