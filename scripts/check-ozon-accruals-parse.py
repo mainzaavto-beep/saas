@@ -27,8 +27,7 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-FIXTURE_DIR = os.path.join(
-    REPO_ROOT, ".superpowers", "sdd", "2026-08-11-ozon-accrual-migration", "fixtures")
+FIXTURE_DIR = os.path.join(REPO_ROOT, "scripts", "fixtures", "ozon-accruals")
 ACCRUALS_FIXTURE = os.path.join(FIXTURE_DIR, "accrual-by-day-2026-08-05-cab1.json")
 
 failed = 0

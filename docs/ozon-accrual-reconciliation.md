@@ -12,9 +12,12 @@
 
 Проверочные данные: кабинет 1, сутки `2026-08-05`. Сырой ответ API и
 справочник типов сохранены как фикстуры для задачи 3:
-`.superpowers/sdd/2026-08-11-ozon-accrual-migration/fixtures/accrual-by-day-2026-08-05-cab1.json`,
-`.../fixtures/accrual-types.json` (в репозиторий не входят, каталог
-git-ignored).
+`scripts/fixtures/ozon-accruals/accrual-by-day-2026-08-05-cab1.json`,
+`.../accrual-types.json` — закоммичены в репозиторий (ревью fixwave, F7:
+изначально лежали в git-ignored `.superpowers/sdd/.../fixtures/`, из-за
+чего `scripts/check-ozon-accruals-parse.py` не работал на чистом клоне;
+перенесены под `scripts/fixtures/` по образцу существующих фикстур
+`check-reference-selftest.mjs`).
 
 ---
 
