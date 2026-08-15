@@ -76,7 +76,7 @@ const num = (v) => (v === null || v === undefined ? 0 : Number(v));
 
 const pool = new pg.Pool(readonlyPgConfig());
 
-let oldRow, newRow, coverage;
+let oldRow, newRow, coverage, newCoverage;
 try {
   // ── покрытие старого источника: предупреждаем, а не молчим, если период
   //    выходит за границы того, что реально лежит в tenant.ozon_finance_report ──
@@ -84,6 +84,14 @@ try {
     SELECT min(substr(operation_dt, 1, 10)) AS min_dt, max(substr(operation_dt, 1, 10)) AS max_dt
     FROM tenant.ozon_finance_report WHERE cabinet_id = $1`;
   ({ rows: [coverage] } = await pool.query(covSql, [cabinetId]));
+
+  // ── покрытие НОВОГО источника (F6 ревью fixwave, .superpowers/sdd/
+  //    2026-08-11-ozon-accrual-migration/): та же самая проверка, симметрично
+  //    tenant.ozon_accruals — сборщик собирает год истории, но не факт, что
+  //    прогон уже дошёл до запрошенного периода (или период вовсе позже
+  //    заморозки/раньше первого сбора) ──
+  const newCovSql = `SELECT min(date)::text AS min_dt, max(date)::text AS max_dt FROM tenant.ozon_accruals WHERE cabinet_id = $1`;
+  ({ rows: [newCoverage] } = await pool.query(newCovSql, [cabinetId]));
 
   // ── старое: пять именованных групп operation_type_name (worker/collectors/
   //    ozon_order_costs.py — OP_SALE/OP_RETURN/OP_RETURN_LOGISTICS/OP_ACQUIRING/
@@ -146,6 +154,17 @@ if (!coverage || !coverage.min_dt) {
 } else {
   console.log(`Покрытие старого источника: ${coverage.min_dt}..${coverage.max_dt} — запрошенный период внутри, сверка достоверна.`);
 }
+
+// ── покрытие НОВОГО источника — симметрично (F6 ревью fixwave) ──
+const newCoverageOk = newCoverage && newCoverage.min_dt && newCoverage.max_dt
+  && dateFrom >= newCoverage.min_dt && dateTo <= newCoverage.max_dt;
+if (!newCoverage || !newCoverage.min_dt) {
+  console.log('ВНИМАНИЕ: в tenant.ozon_accruals нет ни одной строки по этому кабинету — новый источник недоступен, все "новые" значения ниже будут 0, это НЕ ноль по деньгам, а отсутствие данных.');
+} else if (!newCoverageOk) {
+  console.log(`ВНИМАНИЕ: новый источник покрывает только ${newCoverage.min_dt}..${newCoverage.max_dt}, запрошенный период выходит за эти границы — "новые" суммы ниже НЕДОСТОВЕРНЫ (частичное или нулевое покрытие), не считать расхождение багом без проверки покрытия.`);
+} else {
+  console.log(`Покрытие нового источника: ${newCoverage.min_dt}..${newCoverage.max_dt} — запрошенный период внутри, сверка достоверна.`);
+}
 console.log('');
 
 const roles = [
@@ -205,4 +224,14 @@ if (diffCount === 0) {
 } else {
   console.log(`${diffCount} РАСХОЖДЕНИЕ(Й) — см. объяснение в шапке файла и docs/ozon-accrual-reconciliation.md (раздел задачи 5) для каждой отмеченной роли; необъяснённое расхождение — самостоятельная находка, не часть ожидаемого результата.`);
 }
-process.exit(diffCount ? 1 : 0);
+
+// F6 ревью fixwave: непокрытие периода ЛЮБЫМ источником (старым или новым) —
+// повод для ненулевого exit само по себе, даже если diffCount случайно вышел
+// нулевым (напр. период вовсе без данных с обеих сторон, 0 = 0). Прятать
+// недостоверность за успешным кодом было бы хуже, чем громко её показать
+// (тот же принцип, что и у старой проверки покрытия — см. §7.4
+// docs/ozon-accrual-reconciliation.md).
+if (diffCount === 0 && !(oldCoverageOk && newCoverageOk)) {
+  console.log('Расхождений по ролям нет, но период не полностью покрыт хотя бы одним источником (см. ВНИМАНИЕ выше) — считать сверку достоверной нельзя, код возврата ненулевой.');
+}
+process.exit(diffCount || !(oldCoverageOk && newCoverageOk) ? 1 : 0);
