@@ -199,23 +199,62 @@ def check_single_page(data: dict, day) -> None:
             f"не реализована, останавливаемся, чтобы не собрать день частично")
 
 
+# Ревью fixwave задачи «переезд финансов Ozon» (F2, .superpowers/sdd/
+# 2026-08-11-ozon-accrual-migration/): плановый прогон (run_saas_collect.sh,
+# MAIN_COLLECTORS) вызывает этот сборщик с явным узким диапазоном −2..сегодня
+# (DAYS_FROM=2, DAYS_TO=0). Раньше без аргументов сборщик брал ровно «вчера»
+# (день) — с явными датами планового прогона получалось трёхдневное окно,
+# упирающееся в сегодняшний ещё не досчитанный Ozon'ом день. Тот же приём,
+# что и в worker/collectors/ozon_finance.py (см. его докстроку collect()):
+# раздвигаем начало окна назад минимум на MIN_LOOKBACK_DAYS от конца, если
+# запрошенный диапазон уже — ловит начисления, которые Ozon доначисляет по
+# факту позже своей даты (возвраты, акты сверки на стыке месяца). Широкие
+# явные бэкфиллы (date_from старше порога) не трогаем — там и так шире.
+# Плюс к этому: конец окна никогда не позже вчера, даже если date_to явно
+# передан как сегодня (как в плановом прогоне) — Ozon дополняет сегодняшний
+# день в течение суток, собирать его раньше срока значит собрать неполным.
+MIN_LOOKBACK_DAYS = 45
+
+
+def resolve_window(date_from=None, date_to=None, *, today=None):
+    """Вычислить фактический период сбора из CLI-аргументов даты (или их
+    отсутствия). См. комментарий выше модуля MIN_LOOKBACK_DAYS. `today` —
+    только для тестов (юнит-проверка без зависимости от реального времени),
+    в проде не передаётся. Возвращает (d_from, d_to) — datetime.date."""
+    today = today or datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+
+    if date_to is None:
+        d_to = yesterday
+    elif isinstance(date_to, str):
+        d_to = datetime.fromisoformat(date_to).date()
+    else:
+        d_to = date_to
+    if d_to > yesterday:
+        d_to = yesterday
+
+    if date_from is None:
+        d_from = d_to
+    elif isinstance(date_from, str):
+        d_from = datetime.fromisoformat(date_from).date()
+    else:
+        d_from = date_from
+
+    floor = d_to - timedelta(days=MIN_LOOKBACK_DAYS)
+    if d_from > floor:
+        d_from = floor
+    if d_from > d_to:
+        d_from = d_to
+
+    return d_from, d_to
+
+
 def collect(date_from=None, date_to=None):
     print("[ozon_accruals] начисления /v1/finance/accrual/by-day", flush=True)
     db_pg.init()
     cli = OzonClient()
 
-    if date_from is None:
-        d_from = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-    elif isinstance(date_from, str):
-        d_from = datetime.fromisoformat(date_from).date()
-    else:
-        d_from = date_from
-    if date_to is None:
-        d_to = d_from
-    elif isinstance(date_to, str):
-        d_to = datetime.fromisoformat(date_to).date()
-    else:
-        d_to = date_to
+    d_from, d_to = resolve_window(date_from, date_to)
 
     print(f"  период: {d_from}..{d_to}", flush=True)
 

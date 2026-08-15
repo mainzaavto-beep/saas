@@ -50,7 +50,8 @@ def main():
 
     try:
         from worker.collectors.ozon_accruals import (
-            parse_accrual, parse_accrual_types, row_sum_mismatch, check_single_page)
+            parse_accrual, parse_accrual_types, row_sum_mismatch, check_single_page,
+            resolve_window, MIN_LOOKBACK_DAYS)
     except ImportError as e:
         print(f"FAIL  модуль worker.collectors.ozon_accruals не импортируется: {e}")
         sys.exit(1)
@@ -271,6 +272,47 @@ def main():
     type_rows = parse_accrual_types(raw_types_with_junk)
     check("parse_accrual_types: записи без id отброшены (осталась 1 из 3)",
           len(type_rows) == 1 and type_rows[0]["type_id"] == 1, type_rows)
+
+    # --- 9. Ревью fixwave задачи «переезд финансов Ozon», F2: вычисление
+    #        окна планового/бэкфилл-прогона (resolve_window), без API/БД.
+    #        Фиксированный today для детерминизма.
+    from datetime import date as _date, timedelta as _timedelta
+    TODAY = _date(2026, 8, 15)
+    YESTERDAY = _date(2026, 8, 14)
+
+    check("resolve_window: MIN_LOOKBACK_DAYS = 45", MIN_LOOKBACK_DAYS == 45, MIN_LOOKBACK_DAYS)
+
+    # без аргументов — конец вчера, начало раздвинуто на 45 дней назад
+    d_from, d_to = resolve_window(None, None, today=TODAY)
+    check("resolve_window(): конец = вчера", d_to == YESTERDAY, d_to)
+    check("resolve_window(): начало раздвинуто на 45 дней от конца",
+          d_from == YESTERDAY - _timedelta(days=45), d_from)
+
+    # плановый прогон run_saas_collect.sh: явный узкий диапазон −2..сегодня —
+    # конец должен сжаться до вчера, начало раздвинуться до пола 45 дней
+    d_from, d_to = resolve_window("2026-08-13", "2026-08-15", today=TODAY)
+    check("resolve_window(план): конец сжат с сегодня до вчера", d_to == YESTERDAY, d_to)
+    check("resolve_window(план): начало раздвинуто до пола (было 08-13, 2 дня)",
+          d_from == YESTERDAY - _timedelta(days=45), d_from)
+
+    # явный широкий бэкфилл (полностью в прошлом, шире 45 дней) — не трогаем
+    d_from, d_to = resolve_window("2026-01-01", "2026-03-01", today=TODAY)
+    check("resolve_window(бэкфилл): широкий явный диапазон не изменён",
+          d_from == _date(2026, 1, 1) and d_to == _date(2026, 3, 1), (d_from, d_to))
+
+    # явный date_to в будущем относительно today (не только "сегодня") тоже
+    # зажимается до вчера
+    d_from, d_to = resolve_window("2026-08-10", "2026-09-01", today=TODAY)
+    check("resolve_window: date_to из будущего зажат до вчера", d_to == YESTERDAY, d_to)
+
+    # date-объекты вместо строк — тоже поддерживаются (collect() передаёт как
+    # есть); окно узкое (9 дней) — по тому же правилу пола раздвигается,
+    # ровно как и строковый узкий диапазон выше (не важно, откуда пришла
+    # узость — из дефолта, плана или явного, но короткого бэкфилла)
+    d_from, d_to = resolve_window(_date(2026, 8, 1), _date(2026, 8, 10), today=TODAY)
+    check("resolve_window: принимает date-объекты, узкое окно раздвигается до пола",
+          d_from == _date(2026, 8, 10) - _timedelta(days=45) and d_to == _date(2026, 8, 10),
+          (d_from, d_to))
 
     print()
     if failed:
