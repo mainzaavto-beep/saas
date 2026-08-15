@@ -862,8 +862,37 @@ def upsert_ozon_accruals_many(rows):
     """Batch-upsert строк начислений в tenant.ozon_accruals.
     Ключ конфликта — (cabinet_id, accrual_id, line_no): один accrual_id может
     состоять из нескольких строк (услуги доставки + комиссия / несколько
-    элементов item_fees.fees[]), line_no различает их внутри записи."""
-    return _batch_upsert("ozon_accruals", ["accrual_id", "line_no"], _OZ_ACCRUALS_COLS, rows)
+    элементов item_fees.fees[]), line_no различает их внутри записи.
+
+    Ревью fixwave (F3, .superpowers/sdd/2026-08-11-ozon-accrual-migration/):
+    обычный ON CONFLICT DO UPDATE (как в _batch_upsert) только обновляет/
+    добавляет строки — если при пересборе число строк записи СТАЛО МЕНЬШЕ
+    (Ozon изменил состав услуг), хвостовые line_no от прошлого разбора
+    остаются строками-призраками, ничем не перезаписанными. Поэтому перед
+    вставкой удаляем все существующие строки пересобираемых accrual_id (в
+    рамках кабинета), затем вставляем заново — DELETE и INSERT в ОДНОЙ
+    транзакции (get_connection коммитит один раз при выходе из `with`),
+    чтобы сбой между ними не оставил дыру в данных."""
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cid = _cabinet_id()
+    accrual_ids = sorted({r["accrual_id"] for r in rows if r.get("accrual_id") is not None})
+    all_cols = ["cabinet_id"] + _OZ_ACCRUALS_COLS + ["updated_at"]
+    placeholders = ", ".join(["%s"] * len(all_cols))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_ACCRUALS_COLS + ["updated_at"])
+    sql = (f"INSERT INTO tenant.ozon_accruals ({', '.join(all_cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (cabinet_id, accrual_id, line_no) DO UPDATE SET {upd}")
+    batch = [[cid] + [r.get(c) for c in _OZ_ACCRUALS_COLS] + [now] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if accrual_ids:
+                cur.execute(
+                    "DELETE FROM tenant.ozon_accruals WHERE cabinet_id = %s AND accrual_id = ANY(%s)",
+                    [cid, accrual_ids],
+                )
+            cur.executemany(sql, batch)
+    return len(rows)
 
 
 # --- daily_stock (остатки FBO) ---
