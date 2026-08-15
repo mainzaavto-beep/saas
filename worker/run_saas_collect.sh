@@ -31,7 +31,15 @@ DAYS_TO="${3:-0}"
 # секция «Кабинетные расходы» на «Сводке» расходилась со «Сводкой по прибыли»
 # (та считает те же расходы напрямую из finance_report). Сборщик — чистый SQL
 # поверх уже собранного finance_report, к API WB не ходит, работает секунды.
-MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_order_costs,ozon_metrics,ozon_efficiency"
+# 2026-08-15: ozon_accruals добавлен сюда тем же порядком, что и wb_cabinet_costs
+# выше — тот же прецедент. Сборщик зарегистрирован в OZON_COLLECTORS оркестратора
+# (задача 3 плана «переезд финансов Ozon на методы начислений»), но этот список
+# передаётся orchestrator'у явно через --collectors и живёт отдельно от
+# OZON_COLLECTORS — регистрация там сама по себе НЕ включает сборщик в плановый
+# прогон systemd-таймера saas-worker. Без этой строки ozon_accruals отрабатывал
+# бы только при онбординге/backfill, а данные tenant.ozon_accruals застывали бы
+# на дате последнего ручного прогона, как и было с wb_cabinet_costs до 2026-08-07.
+MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
