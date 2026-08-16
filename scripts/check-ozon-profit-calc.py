@@ -28,7 +28,14 @@ scripts/check-ozon-profit-map.py — тот же приём: parse_accrual ра�
   6. инвариант периода: сумма accrued по всем отправлениям (order_costs) +
      сумма accrued кабинетных/промо строк (NON_ITEM) == сумма total_amount
      всех 79 записей фикстуры (31 643,50 ₽), допуск 0,01;
-  7. profit == SUM(accrued отправления) − cost при заданном cost.
+  7. profit == SUM(accrued отправления) − cost при заданном cost;
+  8. мультитоварное отправление (синтетика, ревью задачи 3, Critical 1):
+     несколько commission-блоков (разные sku) в одном unit_number —
+     cost_value_retail/commission суммируются по ВСЕМ блокам, а не по
+     последнему;
+  9. resolve_meta(): точное совпадение posting_number, однозначное «базовое»
+     совпадение (номер без финального "-N"), неоднозначное/отсутствующее —
+     явный fallback (Critical 2, ревью задачи 3).
 
 Запуск:
   /opt/agents/data-presenter-agent/.venv/bin/python scripts/check-ozon-profit-calc.py
@@ -190,6 +197,126 @@ def main():
     check(f"инвариант: order_costs ({round(sum_order,2)}) + cabinet/promo "
           f"({sum_cabinet_all}) == total_amount ({KNOWN_TOTAL_AMOUNT}), допуск 0,01",
           abs(allocated - KNOWN_TOTAL_AMOUNT) < 0.01, allocated)
+
+    # --- 8. Мультитоварное отправление (СИНТЕТИКА — фикстура дня не несёт
+    #     такого случая): один unit_number, ДВА commission-блока (разные
+    #     sku, как бывает у реального Ozon-отправления с несколькими
+    #     товарами — ревью задачи 3, Critical 1, боевой пример
+    #     unit=60208425-0132-1, кабинет 1008, 20 SKU). Числа подобраны так,
+    #     чтобы seller_price = sale_price + coinvestment + bonus на КАЖДОМ
+    #     блоке (доказанное тождество источника):
+    #       товар A: seller_price=1000, sale_price=700, sale_commission=-300,
+    #                coinvestment=0, bonus=300 -> accrued=700
+    #       товар B: seller_price=500,  sale_price=400, sale_commission=-150,
+    #                coinvestment=10, bonus=90  -> accrued=350
+    #     плюс по одной логистической строке на товар (-50 / -20).
+    multi_unit = "TEST-MULTI-0001-1"
+    multi_rows = [
+        {"unit_number": multi_unit, "accrued_category": "POSTING", "type_id": 32,
+         "sku": 111, "accrued": -50.0, "date": "2026-08-05",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": multi_unit, "accrued_category": "POSTING", "type_id": None,
+         "sku": 111, "accrued": 700.0, "date": "2026-08-05",
+         "seller_price": 1000.0, "sale_price": 700.0, "sale_commission": -300.0,
+         "coinvestment": 0.0, "bonus": 300.0},
+        {"unit_number": multi_unit, "accrued_category": "POSTING", "type_id": 29,
+         "sku": 222, "accrued": -20.0, "date": "2026-08-05",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": multi_unit, "accrued_category": "POSTING", "type_id": None,
+         "sku": 222, "accrued": 350.0, "date": "2026-08-05",
+         "seller_price": 500.0, "sale_price": 400.0, "sale_commission": -150.0,
+         "coinvestment": 10.0, "bonus": 90.0},
+    ]
+    r_multi = build_order_costs(multi_rows, {"product_id": 999, "qty": 2}, {})
+    check("мультитоварное: build_order_costs вернул строку (не None)", r_multi is not None)
+    check("мультитоварное: cost_value_retail == СУММА seller_price двух блоков (1500, не 500 "
+          "последнего)", r_multi["cost_value_retail"] == 1500.0, r_multi)
+    check("мультитоварное: commission == СУММА |sale_commission| двух блоков (450, не 150 "
+          "последнего)", r_multi["commission"] == 450.0, r_multi)
+    check("мультитоварное: logistics == сумма обеих логистических строк (70)",
+          r_multi["logistics"] == 70.0, r_multi)
+    check("мультитоварное: is_return == 0", r_multi["is_return"] == 0, r_multi)
+    check("мультитоварное: согласованность компонент == SUM(accrued) (допуск 0,01)",
+          abs(comps_of(r_multi) - sum_accrued(multi_rows)) < 0.01,
+          (comps_of(r_multi), sum_accrued(multi_rows)))
+
+    # --- 9. resolve_meta(): точное совпадение, однозначное «базовое»
+    #     совпадение (Critical 2, ревью задачи 3), неоднозначное/отсутствующее
+    #     совпадение — явный fallback на unit_number + posting_number_resolved=False.
+    from worker.collectors.ozon_order_costs import resolve_meta
+
+    order_meta = {
+        "ABC-1": {"posting_number": "ABC-1", "order_dt": "2026-08-01", "size": "M",
+                   "product_id": 10, "qty": 2},
+        "DEF-1": {"posting_number": "DEF-1", "order_dt": "2026-08-02", "size": "L",
+                   "product_id": 20, "qty": 1},
+        "XYZ-1": {"posting_number": "XYZ-1", "order_dt": "2026-08-03", "size": "S",
+                   "product_id": 30, "qty": 1},
+        "XYZ-2": {"posting_number": "XYZ-2", "order_dt": "2026-08-03", "size": "S",
+                   "product_id": 31, "qty": 1},
+    }
+    order_meta_by_base = defaultdict(list)
+    for pn, r in order_meta.items():
+        base = pn.rsplit("-", 1)[0] if "-" in pn else pn
+        order_meta_by_base[base].append(r)
+    product_by_sku = {}
+
+    # 9a. Точное совпадение unit_number == posting_number.
+    meta_exact = resolve_meta("ABC-1", [], order_meta, order_meta_by_base, product_by_sku)
+    check("resolve_meta: точное совпадение -> posting_number='ABC-1', resolved=True",
+          meta_exact["posting_number"] == "ABC-1" and meta_exact["posting_number_resolved"] is True,
+          meta_exact)
+
+    # 9b. unit_number урезан (без финального "-N"), но «базовое» совпадение
+    #     ОДНОЗНАЧНО (ровно один posting_number с такой базой) -> полный
+    #     номер восстанавливается.
+    meta_base = resolve_meta("DEF", [], order_meta, order_meta_by_base, product_by_sku)
+    check("resolve_meta: однозначное базовое совпадение -> posting_number='DEF-1' "
+          "(полный номер восстановлен из 'DEF'), resolved=True",
+          meta_base["posting_number"] == "DEF-1" and meta_base["posting_number_resolved"] is True,
+          meta_base)
+
+    # 9c. unit_number урезан, «базовое» совпадение НЕОДНОЗНАЧНО (два разных
+    #     posting_number с базой 'XYZ') -> НЕ гадаем, fallback (resolved=False,
+    #     posting_number=None из resolve_meta — build_order_costs подставит
+    #     unit_number сам).
+    meta_ambiguous = resolve_meta("XYZ", [], order_meta, order_meta_by_base, product_by_sku)
+    check("resolve_meta: неоднозначное базовое совпадение -> НЕ резолвлено "
+          "(posting_number=None, resolved=False)",
+          meta_ambiguous["posting_number"] is None and meta_ambiguous["posting_number_resolved"] is False,
+          meta_ambiguous)
+
+    # 9d. unit_number отсутствует в ozon_orders вовсе -> fallback.
+    meta_missing = resolve_meta("GHOST-1", [], order_meta, order_meta_by_base, product_by_sku)
+    check("resolve_meta: нет совпадения вовсе -> НЕ резолвлено (resolved=False)",
+          meta_missing["posting_number"] is None and meta_missing["posting_number_resolved"] is False,
+          meta_missing)
+
+    # 9e. build_order_costs() пишет posting_number ИЗ meta (резолвленный),
+    #     не сырой unit_number параметра — и наоборот, при resolved=False
+    #     честно пишет unit_number как fallback (не теряет отправление).
+    resolved_rows = [{"unit_number": "DEF", "accrued_category": "POSTING", "type_id": None,
+                       "sku": 1, "accrued": 100.0, "date": "2026-08-02",
+                       "seller_price": 100.0, "sale_price": 100.0, "sale_commission": 0.0,
+                       "coinvestment": 0.0, "bonus": 0.0}]
+    r_resolved = build_order_costs(resolved_rows, meta_base, {})
+    check("build_order_costs: пишет РЕЗОЛВЛЕННЫЙ posting_number ('DEF-1'), не сырой unit_number "
+          "('DEF')", r_resolved["posting_number"] == "DEF-1", r_resolved)
+
+    unresolved_rows = [{"unit_number": "XYZ", "accrued_category": "POSTING", "type_id": None,
+                         "sku": 1, "accrued": 100.0, "date": "2026-08-03",
+                         "seller_price": 100.0, "sale_price": 100.0, "sale_commission": 0.0,
+                         "coinvestment": 0.0, "bonus": 0.0}]
+    # product_id для неоднозначного случая тоже не резолвлен через meta (пустая
+    # meta) — передаём product_id отдельно (через sku 1 нет в product_by_sku),
+    # чтобы проверить именно posting_number, не завалив тест на "нет product_id".
+    meta_ambiguous_with_product = dict(meta_ambiguous, product_id=42)
+    r_unresolved = build_order_costs(unresolved_rows, meta_ambiguous_with_product, {})
+    check("build_order_costs: неоднозначный случай -> fallback на unit_number ('XYZ'), "
+          "отправление НЕ потеряно (запись есть)",
+          r_unresolved is not None and r_unresolved["posting_number"] == "XYZ", r_unresolved)
 
     print()
     if failed:

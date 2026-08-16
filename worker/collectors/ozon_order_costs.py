@@ -24,6 +24,16 @@ tenant.ozon_orders (находка на живых данных 2026-08-05, ка
 несёт всегда; ещё 2/44 отсутствовали в ozon_orders целиком). product_id
 поэтому резолвится НАДЁЖНО через sku (tenant.ozon_products.fbo_sku), а не
 через сопоставление unit_number/posting_number — см. resolve_meta().
+posting_number в выходной строке ТОЖЕ резолвится (не пишется сырой
+unit_number напрямую — иначе потребители, джойнящие по posting_number,
+получат обрыв связи и дубли, ревью задачи 3, Critical 2): итог прогона дня
+2026-08-05 — 44 записи, 41 буквально совпадает с tenant.ozon_orders.posting_number
+(9 «усечённых» дополнительно восстановлены базовым совпадением), 3 честно
+помечены нерезолвленными и записаны как unit_number (2 полностью
+отсутствуют в ozon_orders; 1 — намеренно НЕ резолвлен базовым совпадением,
+т.к. его полная форма ЭТОГО ЖЕ дня САМА есть отдельная accrual-группа —
+резолв привёл бы к коллизии ключа с ней, см. комментарий у
+exact_unit_numbers в collect()).
 
 NON_ITEM-начисления (расходы уровня кабинета, unit_number всегда NULL —
 см. докстрину ozon_accruals.py) классифицируются той же функцией:
@@ -87,26 +97,51 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     accrual_rows — строки tenant.ozon_accruals ОДНОГО unit_number (категории
     POSTING/ITEM, unit_number IS NOT NULL — вызывающий код (collect())
     группирует по unit_number ДО вызова). Порядок строк не важен.
-    meta — метаданные заказа из tenant.ozon_orders для этого posting_number:
-    {'product_id', 'size', 'order_dt', 'qty'} — тем же способом, что в v1
-    (product_id/size/order_dt читались из ozon_orders и там же остаются;
-    qty добавлен явно — tenant.ozon_accruals не несёт qty, в отличие от
-    старого ozon_finance_report.item_qty, поэтому источник qty сместился на
-    ozon_orders.qty, семантика "штук в отправлении" не изменилась).
+    meta — метаданные заказа: {'product_id', 'size', 'order_dt', 'qty',
+    'posting_number', 'posting_number_resolved'} — см. resolve_meta()
+    (product_id/size/order_dt тем же способом, что в v1, читались из
+    ozon_orders и там же остаются; qty добавлен явно — tenant.ozon_accruals
+    не несёт qty, в отличие от старого ozon_finance_report.item_qty, поэтому
+    источник qty сместился на ozon_orders.qty, семантика "штук в
+    отправлении" не изменилась; posting_number/posting_number_resolved —
+    см. ниже).
     costs — cogs_map: {product_id: cost} из tenant.cost_overrides (как в v1).
+
+    ⚠️ ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ (не устранено, унаследовано от v1): модель
+    «1 unit_number = 1 запись order_costs» не различает товары ВНУТРИ
+    мультитоварного отправления. product_id в meta резолвится (см.
+    resolve_meta) по ПЕРВОМУ ненулевому sku строк отправления — если в
+    отправлении несколько разных SKU, колонка product_id получит только
+    один из них (какой именно — зависит от порядка строк ответа Ozon,
+    гарантий стабильности порядка нет). v1 вёл себя так же (брал
+    product_id первой попавшейся строки/последней строки ozon_orders при
+    dict-перезаписи) — это не регресс, а тот же класс упрощения, что и
+    раньше. cost_value_retail/commission/logistics/acquiring/loyalty —
+    ДЕНЕЖНЫЕ суммы отправления ЦЕЛИКОМ (не одного SKU), поэтому финансово
+    корректны независимо от того, чей product_id записан.
 
     Возвращает None, если product_id не резолвится (нечего писать — как в
     v1: "if not product_id: continue"), иначе — dict с колонками
-    tenant.ozon_order_costs ПЛЮС два служебных (не-колоночных) поля для
-    collect(): 'consistency_ok' (bool) и 'unknown_types' (list[(category,
-    type_id)] с known=False среди строк этого отправления).
+    tenant.ozon_order_costs ПЛЮС служебные (не-колоночные) поля для
+    collect(): 'consistency_ok' (bool), 'unknown_types' (list[(category,
+    type_id)] с known=False среди строк этого отправления),
+    'posting_number_resolved' (bool — резолвлен ли posting_number реальной
+    строкой tenant.ozon_orders или записан fallback'ом как unit_number).
     """
     if not accrual_rows:
         return None
 
     unit_number = accrual_rows[0]["unit_number"]
 
-    commission_row = None
+    # commission_rows — СПИСОК, а не одна строка: мультитоварное отправление
+    # (несколько SKU в одном posting) несёт НЕСКОЛЬКО commission-блоков
+    # (POSTING, type_id IS NULL) — по одному на каждый sku (ревью задачи 3,
+    # находка на боевых данных: unit 60208425-0132-1, кабинет 1008, 20 SKU —
+    # 20 commission-строк; взятие только последней теряло seller_price и
+    # sale_commission остальных 19). seller_price/sale_commission суммируются
+    # по ВСЕМ commission-строкам — тот же приём, что уже применялся к
+    # logistics/acquiring/loyalty через `+=` по всем строкам корзины.
+    commission_rows = []
     logistics_raw = 0.0
     acquiring_raw = 0.0
     loyalty_raw = 0.0
@@ -120,7 +155,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
         if not known:
             unknown_types.append((category, type_id))
         if bucket == "commission":
-            commission_row = r
+            commission_rows.append(r)
         elif bucket == "acquiring":
             acquiring_raw += _num(r.get("accrued"))
         elif bucket == "loyalty":
@@ -143,28 +178,34 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     # (profit = revenue − cost − commission − logistics − acquiring)
     # корректно ДОБАВЛЯЕТ этот возврат к прибыли). Найдено тестом
     # scripts/check-ozon-profit-calc.py на реальных строках фикстуры
-    # (unit 02464949-0474, 63981463-0371) — обнажает разницу между
-    # "|commission|" из дизайн-документа (упрощение для типового случая) и
-    # точной алгеброй тождества.
+    # (unit 02464949-0474, 63981463-0371) — та же логика (сумма корзины,
+    # затем -sum) теперь применена и к commission (несколько строк), см.
+    # docs/superpowers/specs/2026-08-15-ozon-profit-switch-design.md.
+
+    commission_accrued_sum = sum(_num(r.get("accrued")) for r in commission_rows)
 
     # is_return: коды 45/59 (RETURN_TYPE_IDS) ИЛИ отрицательный commission-блок
-    # (реверс уже начисленной продажи). Отсутствие commission-блока САМО ПО
-    # СЕБЕ возвратом не считается (фикс эвристики ±835 ₽ из дизайн-дока —
-    # "нулевые" отправления: чистые сервисные/комиссионные строки без продажи
-    # на этом дне, is_return остаётся 0).
+    # (реверс уже начисленной продажи, суммарно по ВСЕМ commission-строкам).
+    # Отсутствие commission-блока САМО ПО СЕБЕ возвратом не считается (фикс
+    # эвристики ±835 ₽ из дизайн-дока — "нулевые" отправления: чистые
+    # сервисные/комиссионные строки без продажи на этом дне, is_return
+    # остаётся 0).
     is_return = 0
     return_dt = None
     if return_dates:
         is_return = 1
         non_null_dates = [d for d in return_dates if d is not None]
         return_dt = min(non_null_dates) if non_null_dates else None
-    elif commission_row is not None and _num(commission_row.get("accrued")) < 0:
+    elif commission_rows and commission_accrued_sum < 0:
         is_return = 1
-        return_dt = _row_date(commission_row.get("date"))
+        commission_dates = [_row_date(r.get("date")) for r in commission_rows
+                             if r.get("date") is not None]
+        return_dt = min(commission_dates) if commission_dates else None
 
-    seller_price = _num(commission_row.get("seller_price")) if commission_row else 0.0
-    commission_raw = _num(commission_row.get("sale_commission")) if commission_row else 0.0
-    sale_dt = _row_date(commission_row.get("date")) if commission_row else None
+    seller_price = sum(_num(r.get("seller_price")) for r in commission_rows)
+    commission_raw = sum(_num(r.get("sale_commission")) for r in commission_rows)
+    sale_dates = [_row_date(r.get("date")) for r in commission_rows if r.get("date") is not None]
+    sale_dt = min(sale_dates) if sale_dates else None
 
     commission_sum = round(-commission_raw, 2)
     logistics_sum = round(-logistics_raw, 2)
@@ -184,8 +225,17 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     comps = round(cost_value_retail - commission_sum - logistics_sum - acquiring_sum - loyalty_sum, 2)
     consistency_ok = abs(comps - sum_accrued) <= _CONSISTENCY_TOLERANCE
 
+    # posting_number: резолвленный tenant.ozon_orders.posting_number (см.
+    # resolve_meta), а НЕ сырой unit_number начислений напрямую — потребители
+    # (app/api/cabinets/[id]/orders/route.js) джойнят по posting_number,
+    # усечённый номер даёт NULL-метаданные и дубль заказа в списке (ревью
+    # задачи 3). Если resolve_meta не смог однозначно резолвить —
+    # posting_number/posting_number_resolved это отражают явно.
+    resolved_posting_number = meta.get("posting_number") or unit_number
+    posting_number_resolved = bool(meta.get("posting_number_resolved"))
+
     return {
-        "posting_number": unit_number,
+        "posting_number": resolved_posting_number,
         "product_id": product_id,
         "size": meta.get("size"),
         "is_return": is_return,
@@ -205,6 +255,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
         # известные ему колонки через .get(), лишние ключи безвредны):
         "consistency_ok": consistency_ok,
         "unknown_types": unknown_types,
+        "posting_number_resolved": posting_number_resolved,
     }
 
 
@@ -224,16 +275,32 @@ def resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product
     tenant.ozon_products.fbo_sku — тот же sku в понятной терминах кабинета
     product_id) — это НЕ то же самое, что product_id в ozon_orders/ozon_products
     (разная внутренняя нумерация), и совпадает всегда, даже когда
-    posting_number не совпал буквально. order_dt/size/qty (менее критичные,
-    только отображение) по-прежнему берутся из ozon_orders — точным
+    posting_number не совпал буквально. Ограничение: если у отправления
+    НЕСКОЛЬКО разных sku (мультитоварный unit), берётся ПЕРВЫЙ ненулевой —
+    см. предупреждение в докстроке build_order_costs (то же упрощение,
+    что было в v1).
+
+    order_dt/size/qty/posting_number берутся из ozon_orders — точным
     совпадением posting_number, а при его отсутствии — «базовым» совпадением
     (posting_number без финального "-N"), если оно ОДНОЗНАЧНО (иначе не
     обогащаем — безопасный дефолт вместо гадания, какой из нескольких товаров
-    отправления имелся в виду)."""
+    отправления имелся в виду). posting_number ВСЕГДА возвращается полным
+    (реальным ozon_orders.posting_number), когда meta резолвлена (точным ИЛИ
+    однозначным базовым совпадением) — вызывающий (build_order_costs) пишет
+    его в БД вместо сырого unit_number, чтобы не ломать JOIN потребителей
+    (app/api/cabinets/[id]/orders/route.js). posting_number_resolved=False
+    означает: meta не найдена (ни точно, ни однозначно по базе) —
+    build_order_costs запишет unit_number КАК ЕСТЬ (fallback, не ничего) и
+    учтёт это в счётчике collect()."""
     meta = order_meta.get(unit_number)
+    resolved = meta is not None
     if meta is None:
         candidates = order_meta_by_base.get(unit_number)
-        meta = candidates[0] if candidates and len(candidates) == 1 else {}
+        if candidates and len(candidates) == 1:
+            meta = candidates[0]
+            resolved = True
+        else:
+            meta = {}
 
     resolved_sku = next((r.get("sku") for r in unit_rows if r.get("sku") is not None), None)
     product_id = product_by_sku.get(resolved_sku) if resolved_sku is not None else None
@@ -245,6 +312,8 @@ def resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product
         "size": meta.get("size"),
         "order_dt": meta.get("order_dt"),
         "qty": meta.get("qty"),
+        "posting_number": meta.get("posting_number") if resolved else None,
+        "posting_number_resolved": resolved,
     }
 
 
@@ -295,24 +364,6 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         "SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides "
         "WHERE platform='ozon' AND effective_from <= current_date "
         "ORDER BY product_id, effective_from DESC") if r["cost"] is not None}
-    # order_dt/size/product_id — та же логика, что в v1 (SELECT из ozon_orders,
-    # словарь по posting_number, последняя строка мульти-товарного отправления
-    # выигрывает — то же упрощение, что и раньше). qty добавлен явно — см.
-    # докстроку build_order_costs (в accruals qty нет).
-    order_meta = {r["posting_number"]: r for r in db_pg.query(
-        "SELECT posting_number, order_dt, size, product_id, qty FROM tenant.ozon_orders")}
-    # «Базовый» индекс (posting_number без финального "-N") — обогащение
-    # order_dt/size/qty, когда unit_number начислений не совпал буквально
-    # (см. resolve_meta).
-    order_meta_by_base = defaultdict(list)
-    for pn, r in order_meta.items():
-        base = pn.rsplit("-", 1)[0] if "-" in pn else pn
-        order_meta_by_base[base].append(r)
-    # product_id надёжнее резолвится через sku (см. докстроку resolve_meta).
-    product_by_sku = {r["fbo_sku"]: r["product_id"] for r in db_pg.query(
-        "SELECT product_id, fbo_sku FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL")}
-    type_names = {r["type_id"]: r["name"] for r in db_pg.query(
-        "SELECT type_id, name FROM shared.ozon_accrual_types")}
 
     by_unit = defaultdict(list)
     cabinet_rows = []  # has_unit=False (NON_ITEM; unit_number всегда NULL при записи ozon_accruals.py)
@@ -322,10 +373,61 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         else:
             cabinet_rows.append(r)
 
+    # order_dt/size/product_id/posting_number — та же логика, что в v1
+    # (SELECT из ozon_orders, словарь по posting_number, последняя строка
+    # мульти-товарного отправления выигрывает — то же упрощение, что и
+    # раньше). qty добавлен явно — см. докстроку build_order_costs (в
+    # accruals qty нет). posting_number хранится В САМОЙ строке (SELECT
+    # его возвращает) — используется resolve_meta() для восстановления
+    # полного номера, когда unit_number начислений урезан (см. ниже).
+    order_meta = {r["posting_number"]: r for r in db_pg.query(
+        "SELECT posting_number, order_dt, size, product_id, qty FROM tenant.ozon_orders")}
+    # «Базовый» индекс (posting_number без финального "-N") — обогащение
+    # order_dt/size/qty/posting_number, когда unit_number начислений не
+    # совпал буквально (см. resolve_meta). ⚠️ Кандидаты, чей posting_number
+    # САМ является отдельным unit_number этого периода (ровно та же дата,
+    # своя accrual-группа — т.е. будет резолвлен ТОЧНЫМ совпадением), из
+    # индекса ИСКЛЮЧАЮТСЯ: иначе усечённый unit_number (без финального "-N")
+    # мог бы однозначно "базово" резолвиться на ТОТ ЖЕ posting_number, что и
+    # чужая точно совпавшая accrual-группа — коллизия ключа (cabinet_id,
+    # posting_number) при записи, которая молча схлопывает два РАЗНЫХ
+    # отправления в одну строку (потеря денег одного из них). Живой пример
+    # (кабинет 1, 2026-08-05): unit_number "63981463-0371" (усечён) и
+    # "63981463-0371-1" (полный) — ОБА встречаются как отдельные accrual-
+    # группы дня; без этого исключения оба резолвились в posting_number
+    # "63981463-0371-1", INSERT ... ON CONFLICT молча оставлял только
+    # последнего в батче (44 группы -> 43 строки в БД, обнаружено сверкой
+    # после ревью задачи 3).
+    exact_unit_numbers = set(by_unit.keys())
+    order_meta_by_base = defaultdict(list)
+    for pn, r in order_meta.items():
+        if pn in exact_unit_numbers:
+            continue
+        base = pn.rsplit("-", 1)[0] if "-" in pn else pn
+        order_meta_by_base[base].append(r)
+    # product_id надёжнее резолвится через sku (см. докстроку resolve_meta).
+    # Схема НЕ гарантирует уникальность fbo_sku (нет UNIQUE-ограничения) —
+    # коллизии (два разных product_id с одним fbo_sku) считаем и логируем,
+    # а не теряем молча (dict-comprehension держал бы только последнюю
+    # запись без предупреждения).
+    product_by_sku = {}
+    fbo_sku_collisions = 0
+    for r in db_pg.query("SELECT product_id, fbo_sku FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL"):
+        sku = r["fbo_sku"]
+        if sku in product_by_sku and product_by_sku[sku] != r["product_id"]:
+            fbo_sku_collisions += 1
+            print(f"  fbo_sku={sku}: несколько product_id "
+                  f"({product_by_sku[sku]}, {r['product_id']}) — оставлен последний "
+                  f"из запроса", file=sys.stderr, flush=True)
+        product_by_sku[sku] = r["product_id"]
+    type_names = {r["type_id"]: r["name"] for r in db_pg.query(
+        "SELECT type_id, name FROM shared.ozon_accrual_types")}
+
     order_costs_out = []
     mismatches = 0
     unknown_types = set()
     skipped_no_product = 0
+    unresolved_posting_number = 0
     sum_order_accrued = 0.0
 
     for unit_number, unit_rows in by_unit.items():
@@ -344,8 +446,35 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                   f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
         unknown_types.update(result.pop("unknown_types"))
         result.pop("consistency_ok")
-        order_costs_out.append(result)
+        if not result.pop("posting_number_resolved"):
+            unresolved_posting_number += 1
+            print(f"  posting_number не резолвлен через ozon_orders, записан unit_number "
+                  f"как есть: {unit_number}", file=sys.stderr, flush=True)
+        order_costs_out.append(dict(result, _unit_number=unit_number))
         sum_order_accrued += sum(_num(r.get("accrued")) for r in unit_rows)
+
+    # Защитная сетка (defence in depth) поверх исключения exact_unit_numbers
+    # из order_meta_by_base выше: если ДВЕ РАЗНЫЕ accrual-группы этого
+    # прогона всё же разрешились в ОДИН И ТОТ ЖЕ posting_number (любым
+    # путём, не только через уже закрытый случай усечения "-N"), явный
+    # INSERT ... ON CONFLICT молча схлопнул бы их в одну строку — потеря
+    # денег одного из отправлений. Ловим ДО записи: коллизии откатываются на
+    # собственный unit_number (гарантированно уникален — это ключ by_unit) и
+    # громко логируются, вместо того чтобы БД тихо оставила последнего в
+    # батче.
+    seen_posting_numbers = {}
+    for r in order_costs_out:
+        pn = r["posting_number"]
+        if pn in seen_posting_numbers:
+            print(f"  КОЛЛИЗИЯ posting_number={pn}: отправления {seen_posting_numbers[pn]} и "
+                  f"{r['_unit_number']} резолвились в один и тот же номер — второе записано "
+                  f"под своим unit_number ({r['_unit_number']}), чтобы не потерять деньги "
+                  f"первого", file=sys.stderr, flush=True)
+            r["posting_number"] = r["_unit_number"]
+            mismatches += 1
+        else:
+            seen_posting_numbers[pn] = r["_unit_number"]
+        del r["_unit_number"]
 
     # NON_ITEM: группировка (type_id, date) -> cabinet | promo (не пишется).
     cab_group = defaultdict(float)
@@ -399,6 +528,10 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
            f"Σ={promo_total:.2f} ₽")
     if skipped_no_product:
         msg += f", пропущено без product_id: {skipped_no_product}"
+    if unresolved_posting_number:
+        msg += f", posting_number не резолвлен (записан unit_number): {unresolved_posting_number}"
+    if fbo_sku_collisions:
+        msg += f", коллизий fbo_sku: {fbo_sku_collisions}"
     if unknown_types:
         sorted_unknown = sorted(unknown_types, key=lambda x: (x[0], -1 if x[1] is None else x[1]))
         msg += f", незнакомых типов: {len(unknown_types)} {sorted_unknown}"
