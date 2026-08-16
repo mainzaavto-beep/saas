@@ -919,9 +919,94 @@ _OZ_OC_COLS = ["posting_number", "product_id", "size", "is_return", "order_dt", 
                "return_dt", "cost_value_retail", "commission", "acquiring", "logistics",
                "loyalty", "cost", "qty", "profit", "self_buyout"]
 
+# Белый список коротких имён таблиц (без "tenant."), в которые допустимо писать
+# order_costs — задача 3 плана «переезд финансов Ozon на методы начислений»
+# (--target-table сборщика: боевая таблица либо теневая для пересчёта
+# истории). Имя таблицы подставляется в SQL f-строкой ТОЛЬКО после проверки
+# принадлежности этому множеству — никакая внешняя строка сюда не попадает.
+_OZ_OC_ALLOWED_TABLES = {"ozon_order_costs", "ozon_order_costs_shadow"}
 
-def upsert_ozon_order_costs_many(rows):
-    return _batch_upsert("ozon_order_costs", ["posting_number"], _OZ_OC_COLS, rows)
+
+def upsert_ozon_order_costs_many(rows, table="ozon_order_costs"):
+    """Batch DELETE+INSERT (одна транзакция) строк прибыли по отправлению.
+
+    table — короткое имя таблицы БЕЗ "tenant." (по умолчанию боевая); второе
+    допустимое значение — "ozon_order_costs_shadow" (пересчёт истории,
+    задача 3-5 плана). Валидация — белый список _OZ_OC_ALLOWED_TABLES,
+    вызывающий код (ozon_order_costs.py) ДОПОЛНИТЕЛЬНО проверяет полное имя
+    --target-table своим списком до вызова сюда (defence in depth).
+
+    DELETE перед INSERT (не просто ON CONFLICT DO UPDATE) — по требованию
+    брифа задачи 3, явная идемпотентность пересборки periода: удаляем строки
+    ИМЕННО пересобираемых posting_number этого прогона, затем вставляем
+    заново, в той же транзакции (образец — upsert_ozon_accruals_many,
+    db_pg.py). Для этой таблицы (PK ровно posting_number, максимум одна
+    строка на отправление) ON CONFLICT DO UPDATE дал бы тот же результат, но
+    явный DELETE+INSERT — тот же приём, что и в остальных пересобираемых
+    таблицах проекта, и явно гарантирует состояние "ровно из этого прогона"."""
+    if table not in _OZ_OC_ALLOWED_TABLES:
+        raise ValueError(f"недопустимая таблица order_costs: {table!r} "
+                          f"(разрешено: {sorted(_OZ_OC_ALLOWED_TABLES)})")
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cid = _cabinet_id()
+    posting_numbers = sorted({r["posting_number"] for r in rows if r.get("posting_number")})
+    all_cols = ["cabinet_id"] + _OZ_OC_COLS + ["updated_at"]
+    placeholders = ", ".join(["%s"] * len(all_cols))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_OC_COLS + ["updated_at"])
+    sql = (f"INSERT INTO tenant.{table} ({', '.join(all_cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (cabinet_id, posting_number) DO UPDATE SET {upd}")
+    batch = [[cid] + [r.get(c) for c in _OZ_OC_COLS] + [now] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if posting_numbers:
+                cur.execute(
+                    f"DELETE FROM tenant.{table} WHERE cabinet_id = %s AND posting_number = ANY(%s)",
+                    [cid, posting_numbers],
+                )
+            cur.executemany(sql, batch)
+    return len(rows)
+
+
+# --- cabinet_costs (расходы уровня кабинета Ozon из начислений, задача 3) ---
+_OZ_CAB_COLS = ["cost_type", "date", "amount", "description"]
+
+
+def upsert_ozon_cabinet_costs_many(rows, date_from, date_to):
+    """Batch DELETE+INSERT кабинетных статей Ozon, разнесённых из начислений
+    (tenant.ozon_accruals, категория NON_ITEM, корзина 'cabinet' классификатора
+    ozon_profit_map.classify_row). cost_type = 'accrual_<type_id>'.
+
+    Идемпотентность пересборки периода ТРЕБУЕТ DELETE перед INSERT (в отличие
+    от upsert_ozon_order_costs_many, где PK = ровно posting_number): здесь
+    ключ (cost_type, date), и при пересборе состав типов за день может
+    измениться (новый type_id появился, старый исчез) — простой ON CONFLICT
+    DO UPDATE оставил бы "статьи-призраки" от предыдущего разбора висеть
+    нетронутыми. Поэтому удаляем ВСЕ строки cost_type LIKE 'accrual_%' за
+    [date_from, date_to] СВОЕГО кабинета (чужие cost_type, которые кабинетные
+    расходы могут нести из других источников/будущих сборщиков, не задеваем —
+    брифовое ограничение), затем вставляем заново. Одна транзакция."""
+    cid = _cabinet_id()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    all_cols = ["cabinet_id"] + _OZ_CAB_COLS + ["updated_at"]
+    placeholders = ", ".join(["%s"] * len(all_cols))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_CAB_COLS + ["updated_at"])
+    sql = (f"INSERT INTO tenant.ozon_cabinet_costs ({', '.join(all_cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (cabinet_id, cost_type, date) DO UPDATE SET {upd}")
+    batch = [[cid] + [r.get(c) for c in _OZ_CAB_COLS] + [now] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if date_from and date_to:
+                cur.execute(
+                    "DELETE FROM tenant.ozon_cabinet_costs "
+                    "WHERE cabinet_id = %s AND cost_type LIKE 'accrual\\_%%' "
+                    "AND date >= %s AND date <= %s",
+                    [cid, date_from, date_to],
+                )
+            if batch:
+                cur.executemany(sql, batch)
+    return len(rows)
 
 
 # --- cogs (себестоимость Ozon) ---

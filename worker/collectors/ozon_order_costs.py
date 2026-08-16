@@ -1,12 +1,58 @@
 """
-SaaS-сборщик ПРИБЫЛИ ПО ЗАКАЗУ Ozon → tenant.ozon_order_costs.
+SaaS-сборщик ПРИБЫЛИ ПО ЗАКАЗУ Ozon → tenant.ozon_order_costs (v2, метод
+начислений — задача 3 плана «переезд финансов Ozon на методы начислений»,
+docs/superpowers/specs/2026-08-15-ozon-profit-switch-design.md).
 
-Агрегирует tenant.ozon_finance_report по posting_id (как боевой, по #61).
-Без HTTP — чистый SQL/Python. operation_type_name определяет роль операции.
-profit = cost_value_retail − cost − commission − acquiring − logistics − loyalty.
-Для возврата cost_value_retail = 0. self_buyout всегда 0 (грабля #138).
-Токен НЕ нужен. Идемпотентно по (cabinet_id, posting_number).
+Источник денег СМЕНИЛСЯ: раньше — tenant.ozon_finance_report
+(/v3/finance/transaction/list, 6 из 14 реально встречающихся типов операций
+учитывались, 8 252,58 ₽ на проверенном дне мимо прибыли — см. дизайн-док).
+Теперь — tenant.ozon_accruals (/v1/finance/accrual/by-day, задача 2 плана,
+все типы операций классифицируются worker.collectors.ozon_profit_map).
+Метаданные заказа (product_id/size/order_dt) и себестоимость
+(tenant.cost_overrides) берутся ТЕМ ЖЕ способом, что и в v1 (сохранено
+дословно) — меняется только откуда берутся деньги.
+
+Единица расчёта — отправление (unit_number начислений). Строки начислений
+группируются по unit_number → build_order_costs() (чистая функция без БД,
+TDD-покрыта scripts/check-ozon-profit-calc.py) → пакетный upsert в
+--target-table (белый список: tenant.ozon_order_costs |
+tenant.ozon_order_costs_shadow — см. db_pg.upsert_ozon_order_costs_many).
+
+⚠️ unit_number начислений НЕ ВСЕГДА буквально равен posting_number
+tenant.ozon_orders (находка на живых данных 2026-08-05, кабинет 1: 10 из 44
+отправлений дня — unit_number без финального "-N", который posting_number
+несёт всегда; ещё 2/44 отсутствовали в ozon_orders целиком). product_id
+поэтому резолвится НАДЁЖНО через sku (tenant.ozon_products.fbo_sku), а не
+через сопоставление unit_number/posting_number — см. resolve_meta().
+
+NON_ITEM-начисления (расходы уровня кабинета, unit_number всегда NULL —
+см. докстрину ozon_accruals.py) классифицируются той же функцией:
+корзина 'cabinet' → дневной агрегат в tenant.ozon_cabinet_costs
+(cost_type='accrual_<type_id>', description = имя типа из
+shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (защита от
+двойного счёта рекламы — она уже приходит из Performance API как ad_spend,
+см. докстроку ozon_profit_map.py), только считается и печатается в логе,
+чтобы сумма периода была видна для сверки.
+
+Инварианты, которые проверяет сборщик на каждом прогоне (нарушение — счётчик
++ русский лог + exit-код 3 по образцу ozon_accruals.py::partial_exit_code;
+строки при этом всё равно пишутся — падение по СИГНАЛУ, не по данным):
+  - согласованность компонент на каждом отправлении: cost_value_retail −
+    |commission| − |logistics| − |acquiring| − |loyalty| == SUM(accrued
+    строк этого отправления) — см. build_order_costs.consistency_ok;
+  - инвариант периода: SUM(accrued всех прочитанных строк начислений) ==
+    SUM(accrued строк, попавших в order_costs) + SUM(accrued кабинетных
+    строк, включая promo) — если что-то не разнеслось (например, отправление
+    есть в начислениях, но отсутствует в tenant.ozon_orders — нет
+    product_id, строка пропущена), расхождение будет ненулевым и заметным.
+  - незнакомый type_id (classify_row возвращает known=False) — не
+    выбрасывается молча, только считается и логируется.
+
+self_buyout всегда 0 (грабля #138, сохранено из v1). Токен НЕ нужен —
+данные уже в БД (tenant.ozon_accruals собраны отдельным сборщиком
+ozon_accruals.py).
 """
+import argparse
 import os
 import sys
 from collections import defaultdict
@@ -16,106 +62,366 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
+from ozon_profit_map import classify_row, RETURN_TYPE_IDS
 
-OP_SALE = "Доставка покупателю"
-OP_RETURN = "Получение возврата, отмены, невыкупа от покупателя"
-OP_RETURN_LOGISTICS = "Доставка и обработка возврата, отмены, невыкупа"
-OP_ACQUIRING = "Оплата эквайринга"
-OP_DELIVERY_INCOME = "Перечисление за доставку от покупателя"
-LOGISTICS_OPS = {OP_RETURN_LOGISTICS, OP_DELIVERY_INCOME}
+DEFAULT_TARGET_TABLE = "tenant.ozon_order_costs"
+ALLOWED_TARGET_TABLES = {"tenant.ozon_order_costs", "tenant.ozon_order_costs_shadow"}
+
+_CONSISTENCY_TOLERANCE = 0.01
+_INVARIANT_TOLERANCE = 0.01
 
 
 def _num(v):
     return 0.0 if v is None else float(v)
 
 
-def _abs(v):
-    return 0.0 if v is None else abs(float(v))
+def _row_date(v):
+    """Дата строки начислений: из БД приходит datetime.date, из фикстур/тестов
+    (JSON) — уже str. str() приводит оба варианта к 'YYYY-MM-DD'."""
+    return None if v is None else str(v)
 
 
-def collect(date_from=None, date_to=None):
-    print(f"[ozon_order_costs] агрегация {date_from or 'начало'}..{date_to or 'конец'}", flush=True)
+def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
+    """Чистая функция (без БД): одно отправление → строка tenant.ozon_order_costs.
+
+    accrual_rows — строки tenant.ozon_accruals ОДНОГО unit_number (категории
+    POSTING/ITEM, unit_number IS NOT NULL — вызывающий код (collect())
+    группирует по unit_number ДО вызова). Порядок строк не важен.
+    meta — метаданные заказа из tenant.ozon_orders для этого posting_number:
+    {'product_id', 'size', 'order_dt', 'qty'} — тем же способом, что в v1
+    (product_id/size/order_dt читались из ozon_orders и там же остаются;
+    qty добавлен явно — tenant.ozon_accruals не несёт qty, в отличие от
+    старого ozon_finance_report.item_qty, поэтому источник qty сместился на
+    ozon_orders.qty, семантика "штук в отправлении" не изменилась).
+    costs — cogs_map: {product_id: cost} из tenant.cost_overrides (как в v1).
+
+    Возвращает None, если product_id не резолвится (нечего писать — как в
+    v1: "if not product_id: continue"), иначе — dict с колонками
+    tenant.ozon_order_costs ПЛЮС два служебных (не-колоночных) поля для
+    collect(): 'consistency_ok' (bool) и 'unknown_types' (list[(category,
+    type_id)] с known=False среди строк этого отправления).
+    """
+    if not accrual_rows:
+        return None
+
+    unit_number = accrual_rows[0]["unit_number"]
+
+    commission_row = None
+    logistics_raw = 0.0
+    acquiring_raw = 0.0
+    loyalty_raw = 0.0
+    return_dates = []
+    unknown_types = []
+
+    for r in accrual_rows:
+        category = r["accrued_category"]
+        type_id = r["type_id"]
+        bucket, known = classify_row(category, type_id, True)
+        if not known:
+            unknown_types.append((category, type_id))
+        if bucket == "commission":
+            commission_row = r
+        elif bucket == "acquiring":
+            acquiring_raw += _num(r.get("accrued"))
+        elif bucket == "loyalty":
+            loyalty_raw += _num(r.get("accrued"))
+        else:  # 'logistics' — в т.ч. незнакомые позаказные типы ("прочее",
+               # чтобы роуты панели, вычитающие logistics целиком, ничего не
+               # потеряли молча, см. докстроку ozon_profit_map.py)
+            logistics_raw += _num(r.get("accrued"))
+        if type_id in RETURN_TYPE_IDS:
+            return_dates.append(_row_date(r.get("date")))
+
+    # Суммируем СЫРЫЕ (знаковые) accrued по корзине и берём -sum, а НЕ
+    # сумму abs() по строкам: у отдельных строк бывают развороты/сторно
+    # (например, эквайринг -24.99 и +24.99 в один день — итог 0, а не 49.98,
+    # если бы суммировали abs() каждой строки отдельно). -sum(bucket) даёт
+    # ТОЧНОЕ тождество с SUM(accrued) отправления при ЛЮБЫХ знаках (обычный
+    # случай: сумма корзины отрицательна, -sum == |sum|, визуально то же
+    # самое, что и раньше; edge-case с сальдо в плюс — тоже верно, тогда
+    # компонента в order_costs отрицательна, и профильная формула роутов
+    # (profit = revenue − cost − commission − logistics − acquiring)
+    # корректно ДОБАВЛЯЕТ этот возврат к прибыли). Найдено тестом
+    # scripts/check-ozon-profit-calc.py на реальных строках фикстуры
+    # (unit 02464949-0474, 63981463-0371) — обнажает разницу между
+    # "|commission|" из дизайн-документа (упрощение для типового случая) и
+    # точной алгеброй тождества.
+
+    # is_return: коды 45/59 (RETURN_TYPE_IDS) ИЛИ отрицательный commission-блок
+    # (реверс уже начисленной продажи). Отсутствие commission-блока САМО ПО
+    # СЕБЕ возвратом не считается (фикс эвристики ±835 ₽ из дизайн-дока —
+    # "нулевые" отправления: чистые сервисные/комиссионные строки без продажи
+    # на этом дне, is_return остаётся 0).
+    is_return = 0
+    return_dt = None
+    if return_dates:
+        is_return = 1
+        non_null_dates = [d for d in return_dates if d is not None]
+        return_dt = min(non_null_dates) if non_null_dates else None
+    elif commission_row is not None and _num(commission_row.get("accrued")) < 0:
+        is_return = 1
+        return_dt = _row_date(commission_row.get("date"))
+
+    seller_price = _num(commission_row.get("seller_price")) if commission_row else 0.0
+    commission_raw = _num(commission_row.get("sale_commission")) if commission_row else 0.0
+    sale_dt = _row_date(commission_row.get("date")) if commission_row else None
+
+    commission_sum = round(-commission_raw, 2)
+    logistics_sum = round(-logistics_raw, 2)
+    acquiring_sum = round(-acquiring_raw, 2)
+    loyalty_sum = round(-loyalty_raw, 2)
+
+    cost_value_retail = 0.0 if is_return else round(seller_price, 2)
+
+    product_id = meta.get("product_id")
+    if not product_id:
+        return None
+    cost = costs.get(product_id)
+
+    sum_accrued = round(sum(_num(r.get("accrued")) for r in accrual_rows), 2)
+    profit = round(sum_accrued - _num(cost), 2)
+
+    comps = round(cost_value_retail - commission_sum - logistics_sum - acquiring_sum - loyalty_sum, 2)
+    consistency_ok = abs(comps - sum_accrued) <= _CONSISTENCY_TOLERANCE
+
+    return {
+        "posting_number": unit_number,
+        "product_id": product_id,
+        "size": meta.get("size"),
+        "is_return": is_return,
+        "order_dt": meta.get("order_dt"),
+        "sale_dt": sale_dt,
+        "return_dt": return_dt,
+        "cost_value_retail": cost_value_retail,
+        "commission": round(commission_sum, 2),
+        "acquiring": round(acquiring_sum, 2),
+        "logistics": round(logistics_sum, 2),
+        "loyalty": round(loyalty_sum, 2),
+        "cost": round(cost, 2) if cost is not None else None,
+        "qty": meta.get("qty") or 1,
+        "profit": profit,
+        "self_buyout": 0,
+        # служебные поля для collect(), НЕ колонки БД (db_pg берёт только
+        # известные ему колонки через .get(), лишние ключи безвредны):
+        "consistency_ok": consistency_ok,
+        "unknown_types": unknown_types,
+    }
+
+
+def resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product_by_sku):
+    """Собрать meta для build_order_costs() из ДВУХ источников (находка на
+    живых данных 2026-08-05, кабинет 1 — задокументирована в отчёте задачи 3):
+    accrual_id.unit_number НЕ ВСЕГДА равен tenant.ozon_orders.posting_number
+    буквально — на 10 из 44 отправлений дня unit_number идёт БЕЗ финального
+    "-N" (номер товара в отправлении), который posting_number несёт всегда
+    (например, unit_number='63981463-0371', posting_number='63981463-0371-1');
+    ещё 2/44 отсутствовали в ozon_orders целиком (более старые/вне окна
+    синхронизации). Ни один из этих случаев НЕ повод терять деньги отправления
+    молча — задача 3 явно требует не пропускать без причины и сигнализировать
+    об оставшихся разрывах через инвариант периода.
+
+    product_id резолвится НАДЁЖНЕЕ через sku (accrual несёт sku строки, а
+    tenant.ozon_products.fbo_sku — тот же sku в понятной терминах кабинета
+    product_id) — это НЕ то же самое, что product_id в ozon_orders/ozon_products
+    (разная внутренняя нумерация), и совпадает всегда, даже когда
+    posting_number не совпал буквально. order_dt/size/qty (менее критичные,
+    только отображение) по-прежнему берутся из ozon_orders — точным
+    совпадением posting_number, а при его отсутствии — «базовым» совпадением
+    (posting_number без финального "-N"), если оно ОДНОЗНАЧНО (иначе не
+    обогащаем — безопасный дефолт вместо гадания, какой из нескольких товаров
+    отправления имелся в виду)."""
+    meta = order_meta.get(unit_number)
+    if meta is None:
+        candidates = order_meta_by_base.get(unit_number)
+        meta = candidates[0] if candidates and len(candidates) == 1 else {}
+
+    resolved_sku = next((r.get("sku") for r in unit_rows if r.get("sku") is not None), None)
+    product_id = product_by_sku.get(resolved_sku) if resolved_sku is not None else None
+    if product_id is None:
+        product_id = meta.get("product_id")
+
+    return {
+        "product_id": product_id,
+        "size": meta.get("size"),
+        "order_dt": meta.get("order_dt"),
+        "qty": meta.get("qty"),
+    }
+
+
+def _validate_target_table(target_table: str) -> str:
+    """Белый список --target-table (брифовое ограничение: НИКАКОЙ подстановки
+    произвольной строки в SQL). Возвращает короткое имя (без 'tenant.') для
+    db_pg.upsert_ozon_order_costs_many, который проверяет его СВОИМ списком
+    ещё раз (defence in depth)."""
+    if target_table not in ALLOWED_TARGET_TABLES:
+        raise ValueError(
+            f"недопустимая --target-table: {target_table!r} "
+            f"(разрешено: {sorted(ALLOWED_TARGET_TABLES)})")
+    return target_table.split(".", 1)[1]
+
+
+_MISMATCHES = 0  # согласованность компонент + инвариант периода — читает __main__ после collect()
+
+
+def partial_exit_code(mismatches: int):
+    """Контракт exit-кодов (orchestrator.py:80-82): >0 расхождений
+    (согласованность компонент отправления ИЛИ инвариант периода) → 3
+    (partial, строки уже записаны — падение по сигналу). Иначе None.
+    По образцу ozon_accruals.py::partial_exit_code."""
+    return 3 if mismatches else None
+
+
+def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
+    global _MISMATCHES
+    short_table = _validate_target_table(target_table)
+    print(f"[ozon_order_costs] расчёт прибыли из начислений {date_from or 'начало'}.."
+          f"{date_to or 'конец'} -> {target_table}", flush=True)
     db_pg.init()
 
     where = ""
     params = []
     if date_from:
-        where += " AND operation_dt >= %s"; params.append(date_from)
+        where += " AND date >= %s"; params.append(date_from)
     if date_to:
-        where += " AND operation_dt <= %s"; params.append(date_to)
-
+        where += " AND date <= %s"; params.append(date_to)
     rows = db_pg.query(
-        "SELECT posting_id, operation_type_name, operation_dt, product_id, "
-        "item_qty, accruals_for_sale, commission_amount, services_amount, payout_amount "
-        "FROM tenant.ozon_finance_report WHERE posting_id != ''" + where, params)
-    # cost_overrides — единый источник себестоимости (с 2026-07-14).
-    # Актуальный override = последний с effective_from <= сегодня.
+        "SELECT accrual_id, line_no, date, unit_number, accrued_category, type_id, sku, "
+        "accrued, seller_price, sale_price, sale_commission, coinvestment, bonus "
+        "FROM tenant.ozon_accruals WHERE 1=1" + where +
+        " ORDER BY unit_number, accrual_id, line_no", params)
+
+    # cost_overrides — единый источник себестоимости (та же логика, что в v1).
     cogs_map = {r["product_id"]: float(r["cost"]) for r in db_pg.query(
         "SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides "
         "WHERE platform='ozon' AND effective_from <= current_date "
         "ORDER BY product_id, effective_from DESC") if r["cost"] is not None}
-    order_meta = {r["posting_number"]: r for r in db_pg.query("SELECT posting_number, order_dt, size, product_id FROM tenant.ozon_orders")}
+    # order_dt/size/product_id — та же логика, что в v1 (SELECT из ozon_orders,
+    # словарь по posting_number, последняя строка мульти-товарного отправления
+    # выигрывает — то же упрощение, что и раньше). qty добавлен явно — см.
+    # докстроку build_order_costs (в accruals qty нет).
+    order_meta = {r["posting_number"]: r for r in db_pg.query(
+        "SELECT posting_number, order_dt, size, product_id, qty FROM tenant.ozon_orders")}
+    # «Базовый» индекс (posting_number без финального "-N") — обогащение
+    # order_dt/size/qty, когда unit_number начислений не совпал буквально
+    # (см. resolve_meta).
+    order_meta_by_base = defaultdict(list)
+    for pn, r in order_meta.items():
+        base = pn.rsplit("-", 1)[0] if "-" in pn else pn
+        order_meta_by_base[base].append(r)
+    # product_id надёжнее резолвится через sku (см. докстроку resolve_meta).
+    product_by_sku = {r["fbo_sku"]: r["product_id"] for r in db_pg.query(
+        "SELECT product_id, fbo_sku FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL")}
+    type_names = {r["type_id"]: r["name"] for r in db_pg.query(
+        "SELECT type_id, name FROM shared.ozon_accrual_types")}
 
-    g = defaultdict(lambda: {
-        "product_id": None, "is_return": 0, "order_dt": None, "sale_dt": None,
-        "return_dt": None, "cost_value_retail": 0.0,
-        "commission": 0.0, "acquiring": 0.0, "logistics": 0.0, "loyalty": 0.0, "qty": None,
-    })
+    by_unit = defaultdict(list)
+    cabinet_rows = []  # has_unit=False (NON_ITEM; unit_number всегда NULL при записи ozon_accruals.py)
     for r in rows:
-        pid = r["posting_id"]
-        if not pid:
-            continue
-        op = r["operation_type_name"] or ""
-        gr = g[pid]
-        if gr["product_id"] is None and r["product_id"]:
-            gr["product_id"] = r["product_id"]
-        if op == OP_SALE:
-            gr["sale_dt"] = r["operation_dt"]
-            gr["cost_value_retail"] += _num(r["accruals_for_sale"])
-            gr["commission"] += _num(r["commission_amount"])
-            gr["logistics"] += _abs(r["services_amount"])
-            if gr["qty"] is None and r["item_qty"]:
-                gr["qty"] = r["item_qty"]
-        elif op == OP_RETURN:
-            gr["is_return"] = 1
-            gr["return_dt"] = r["operation_dt"]
-        elif op in LOGISTICS_OPS:
-            gr["logistics"] += _abs(r["services_amount"]) + _abs(r["payout_amount"])
-            if op == OP_RETURN_LOGISTICS:
-                gr["is_return"] = 1
-                if not gr["return_dt"]:
-                    gr["return_dt"] = r["operation_dt"]
-        elif op == OP_ACQUIRING:
-            gr["acquiring"] += _abs(r["payout_amount"])
+        if r["unit_number"] is not None:
+            by_unit[r["unit_number"]].append(r)
+        else:
+            cabinet_rows.append(r)
 
-    out = []
-    for pid, gr in g.items():
-        if not (gr["sale_dt"] or gr["return_dt"] or gr["cost_value_retail"]):
+    order_costs_out = []
+    mismatches = 0
+    unknown_types = set()
+    skipped_no_product = 0
+    sum_order_accrued = 0.0
+
+    for unit_number, unit_rows in by_unit.items():
+        meta = resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product_by_sku)
+        result = build_order_costs(unit_rows, meta, cogs_map)
+        if result is None:
+            skipped_no_product += 1
             continue
-        meta = order_meta.get(pid, {})
-        product_id = gr["product_id"] or meta.get("product_id")
-        if not product_id:
-            continue
-        cost = cogs_map.get(product_id)
-        cost_value_retail = 0.0 if gr["is_return"] else gr["cost_value_retail"]
-        comps = (cost or 0) + gr["commission"] + gr["acquiring"] + gr["logistics"] + gr["loyalty"]
-        out.append({
-            "posting_number": pid, "product_id": product_id, "size": meta.get("size"),
-            "is_return": gr["is_return"], "order_dt": gr["order_dt"] or meta.get("order_dt"),
-            "sale_dt": gr["sale_dt"], "return_dt": gr["return_dt"],
-            "cost_value_retail": round(cost_value_retail, 2),
-            "commission": round(gr["commission"], 2), "acquiring": round(gr["acquiring"], 2),
-            "logistics": round(gr["logistics"], 2), "loyalty": round(gr["loyalty"], 2),
-            "cost": round(cost, 2) if cost is not None else None,
-            "qty": gr["qty"] or 1, "profit": round(cost_value_retail - comps, 2),
-            "self_buyout": 0,
+        if not result["consistency_ok"]:
+            mismatches += 1
+            comps = (result["cost_value_retail"] - result["commission"] - result["logistics"]
+                     - result["acquiring"] - result["loyalty"])
+            unit_sum = round(sum(_num(r.get("accrued")) for r in unit_rows), 2)
+            print(f"  расхождение согласованности: posting_number={unit_number} "
+                  f"cost_value_retail-|commission|-|logistics|-|acquiring|-|loyalty|="
+                  f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
+        unknown_types.update(result.pop("unknown_types"))
+        result.pop("consistency_ok")
+        order_costs_out.append(result)
+        sum_order_accrued += sum(_num(r.get("accrued")) for r in unit_rows)
+
+    # NON_ITEM: группировка (type_id, date) -> cabinet | promo (не пишется).
+    cab_group = defaultdict(float)
+    promo_total = 0.0
+    promo_count = 0
+    for r in cabinet_rows:
+        bucket, known = classify_row(r["accrued_category"], r["type_id"], False)
+        if not known:
+            unknown_types.add((r["accrued_category"], r["type_id"]))
+        amount = _num(r.get("accrued"))
+        if bucket == "promo":
+            promo_total += amount
+            promo_count += 1
+        else:  # 'cabinet'
+            cab_group[(r["type_id"], _row_date(r.get("date")))] += amount
+
+    cabinet_out = []
+    for (type_id, date), amount in cab_group.items():
+        tid_label = type_id if type_id is not None else "none"
+        cabinet_out.append({
+            "cost_type": f"accrual_{tid_label}",
+            "date": date,
+            "amount": round(amount, 2),
+            "description": type_names.get(type_id) or f"тип {type_id}",
         })
-    n = db_pg.upsert_ozon_order_costs_many(out)
-    print(f"[ozon_order_costs] записано {n} строк (из {len(rows)} операций)", flush=True)
-    return n
+    sum_cabinet = sum(cab_group.values())
+
+    # Инвариант периода: всё прочитанное из ozon_accruals должно быть либо в
+    # order_costs, либо в кабинетных строках (включая promo, который не
+    # пишется, но учтён в сумме). См. докстроку модуля.
+    total_read = round(sum(_num(r.get("accrued")) for r in rows), 2)
+    allocated = round(sum_order_accrued + sum_cabinet + promo_total, 2)
+    invariant_diff = round(total_read - allocated, 2)
+    if abs(invariant_diff) > _INVARIANT_TOLERANCE:
+        mismatches += 1
+        print(f"  ИНВАРИАНТ НАРУШЕН: прочитано начислений на {total_read:.2f} ₽, "
+              f"разнесено (order_costs + cabinet + promo) на {allocated:.2f} ₽, "
+              f"разница {invariant_diff:+.2f} ₽"
+              + (f" (без product_id в ozon_orders пропущено отправлений: {skipped_no_product})"
+                 if skipped_no_product else ""),
+              file=sys.stderr, flush=True)
+
+    n_order = db_pg.upsert_ozon_order_costs_many(order_costs_out, short_table)
+    eff_from = date_from or (min(r["date"] for r in rows) if rows else None)
+    eff_to = date_to or (max(r["date"] for r in rows) if rows else None)
+    n_cabinet = db_pg.upsert_ozon_cabinet_costs_many(cabinet_out, eff_from, eff_to)
+
+    msg = (f"[ozon_order_costs] отправлений {len(order_costs_out)} (записано {n_order}), "
+           f"кабинетных статей {len(cabinet_out)} (записано {n_cabinet}), "
+           f"промо не пишется (учтено в ad_spend Performance API): {promo_count} строк, "
+           f"Σ={promo_total:.2f} ₽")
+    if skipped_no_product:
+        msg += f", пропущено без product_id: {skipped_no_product}"
+    if unknown_types:
+        sorted_unknown = sorted(unknown_types, key=lambda x: (x[0], -1 if x[1] is None else x[1]))
+        msg += f", незнакомых типов: {len(unknown_types)} {sorted_unknown}"
+    if mismatches:
+        msg += f", расхождений (согласованность/инвариант): {mismatches}"
+    print(msg, flush=True)
+    _MISMATCHES = mismatches
+    return n_order
+
+
+def _parse_args(argv):
+    ap = argparse.ArgumentParser(description="ozon_order_costs v2 — расчёт прибыли из начислений")
+    ap.add_argument("date_from", nargs="?", default=None)
+    ap.add_argument("date_to", nargs="?", default=None)
+    ap.add_argument("--target-table", dest="target_table", default=DEFAULT_TARGET_TABLE,
+                     help=f"белый список: {sorted(ALLOWED_TARGET_TABLES)}")
+    return ap.parse_args(argv)
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    args = sys.argv[1:]
-    collect(args[0] if len(args) > 0 else None, args[1] if len(args) > 1 else None)
+    args = _parse_args(sys.argv[1:])
+    collect(args.date_from, args.date_to, target_table=args.target_table)
+    code = partial_exit_code(_MISMATCHES)
+    if code is not None:
+        sys.exit(code)
