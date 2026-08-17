@@ -508,18 +508,32 @@ services_amount = 36 145,08`) не сходится с `total_amount`, пото�
   старое/новое (данные для `docs/ozon-profit-switch-delta.md`, задача 4);
 - `scripts/check-ozon-accruals.mjs` — сверка по ролям (этот документ,
   §5-§7), используется еженедельно за прошлый месяц;
-- `scripts/check-ozon-profit-invariant.mjs` (задача 6) — еженедельный
-  сторож НА БОЕВОЙ таблице: (1) инвариант периода `order_costs +
-  cabinet_costs(accrual_%) + promo = ИТОГО начислений` за прошлую
-  ISO-неделю, допуск 1 ₽ на остаток после вычета известного риска NULL
-  `sale_dt`/`return_dt` (см. ниже); (2) `|promo| ↔ SUM(ad_spend)`
-  (источник `ad_spend` — тот же, что читает панель, `lib/ozonMetrics.js
-  ::ozAdSpend` → `tenant.ozon_daily_efficiency.ad_spend`), допуск 100 ₽;
+- `scripts/check-ozon-profit-invariant.mjs` (задача 6, доработан в
+  ре-ревью 2026-08-17) — еженедельный сторож НА БОЕВОЙ таблице, три
+  проверки:
+  1. инвариант периода `order_costs + cabinet_costs(accrual_%) + promo =
+     ИТОГО начислений` за прошлую ISO-неделю, допуск 1 ₽ на ОСТАТОК после
+     вычета суммы «неразнесено по датам недели» (раскладывается на три
+     причины: `null_date` — известный принятый риск NULL `sale_dt`/
+     `return_dt`, см. ниже; `other_period` — дата резолвится, но в
+     соседнем периоде, безобидный шум понедельной нарезки; `no_row` —
+     отправления вовсе нет в `order_costs`);
+  2. рост ДОЛИ «неразнесено по датам недели» от ИТОГО начислений недели —
+     ОТДЕЛЬНАЯ автоматическая проверка (не полагается на ручное чтение
+     диагностики проверки 1, которая гасит эту сумму в остатке): порог
+     40% по умолчанию (при |Σ| ≥ 1 000 ₽), калиброван по 8 последним
+     ISO-неделям обоих кабинетов (максимум наблюдённой доли — 32,08%,
+     см. `check-ozon-profit-invariant.mjs`, шапка файла, и
+     `task-6-fix-report.md`);
+  3. `|promo| ↔ SUM(ad_spend)` (источник `ad_spend` — тот же, что читает
+     панель, `lib/ozonMetrics.js::ozAdSpend` →
+     `tenant.ozon_daily_efficiency.ad_spend`), допуск 100 ₽;
 - юнит `saas-ozon-recon.timer` (`deploy/systemd/saas-ozon-recon.{service,
-  timer}`) гоняет обе сверки выше по понедельникам в 06:30 MSK,
-  ненулевой exit любой — фейл юнита, виден в systemd/journalctl.
-  Подробности разового прогона — `.superpowers/sdd/
-  2026-08-15-ozon-profit-switch/task-6-report.md`.
+  timer}`) гоняет `check-ozon-accruals.mjs` (оба кабинета, прошлый месяц)
+  и `check-ozon-profit-invariant.mjs` (все три проверки выше) по
+  понедельникам в 06:30 MSK, ненулевой exit любой — фейл юнита, виден в
+  systemd/journalctl. Подробности разовых прогонов — `.superpowers/sdd/
+  2026-08-15-ozon-profit-switch/task-6-report.md` и `task-6-fix-report.md`.
 
 **Известные открытые находки** (задокументированы, НЕ устранены в рамках
 задачи 6 — под наблюдением сторожа, а не подгонкой под зелёный статус):
@@ -529,7 +543,8 @@ services_amount = 36 145,08`) не сходится с `total_amount`, пото�
   учтены в `tenant.ozon_accruals`. Остаётся открытым по прямому указанию
   владельца («не чинить в этом раунде») — датировка отправлений без
   подходящего `commission`-блока в окне сбора — предмет следующего
-  плана.
+  плана. Это ровно категория `null_date` проверки 1 сторожа выше — не
+  вся сумма «неразнесено», только её часть (см. проверку 2).
 - **Утечка `ad_spend`** (найдена в ходе задачи 6, НОВАЯ находка) —
   `worker/collectors/ozon_efficiency.py::_collect_ads` пишет `ad_spend`
   только `UPDATE`-ом по уже существующим строкам `tenant.
@@ -539,7 +554,7 @@ services_amount = 36 145,08`) не сходится с `total_amount`, пото�
   (есть в `tenant.ozon_daily_campaign_ad`) молча пропадает из панели.
   Пример: кабинет 1008, 2026-08-13, 1 507,95 ₽ — см. `task-6-report.md`.
   Не исправлено в рамках задачи 6 (не входит в периметр плана), сторож
-  `check-ozon-profit-invariant.mjs` ловит это через проверку 2.
+  `check-ozon-profit-invariant.mjs` ловит это через проверку 3.
 
 Старый сборщик (`worker/collectors/ozon_finance.py` →
 `tenant.ozon_finance_report`) **не отключён** — продолжает плановый сбор
