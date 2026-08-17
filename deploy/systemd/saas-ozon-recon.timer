@@ -1,0 +1,13 @@
+[Unit]
+Description=SAAS — еженедельный сторож новой модели прибыли Ozon (по понедельникам)
+
+[Timer]
+# Понедельник 06:30 — после saas-references (Mon 06:00), до основного
+# утреннего сбора saas-worker (05:15..17:00, первый прогон дня 05:15 уже
+# прошёл к 06:30 — данные за вчера/сегодня к этому моменту свежие).
+OnCalendar=Mon *-*-* 06:30:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -456,3 +456,92 @@ services_amount = 36 145,08`) не сходится с `total_amount`, пото�
 периметра документа (комиссия и услуги в него не входят вовсе) и
 объяснённое занижение старого источника на 1 299,00 ₽ в мае:
 `docs/ozon-external-reconciliation-2026-08.md`.
+
+## 9. Модель прибыли переключена (2026-08-17)
+
+Продолжение §7.5/§8 выше: по итогам сверки этого документа и дельты
+`docs/ozon-profit-switch-delta.md` владелец дал добро, план
+`docs/superpowers/plans/2026-08-15-ozon-profit-switch.md`
+(`.superpowers/sdd/2026-08-15-ozon-profit-switch/`) выполнен целиком.
+
+**Дата подмены**: 2026-08-17. **Коммиты плана** (по задачам):
+
+| Задача | Что | Коммит |
+|---|---|---|
+| spec | дизайн переключения | `906dcc4` |
+| 1 | классификатор типов начислений (`worker/collectors/ozon_profit_map.py`) | `c8a93c4` |
+| 2 | теневая таблица `tenant.ozon_order_costs_shadow` | `516a905` |
+| 3 | сборщик v2 (`worker/collectors/ozon_order_costs.py`, метод начислений) | `fc8e2e5` |
+| 4 | помесячная дельта старое/новое, на решение владельца | `a7c6981` → `1ce00c2` → `15f1723` (`docs/ozon-profit-switch-delta.md`) |
+| 5 | атомарная подмена `tenant.ozon_order_costs` на v2 | `0103d34` |
+| 6 | еженедельные сторожа + эта документация | см. `git log --oneline -- scripts/check-ozon-profit-invariant.mjs` |
+
+**Формула** (`worker/collectors/ozon_order_costs.py::build_order_costs`,
+одна строка `tenant.ozon_order_costs` на отправление, единица —
+`unit_number` начислений):
+
+- `commission = -SUM(sale_commission)` строк `POSTING, type_id IS NULL`
+  (блок продажи/возврата отправления);
+- `acquiring = -SUM(accrued)` строк `ITEM, type_id=1`;
+- `logistics = -SUM(accrued)` всех остальных позаказных строк (POSTING
+  logistics/возврат + ITEM-сервисы sku, кроме acquiring) — «прочее»
+  тоже сюда, чтобы ничего не терялось молча (`worker/collectors/
+  ozon_profit_map.py::classify_row`);
+- `loyalty` — зарезервировано, сегодня всегда 0 (нет отдельного
+  `type_id` за год истории обоих кабинетов, co-investment живёт внутри
+  блока `commission`, см. `ozon_profit_map.py`);
+- `cost_value_retail = SUM(seller_price)` блока `commission` (0, если
+  отправление — возврат);
+- `profit = SUM(accrued всех строк отправления) − cost` (`cost` —
+  `tenant.cost_overrides`, как в v1);
+- инвариант строки: `cost_value_retail − |commission| − |logistics| −
+  |acquiring| − |loyalty| == SUM(accrued отправления)` (допуск 0,01 ₽,
+  проверяется самим сборщиком на каждом прогоне).
+- Кабинетный уровень (`unit_number IS NULL`, `NON_ITEM`): бакет
+  `cabinet` → `tenant.ozon_cabinet_costs` (`cost_type='accrual_<type_id>'`);
+  бакет `promo` (`NONITEM_PROMO_TYPE_IDS = {41, 54, 33}`, реклама уже
+  учтена `ad_spend` Performance API) — **не пишется никуда**, чтобы не
+  задваивать рекламу; считается и логируется на каждом прогоне.
+
+**Сверки и сторожа**:
+- `scripts/check-ozon-profit-delta.mjs` — разовая помесячная дельта
+  старое/новое (данные для `docs/ozon-profit-switch-delta.md`, задача 4);
+- `scripts/check-ozon-accruals.mjs` — сверка по ролям (этот документ,
+  §5-§7), используется еженедельно за прошлый месяц;
+- `scripts/check-ozon-profit-invariant.mjs` (задача 6) — еженедельный
+  сторож НА БОЕВОЙ таблице: (1) инвариант периода `order_costs +
+  cabinet_costs(accrual_%) + promo = ИТОГО начислений` за прошлую
+  ISO-неделю, допуск 1 ₽ на остаток после вычета известного риска NULL
+  `sale_dt`/`return_dt` (см. ниже); (2) `|promo| ↔ SUM(ad_spend)`
+  (источник `ad_spend` — тот же, что читает панель, `lib/ozonMetrics.js
+  ::ozAdSpend` → `tenant.ozon_daily_efficiency.ad_spend`), допуск 100 ₽;
+- юнит `saas-ozon-recon.timer` (`deploy/systemd/saas-ozon-recon.{service,
+  timer}`) гоняет обе сверки выше по понедельникам в 06:30 MSK,
+  ненулевой exit любой — фейл юнита, виден в systemd/journalctl.
+  Подробности разового прогона — `.superpowers/sdd/
+  2026-08-15-ozon-profit-switch/task-6-report.md`.
+
+**Известные открытые находки** (задокументированы, НЕ устранены в рамках
+задачи 6 — под наблюдением сторожа, а не подгонкой под зелёный статус):
+- **NULL `sale_dt`/`return_dt`** — `docs/ozon-profit-switch-delta.md` §8
+  п.6: около половины строк новой модели не имеют даты продажи и не
+  входят ни в один помесячный/понедельный срез, хотя деньги по ним уже
+  учтены в `tenant.ozon_accruals`. Остаётся открытым по прямому указанию
+  владельца («не чинить в этом раунде») — датировка отправлений без
+  подходящего `commission`-блока в окне сбора — предмет следующего
+  плана.
+- **Утечка `ad_spend`** (найдена в ходе задачи 6, НОВАЯ находка) —
+  `worker/collectors/ozon_efficiency.py::_collect_ads` пишет `ad_spend`
+  только `UPDATE`-ом по уже существующим строкам `tenant.
+  ozon_daily_efficiency` (которые создаёт `_collect_sales` по
+  `order_costs`); если в сутках не было ни одной продажи/возврата,
+  строка не создаётся вовсе — и реальный расход рекламы этого дня
+  (есть в `tenant.ozon_daily_campaign_ad`) молча пропадает из панели.
+  Пример: кабинет 1008, 2026-08-13, 1 507,95 ₽ — см. `task-6-report.md`.
+  Не исправлено в рамках задачи 6 (не входит в периметр плана), сторож
+  `check-ozon-profit-invariant.mjs` ловит это через проверку 2.
+
+Старый сборщик (`worker/collectors/ozon_finance.py` →
+`tenant.ozon_finance_report`) **не отключён** — продолжает плановый сбор
+и служит вторым источником для `check-ozon-accruals.mjs`. Решение об
+отключении — за владельцем, ожидается ориентировочно к ноябрю 2026.

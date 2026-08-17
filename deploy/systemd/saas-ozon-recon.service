@@ -1,0 +1,39 @@
+[Unit]
+Description=SAAS — еженедельный сторож новой модели прибыли Ozon (метод начислений)
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/agents/saas
+Environment=TZ=Europe/Moscow
+User=root
+# Три сверки подряд (задача 6 плана «переезд финансов Ozon на методы
+# начислений», .superpowers/sdd/2026-08-15-ozon-profit-switch/):
+#   1) check-ozon-accruals.mjs — старое (ozon_finance_report) vs новое
+#      (ozon_accruals) за ПРОШЛЫЙ календарный месяц, оба кабинета (1, 1008);
+#   2) check-ozon-profit-invariant.mjs — инвариант периода (order_costs +
+#      cabinet_costs + promo = начислено) И продвижение↔ad_spend, оба
+#      кабинета, период по умолчанию — прошлая ISO-неделя.
+# Все три сверки гоняются ДО КОНЦА независимо от результата предыдущей (rc
+# копится, а не прерывает выполнение) — иначе при падении первой сверки
+# отчёт по остальным двум не появится в журнале вовсе. Итоговый код — 1,
+# если упала хотя бы одна: юнит помечается failed, виден в systemd/journalctl.
+ExecStart=/bin/bash -c '\
+  set +e; \
+  FROM=$(date -d "-1 month" +%%Y-%%m-01); \
+  TO=$(date -d "$FROM +1 month -1 day" +%%Y-%%m-%%d); \
+  echo "=== check-ozon-accruals.mjs: кабинет 1, $FROM..$TO ==="; \
+  /usr/bin/node scripts/check-ozon-accruals.mjs 1 "$FROM" "$TO"; rc1=$?; \
+  echo "=== check-ozon-accruals.mjs: кабинет 1008, $FROM..$TO ==="; \
+  /usr/bin/node scripts/check-ozon-accruals.mjs 1008 "$FROM" "$TO"; rc2=$?; \
+  echo "=== check-ozon-profit-invariant.mjs: прошлая ISO-неделя, оба кабинета ==="; \
+  /usr/bin/node scripts/check-ozon-profit-invariant.mjs; rc3=$?; \
+  if [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ] || [ $rc3 -ne 0 ]; then exit 1; fi; \
+  exit 0'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-ozon-recon
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target
