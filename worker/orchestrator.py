@@ -58,9 +58,17 @@ RUN_KIND = "manual"
 COLLECTOR_TIMEOUT = int(os.environ.get("SAAS_COLLECTOR_TIMEOUT_SEC", "900"))
 
 # Guard от затирания (спек п.3): order_costs И cabinet_costs агрегируют из
-# finance_report безусловным DO UPDATE (db_pg.py:399-401). Если finance ЭТОГО
-# прогона не-ok, пересчёт по дырявым данным затёр бы хорошие агрегаты — пропускаем.
-GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_finance",
+# своего источника безусловным DO UPDATE (db_pg.py:399-401). Если источник
+# ЭТОГО прогона не-ok, пересчёт по дырявым данным затёр бы хорошие агрегаты —
+# пропускаем.
+# ⚠️ 2026-08-17 (задача 5 плана «переезд финансов Ozon на методы начислений»):
+# ozon_order_costs переключён на tenant.ozon_accruals (worker/collectors/
+# ozon_order_costs.py больше НЕ читает tenant.ozon_finance_report вообще) —
+# зависимость guard'а обязана указывать на ozon_accruals, а не на ozon_finance,
+# иначе partial/failed прогон ozon_accruals не остановил бы пересчёт
+# ozon_order_costs по неполным начислениям (ozon_finance мог быть ok
+# независимо от accruals). wb_* пока по-старому зависят от wb_finance.
+GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_accruals",
               "wb_cabinet_costs": "wb_finance"}
 
 # Сборщики, которые продолжают работать даже когда магазин на паузе из-за
@@ -104,7 +112,10 @@ PY = sys.executable
 
 # Списки SaaS-сборщиков по маркетплейсу (модули в worker/collectors/). Порядок важен:
 # catalog → orders → finance → order_costs + cabinet_costs (зависят от finance) → metrics → prices → stocks.
-# ⚠️ ИНВАРИАНТ GUARD'а: *_finance обязан идти РАНЬШЕ *_order_costs (см. GUARD_DEPS в _run_one).
+# ⚠️ ИНВАРИАНТ GUARD'а: сборщик из значений GUARD_DEPS обязан идти РАНЬШЕ
+# зависимого от него ключа (см. GUARD_DEPS в _run_one) — для wb_order_costs/
+# wb_cabinet_costs это wb_finance, для ozon_order_costs — ozon_accruals
+# (с задачи 5 плана «переезд финансов Ozon», 2026-08-17).
 # ⚠️ Принцип SaaS: НИКАКИХ Google Sheets — все данные только в PostgreSQL.
 WB_COLLECTORS = [
     "wb_catalog",
@@ -126,9 +137,12 @@ OZON_COLLECTORS = [
     "ozon_orders",
     "ozon_sales",
     "ozon_finance",
-    "ozon_accruals",    # начисления /v1/finance/accrual/by-day — новый источник (задача 3
-                        # плана «переезд финансов Ozon на методы начислений», 2026-08-11),
-                        # ни от чего не зависит, ozon_order_costs его пока не использует
+    "ozon_accruals",    # начисления /v1/finance/accrual/by-day — источник прибыли
+                        # (задача 3 плана «переезд финансов Ozon на методы начислений»,
+                        # 2026-08-11), ни от чего не зависит. С задачи 5 (2026-08-17)
+                        # ozon_order_costs ЧИТАЕТ ИСКЛЮЧИТЕЛЬНО его (ozon_finance больше
+                        # не используется этим сборщиком) — см. GUARD_DEPS выше, порядок
+                        # в этом списке обязан сохранять ozon_accruals ПЕРЕД ozon_order_costs.
     "ozon_order_costs",
     "ozon_metrics",
     "ozon_stocks",
