@@ -422,6 +422,140 @@ def main():
           "'пересобираемого', но не резолвленного юнита тоже чистится)",
           keys_only_extra == ["ORPHAN-ONLY-1"], keys_only_extra)
 
+    # --- 12. Датировка юнитов БЕЗ commission-блока (задача 3 плана «ремонт
+    #     данных прибыли Ozon», docs/superpowers/specs/
+    #     2026-08-17-ozon-data-repair-design.md §2): −1,81 млн ₽ расходов были
+    #     невидимы в помесячных разрезах, т.к. такие юниты не получали ни
+    #     sale_dt, ни return_dt (оба NULL). Правило: min(date) строк юнита →
+    #     return_dt, если юнит возвратный (та же логика, что ставит is_return),
+    #     иначе → sale_dt. Реальные примеры фикстуры (все строки датированы
+    #     2026-08-05 — единственный день фикстуры):
+    #       0184084142-0066 — без commission-блока, НЕ возвратный (уже
+    #         покрыт проверкой "нулевое" выше как zero_unit);
+    #       99715651-0185-2 — без commission-блока, возвратный (типы 45/59;
+    #         уже покрыт проверкой "возвратное" выше как return_unit).
+    check("нулевое (без commission, не возврат): sale_dt == min(date) строк ('2026-08-05'), "
+          "return_dt IS NULL (было: оба NULL)",
+          r3["sale_dt"] == "2026-08-05" and r3["return_dt"] is None, r3)
+    check("возвратное без commission-блока: return_dt == min(date) строк ('2026-08-05'), "
+          "sale_dt IS NULL (было: оба NULL)",
+          r2["return_dt"] == "2026-08-05" and r2["sale_dt"] is None, r2)
+
+    # Синтетика: различает "min(date) ВСЕХ строк юнита" от "min(date) только
+    # return-типных строк" (45/59) — правило спеки берёт первое, не второе.
+    nodate_return_rows = [
+        {"unit_number": "TEST-NODATE-RET-1", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -50.0, "date": "2026-07-01",  # раньше return-строки
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": "TEST-NODATE-RET-1", "accrued_category": "POSTING", "type_id": 45,
+         "sku": 1, "accrued": -20.0, "date": "2026-07-10",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_nodate_ret = build_order_costs(nodate_return_rows, {"product_id": 1, "qty": 1}, {})
+    check("без commission, возврат (синтетика): is_return == 1", r_nodate_ret["is_return"] == 1, r_nodate_ret)
+    check("без commission, возврат (синтетика): return_dt == min ВСЕХ строк юнита ('2026-07-01'), "
+          "а не только return-типной строки ('2026-07-10')",
+          r_nodate_ret["return_dt"] == "2026-07-01", r_nodate_ret)
+    check("без commission, возврат (синтетика): sale_dt IS NULL", r_nodate_ret["sale_dt"] is None, r_nodate_ret)
+
+    nodate_sale_rows = [
+        {"unit_number": "TEST-NODATE-SALE-1", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -10.0, "date": "2026-07-05",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": "TEST-NODATE-SALE-1", "accrued_category": "POSTING", "type_id": 29,
+         "sku": 1, "accrued": -5.0, "date": "2026-07-01",  # самая ранняя строка
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_nodate_sale = build_order_costs(nodate_sale_rows, {"product_id": 1, "qty": 1}, {})
+    check("без commission, не возврат (синтетика): sale_dt == min ВСЕХ строк юнита ('2026-07-01')",
+          r_nodate_sale["sale_dt"] == "2026-07-01", r_nodate_sale)
+    check("без commission, не возврат (синтетика): return_dt IS NULL", r_nodate_sale["return_dt"] is None, r_nodate_sale)
+
+    # Регресс: юнит С commission-блоком — правило «первой операции» НЕ
+    # применяется, даты как раньше (baseline снят ДО фикса задачи 3: sale_unit
+    # sale_dt='2026-08-05', return_dt=None — единственная дата фикстуры, но
+    # путь вычисления другой: sale_dates строится из commission_rows, а не из
+    # ВСЕХ строк юнита — регресс ловится синтетикой ниже, не датой самой по
+    # себе).
+    check("commission-блок есть: sale_dt как раньше (из commission_rows, не всех строк)",
+          r1["sale_dt"] == "2026-08-05" and r1["return_dt"] is None, r1)
+    # Синтетика: у юнита С commission-блоком есть более ранняя логистическая
+    # строка ВНЕ commission — правило первой операции игнорирует её, sale_dt
+    # берётся только из commission-строки (регресс, если sale_dt "утечёт" на
+    # более раннюю дату несвязанной логистики).
+    commission_regress_rows = [
+        {"unit_number": "TEST-COMMISSION-REGRESS-1", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -50.0, "date": "2026-06-01",  # заведомо раньше commission-строки
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": "TEST-COMMISSION-REGRESS-1", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": 700.0, "date": "2026-08-05",
+         "seller_price": 1000.0, "sale_price": 700.0, "sale_commission": -300.0,
+         "coinvestment": 0.0, "bonus": 300.0},
+    ]
+    r_commission_regress = build_order_costs(commission_regress_rows, {"product_id": 1, "qty": 1}, {})
+    check("commission-блок есть + более ранняя несвязанная логистика: sale_dt == дата "
+          "commission-строки ('2026-08-05'), НЕ min всех строк ('2026-06-01') — правило "
+          "первой операции применяется ТОЛЬКО к юнитам без commission-блока",
+          r_commission_regress["sale_dt"] == "2026-08-05", r_commission_regress)
+
+    # --- 13. Строки без товара (задача 3 плана, §3): sku, отсутствующий и в
+    #     каталоге (product_by_sku), и в заказах (ozon_orders) — meta пустая,
+    #     product_id не резолвится НИКАК. Раньше build_order_costs возвращал
+    #     None (юнит пропускался молча — источник разрыва инварианта ~334
+    #     тыс ₽). Теперь: строка ЕСТЬ, product_id IS NULL, деньги на месте.
+    r_no_product = build_order_costs(sale_rows, {}, {})
+    check("без товара: build_order_costs вернул строку (не None — раньше пропускал)",
+          r_no_product is not None, r_no_product)
+    check("без товара: product_id IS NULL", r_no_product is not None and r_no_product.get("product_id") is None,
+          r_no_product)
+    check("без товара: деньги на месте (cost_value_retail == 3500, как в резолвленном случае)",
+          r_no_product is not None and r_no_product["cost_value_retail"] == 3500.0, r_no_product)
+    check("без товара: commission на месте (1645)",
+          r_no_product is not None and r_no_product["commission"] == 1645.0, r_no_product)
+    check("без товара: cost IS NULL (costs.get(None) не резолвится), profit == SUM(accrued)",
+          r_no_product is not None and r_no_product["cost"] is None
+          and r_no_product["profit"] == round(sum_accrued(sale_rows), 2), r_no_product)
+
+    # --- 14. src_unit_number: исходный (сырой) unit_number начислений — в
+    #     каждой строке, независимо от того, резолвился ли posting_number.
+    check("src_unit_number: продающее отправление == unit_number строк фикстуры",
+          r1.get("src_unit_number") == sale_unit, r1)
+    check("src_unit_number: без товара (product_id NULL) — тоже заполнен",
+          r_no_product is not None and r_no_product.get("src_unit_number") == sale_unit, r_no_product)
+    # Резолвленный posting_number ('DEF-1') ОТЛИЧАЕТСЯ от исходного unit_number
+    # ('DEF') — src_unit_number должен нести именно ВХОДНОЙ unit_number, а не
+    # переписанный posting_number (иначе поле бесполезно для сторожа, задача 4).
+    check("src_unit_number: резолвленный posting_number ('DEF-1') != src_unit_number, "
+          "src_unit_number несёт ИСХОДНЫЙ unit_number ('DEF')",
+          r_resolved["posting_number"] == "DEF-1" and r_resolved.get("src_unit_number") == "DEF",
+          r_resolved)
+    check("src_unit_number: нерезолвленный posting_number (fallback на unit_number 'XYZ') — "
+          "src_unit_number тоже 'XYZ' (совпадает, т.к. posting_number сам fallback на него)",
+          r_unresolved.get("src_unit_number") == "XYZ", r_unresolved)
+
+    # --- 15. Инвариант: после датировки строк с NULL в ОБЕИХ датах быть не
+    #     должно вовсе — ни на одном из 44 реальных отправлений фикстуры, ни
+    #     на синтетике этого файла (мультитоварное, окно C1, без-commission,
+    #     без товара).
+    all_dated = True
+    for unit_number, rows in by_unit.items():
+        result = build_order_costs(rows, {"product_id": 1, "qty": 1}, {})
+        if result is not None and result["sale_dt"] is None and result["return_dt"] is None:
+            all_dated = False
+            print(f"  ОБЕ ДАТЫ NULL: unit_number={unit_number}")
+    check("инвариант датировки: ни один из 44 реальных отправлений фикстуры не имеет "
+          "NULL в обеих датах", all_dated)
+    synthetic_results = [r1, r2, r3, r_multi, r_full, r_nodate_ret, r_nodate_sale,
+                          r_commission_regress, r_no_product, r_resolved, r_unresolved]
+    check("инвариант датировки: ни одна синтетическая/фикстурная строка теста не имеет "
+          "NULL в обеих датах",
+          all(not (r["sale_dt"] is None and r["return_dt"] is None) for r in synthetic_results))
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")

@@ -53,9 +53,11 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
     build_order_costs, не abs()) — см. build_order_costs.consistency_ok;
   - инвариант периода: SUM(accrued всех прочитанных строк начислений) ==
     SUM(accrued строк, попавших в order_costs) + SUM(accrued кабинетных
-    строк, включая promo) — если что-то не разнеслось (например, отправление
-    есть в начислениях, но отсутствует в tenant.ozon_orders — нет
-    product_id, строка пропущена), расхождение будет ненулевым и заметным.
+    строк, включая promo) — если что-то не разнеслось нигде, расхождение
+    будет ненулевым и заметным. Отправления без резолвленного product_id
+    (задача 3 плана «ремонт данных прибыли Ozon», §3) БОЛЬШЕ НЕ ПРОПУСКАЮТСЯ
+    — строка пишется с product_id NULL, деньги разнесены как обычно, счётчик
+    «без товара» в итоговой строке лога.
   - незнакомый type_id (classify_row возвращает known=False) — не
     выбрасывается молча, только считается и логируется.
 
@@ -147,13 +149,18 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     ДЕНЕЖНЫЕ суммы отправления ЦЕЛИКОМ (не одного SKU), поэтому финансово
     корректны независимо от того, чей product_id записан.
 
-    Возвращает None, если product_id не резолвится (нечего писать — как в
-    v1: "if not product_id: continue"), иначе — dict с колонками
-    tenant.ozon_order_costs ПЛЮС служебные (не-колоночные) поля для
-    collect(): 'consistency_ok' (bool), 'unknown_types' (list[(category,
-    type_id)] с known=False среди строк этого отправления),
-    'posting_number_resolved' (bool — резолвлен ли posting_number реальной
-    строкой tenant.ozon_orders или записан fallback'ом как unit_number).
+    Возвращает None только если accrual_rows пуст (нечего группировать —
+    вызывающий код в collect() такого не передаёт по конструкции). Строки без
+    резолвленного product_id БОЛЬШЕ НЕ ПРОПУСКАЮТСЯ (задача 3 плана «ремонт
+    данных прибыли Ozon», §3) — product_id в результате может быть None,
+    деньги отправления пишутся в любом случае. Иначе — dict с колонками
+    tenant.ozon_order_costs (включая 'src_unit_number' — исходный, сырой
+    unit_number начислений, ВСЕГДА, независимо от того, резолвился ли
+    posting_number) ПЛЮС служебные (не-колоночные) поля для collect():
+    'consistency_ok' (bool), 'unknown_types' (list[(category, type_id)] с
+    known=False среди строк этого отправления), 'posting_number_resolved'
+    (bool — резолвлен ли posting_number реальной строкой tenant.ozon_orders
+    или записан fallback'ом как unit_number).
     """
     if not accrual_rows:
         return None
@@ -234,6 +241,29 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     sale_dates = [_row_date(r.get("date")) for r in commission_rows if r.get("date") is not None]
     sale_dt = min(sale_dates) if sale_dates else None
 
+    # Датировка юнитов БЕЗ commission-блока (задача 3 плана «ремонт данных
+    # прибыли Ozon», docs/superpowers/specs/2026-08-17-ozon-data-repair-design.md
+    # §2): такой юнит не несёт ни одной commission-строки, поэтому sale_dt
+    # выше остаётся None ВСЕГДА (sale_dates строится только из commission_rows)
+    # — а return_dt остаётся None тоже, если is_return не взведён строками
+    # RETURN_TYPE_IDS (см. return_dates выше). Итог — юнит без commission-
+    # блока и без кодов 45/59 не получал вовсе никакой даты, хотя деньги по
+    # нему были начислены: −1,81 млн ₽ расходов невидимы в помесячных
+    # разрезах панели (находка ревью). Правило спеки: min(date) ВСЕХ строк
+    # юнита (не только commission/return-типных) → return_dt, если юнит
+    # возвратный (та же is_return, что уже вычислена выше), иначе → sale_dt.
+    # Применяется ТОЛЬКО когда commission-блока нет вовсе — юнит С
+    # commission-блоком датируется как раньше (регресс-проверка
+    # scripts/check-ozon-profit-calc.py, п.12: правило первой операции НЕ
+    # должно "утекать" на несвязанную более раннюю логистическую строку).
+    if not commission_rows:
+        all_dates = [_row_date(r.get("date")) for r in accrual_rows if r.get("date") is not None]
+        first_date = min(all_dates) if all_dates else None
+        if is_return:
+            return_dt = first_date
+        else:
+            sale_dt = first_date
+
     commission_sum = round(-commission_raw, 2)
     logistics_sum = round(-logistics_raw, 2)
     acquiring_sum = round(-acquiring_raw, 2)
@@ -241,10 +271,19 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
 
     cost_value_retail = 0.0 if is_return else round(seller_price, 2)
 
+    # Строки без товара (задача 3 плана, §3): sku, не резолвленный ни через
+    # каталог (tenant.ozon_products.fbo_sku), ни через резолв posting_number
+    # → tenant.ozon_orders.product_id (обе попытки уже сделаны ВЫШЕ по
+    # цепочке вызова — см. resolve_meta()) — product_id остаётся None. Раньше
+    # ("if not product_id: return None") строка тихо пропускалась ("continue"
+    # в v1) — источник разрыва инварианта ~334 тыс ₽ и 6 284 отправлений
+    # старых месяцев кабинета 1, отсутствующих из панели. Теперь строка
+    # ВСЁ РАВНО пишется — product_id NULL, деньги (cost_value_retail/
+    # commission/logistics/acquiring/loyalty/profit) на месте. Счётчик "без
+    # товара" считает collect() по result["product_id"] is None (переименован
+    # честно из skipped_no_product — строки больше не пропускаются).
     product_id = meta.get("product_id")
-    if not product_id:
-        return None
-    cost = costs.get(product_id)
+    cost = costs.get(product_id) if product_id is not None else None
 
     sum_accrued = round(sum(_num(r.get("accrued")) for r in accrual_rows), 2)
     profit = round(sum_accrued - _num(cost), 2)
@@ -263,6 +302,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
 
     return {
         "posting_number": resolved_posting_number,
+        "src_unit_number": unit_number,
         "product_id": product_id,
         "size": meta.get("size"),
         "is_return": is_return,
@@ -467,7 +507,12 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     order_costs_out = []
     mismatches = 0
     unknown_types = set()
-    skipped_no_product = 0
+    # Честное имя (переименовано из skipped_no_product — задача 3 плана
+    # «ремонт данных прибыли Ozon», §3): строки с нерезолвленным product_id
+    # БОЛЬШЕ НЕ ПРОПУСКАЮТСЯ (build_order_costs всегда возвращает строку,
+    # product_id может быть None) — счётчик теперь считает НАПИСАННЫЕ строки
+    # без товара, а не пропущенные.
+    no_product_count = 0
     unresolved_posting_number = 0
     sum_order_accrued = 0.0
 
@@ -475,8 +520,12 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         meta = resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product_by_sku)
         result = build_order_costs(unit_rows, meta, cogs_map)
         if result is None:
-            skipped_no_product += 1
+            # Теоретически недостижимо при непустом unit_rows (build_order_costs
+            # возвращает None только для accrual_rows=[]) — защитная сетка,
+            # не влияет на инвариант периода (строка не разнесена нигде).
             continue
+        if result["product_id"] is None:
+            no_product_count += 1
         if not result["consistency_ok"]:
             mismatches += 1
             comps = (result["cost_value_retail"] - result["commission"] - result["logistics"]
@@ -557,12 +606,14 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     invariant_diff = round(total_read - allocated, 2)
     if abs(invariant_diff) > _INVARIANT_TOLERANCE:
         mismatches += 1
+        # (задача 3 плана, §3): строки без product_id больше не пропускаются
+        # и не создают разрыв здесь — их деньги уже учтены в sum_order_accrued
+        # (product_id может быть NULL, но строка всё равно написана и
+        # разнесена). Оставшийся разрыв — другая причина (незнакомый тип,
+        # арифметика) и требует отдельного разбора.
         print(f"  ИНВАРИАНТ НАРУШЕН: прочитано начислений на {total_read:.2f} ₽, "
               f"разнесено (order_costs + cabinet + promo) на {allocated:.2f} ₽, "
-              f"разница {invariant_diff:+.2f} ₽"
-              + (f" (без product_id в ozon_orders пропущено отправлений: {skipped_no_product})"
-                 if skipped_no_product else ""),
-              file=sys.stderr, flush=True)
+              f"разница {invariant_diff:+.2f} ₽", file=sys.stderr, flush=True)
 
     # I3 (фикс-волна финального ревью): extra_keys = ИСХОДНЫЕ (сырые)
     # unit_number всех пересобираемых в этом прогоне юнитов — db_pg удаляет
@@ -581,8 +632,8 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
            f"кабинетных статей {len(cabinet_out)} (записано {n_cabinet}), "
            f"промо не пишется (учтено в ad_spend Performance API): {promo_count} строк, "
            f"Σ={promo_total:.2f} ₽")
-    if skipped_no_product:
-        msg += f", пропущено без product_id: {skipped_no_product}"
+    if no_product_count:
+        msg += f", без товара (product_id NULL, строка записана): {no_product_count}"
     if unresolved_posting_number:
         msg += f", posting_number не резолвлен (записан unit_number): {unresolved_posting_number}"
     if fbo_sku_collisions:

@@ -915,8 +915,13 @@ def upsert_ozon_campaign_ad_many(rows):
 
 
 # --- order_costs (прибыль по заказу Ozon) ---
-_OZ_OC_COLS = ["posting_number", "product_id", "size", "is_return", "order_dt", "sale_dt",
-               "return_dt", "cost_value_retail", "commission", "acquiring", "logistics",
+# src_unit_number — задача 3 плана «ремонт данных прибыли Ozon» (миграция 042,
+# db/migrations/042_ozon_order_costs_src_unit.sql): исходный (сырой)
+# unit_number начислений, ДО резолва в posting_number (см. docstring
+# build_order_costs). Аддитивно — контракт остальных колонок панели не
+# меняется, роуты панели о ней не знают.
+_OZ_OC_COLS = ["posting_number", "src_unit_number", "product_id", "size", "is_return", "order_dt",
+               "sale_dt", "return_dt", "cost_value_retail", "commission", "acquiring", "logistics",
                "loyalty", "cost", "qty", "profit", "self_buyout"]
 
 # Белый список коротких имён таблиц (без "tenant."), в которые допустимо писать
