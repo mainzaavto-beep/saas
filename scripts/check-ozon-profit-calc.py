@@ -14,7 +14,7 @@ scripts/check-ozon-profit-map.py — тот же приём: parse_accrual ра�
 
 Проверяет (пункты брифа задачи 3, шаг 2):
   1. продающее отправление: cost_value_retail == seller_price,
-     commission == |sale_commission|, логистика просуммирована, is_return=0;
+     commission == -sale_commission (знаковое), логистика просуммирована, is_return=0;
   2. возвратное отправление (типы 45/59 в фикстуре есть): is_return == 1,
      cost_value_retail == 0;
   3. нулевое отправление (без commission-блока, без 45/59): is_return == 0
@@ -23,8 +23,8 @@ scripts/check-ozon-profit-map.py — тот же приём: parse_accrual ра�
   4. ITEM-эквайринг (type_id=1) попадает в acquiring СВОЕГО отправления
      (тот же юнит, что и продажа, — показывает точную привязку);
   5. согласованность компонент на КАЖДОМ из 44 отправлений фикстуры:
-     cost_value_retail − |commission| − |logistics| − |acquiring| −
-     |loyalty| == SUM(accrued строк отправления), допуск 0,01;
+     cost_value_retail − commission − logistics − acquiring − loyalty
+     (ЗНАКОВОЕ вычитание, не abs()) == SUM(accrued строк отправления), допуск 0,01;
   6. инвариант периода: сумма accrued по всем отправлениям (order_costs) +
      сумма accrued кабинетных/промо строк (NON_ITEM) == сумма total_amount
      всех 79 записей фикстуры (31 643,50 ₽), допуск 0,01;
@@ -317,6 +317,110 @@ def main():
     check("build_order_costs: неоднозначный случай -> fallback на unit_number ('XYZ'), "
           "отправление НЕ потеряно (запись есть)",
           r_unresolved is not None and r_unresolved["posting_number"] == "XYZ", r_unresolved)
+
+    # --- 10. C1 (фикс-волна финального ревью, .superpowers/sdd/
+    #     2026-08-15-ozon-profit-switch/finalfix-report.md): юнит с
+    #     начислениями в ДВУХ далёких датах (продажа внутри планового окна +
+    #     упаковка неделю/месяц спустя, за границей окна) — collect() должен
+    #     группировать ПОЛНУЮ историю юнита (второй запрос без фильтра по
+    #     дате), а не только строки, попавшие в узкое плановое окно. Синтетика
+    #     подобрана так, чтобы seller_price = sale_price + coinvestment + bonus
+    #     (доказанное тождество источника, см. п.8 выше) — тогда полная запись
+    #     самосогласована (comps == SUM(accrued)), а НЕПОЛНАЯ (только строка
+    #     внутри окна, без более поздней) молча теряет логистическую строку и
+    #     завышает profit — тот самый systematic minus из C1, только с обратным
+    #     знаком на этой синтетике (потерянный МИНУС логистики завышает
+    #     прибыль; в находке C1 терялся более крупный МИНУС и профит уходил в
+    #     минус — эффект тот же класс, знак зависит от того, что именно
+    #     обрезано).
+    window_unit = "TEST-WINDOW-0001-1"
+    row_in_window = {
+        "unit_number": window_unit, "accrued_category": "POSTING", "type_id": None,
+        "sku": 1, "accrued": 700.0, "date": "2026-08-05",
+        "seller_price": 1000.0, "sale_price": 700.0, "sale_commission": -300.0,
+        "coinvestment": 0.0, "bonus": 300.0,
+    }
+    row_outside_window = {
+        "unit_number": window_unit, "accrued_category": "POSTING", "type_id": 39,  # PackingFee
+        "sku": 1, "accrued": -50.0, "date": "2026-09-20",  # 6 недель спустя — за пределами планового окна
+        "seller_price": None, "sale_price": None, "sale_commission": None,
+        "coinvestment": None, "bonus": None,
+    }
+    full_history_rows = [row_in_window, row_outside_window]
+
+    r_full = build_order_costs(full_history_rows, {"product_id": 1, "qty": 1}, {})
+    check("C1: полная история юнита -> build_order_costs вернул строку (не None)",
+          r_full is not None)
+    check("C1: полная история -> logistics учитывает строку ЗА ГРАНИЦЕЙ окна (50)",
+          r_full["logistics"] == 50.0, r_full)
+    check("C1: полная история -> согласованность компонент == SUM(accrued) (допуск 0,01)",
+          abs(comps_of(r_full) - sum_accrued(full_history_rows)) < 0.01,
+          (comps_of(r_full), sum_accrued(full_history_rows)))
+    expected_full_profit = round(sum_accrued(full_history_rows) - 0.0, 2)
+    check(f"C1: полная история -> profit == SUM(accrued обеих строк) ({expected_full_profit})",
+          r_full["profit"] == expected_full_profit, r_full["profit"])
+
+    # Контрольный пример дефекта (ДО фикса C1): группировка ТОЛЬКО строки
+    # окна (без row_outside_window) молча теряет -50 логистики и завышает
+    # profit — «выглядит» самосогласованной (comps == SUM видимых строк), но
+    # расходится с профилем полной истории. Ровно это и чинит второй SQL-
+    # запрос в collect() (см. докстроку модуля, докстроку collect()).
+    r_window_only = build_order_costs([row_in_window], {"product_id": 1, "qty": 1}, {})
+    check("C1: узкое окно (без row_outside_window) само по себе НЕ падает на "
+          "consistency_ok (иначе баг был бы заметен сторожем сразу)",
+          r_window_only["consistency_ok"] is True, r_window_only)
+    check("C1: но узкое окно ЗАНИЖАЕТ логистику относительно полной истории (0 != 50)",
+          r_window_only["logistics"] == 0.0 and r_full["logistics"] == 50.0,
+          (r_window_only["logistics"], r_full["logistics"]))
+    check("C1: и, как следствие, ЗАВЫШАЕТ profit относительно полной истории (700 != 650)",
+          r_window_only["profit"] != r_full["profit"] and r_window_only["profit"] == 700.0
+          and r_full["profit"] == 650.0,
+          (r_window_only["profit"], r_full["profit"]))
+
+    # --- 11. I3 (та же фикс-волна): DELETE-список upsert_ozon_order_costs_many
+    #     должен включать ИСХОДНЫЙ (сырой) unit_number пересобираемых юнитов,
+    #     а не только posting_number строк ЭТОГО прогона — иначе смена
+    #     резолва posting_number между прогонами (сырой fallback -> полная
+    #     форма) оставляет сироту в БД (двойной счёт, живой кандидат
+    #     49789280-0223, каб.1). Чистая функция без БД:
+    #     worker.db_pg._order_costs_delete_keys.
+    from worker.db_pg import _order_costs_delete_keys
+
+    # 11a. Прошлый прогон писал под сырым unit_number (meta не нашлась,
+    #      fallback) -> строка "49789280-0223" уже в БД. Этот прогон нашёл
+    #      meta и резолвил ПОЛНУЮ форму -> rows несёт только новый
+    #      posting_number. extra_keys (исходные unit_number пересобираемых
+    #      юнитов этого прогона) обязаны вернуть И старый ключ тоже.
+    prior_raw_key = "49789280-0223"
+    this_run_rows = [{"posting_number": "49789280-0223-1", "product_id": 1}]
+    keys = _order_costs_delete_keys(this_run_rows, extra_keys=[prior_raw_key])
+    check("I3: DELETE-список = {новый posting_number} ∪ {исходный unit_number} "
+          "(сирота под старым ключом будет удалена)",
+          keys == sorted({"49789280-0223-1", "49789280-0223"}), keys)
+
+    # 11b. Без extra_keys (старое поведение) сирота осталась бы НЕ удалённой —
+    #      явно показываем разницу, чтобы регресс на "забыли передать extra_keys"
+    #      был заметен.
+    keys_without_extra = _order_costs_delete_keys(this_run_rows, extra_keys=None)
+    check("I3: БЕЗ extra_keys старый ключ в DELETE-список не попадает (это и есть "
+          "баг, который чинит extra_keys)",
+          prior_raw_key not in keys_without_extra, keys_without_extra)
+
+    # 11c. extra_keys, совпадающий с posting_number этого прогона (юнит
+    #      всегда резолвился одинаково) — не даёт дублей в списке.
+    keys_dedup = _order_costs_delete_keys(
+        [{"posting_number": "STABLE-1"}], extra_keys=["STABLE-1"])
+    check("I3: дедупликация — одинаковый ключ из rows и extra_keys не дублируется",
+          keys_dedup == ["STABLE-1"], keys_dedup)
+
+    # 11d. rows пустой (все пересобираемые юниты этого прогона не резолвили
+    #      product_id -> skipped), но extra_keys непуст -> сироты всё равно
+    #      должны попасть под DELETE (юнит "пересобирался", просто ничего не
+    #      получилось записать заново).
+    keys_only_extra = _order_costs_delete_keys([], extra_keys=["ORPHAN-ONLY-1"])
+    check("I3: rows пуст, extra_keys непуст -> ключ всё равно в списке (сирота "
+          "'пересобираемого', но не резолвленного юнита тоже чистится)",
+          keys_only_extra == ["ORPHAN-ONLY-1"], keys_only_extra)
 
     print()
     if failed:

@@ -494,9 +494,10 @@ services_amount = 36 145,08`) не сходится с `total_amount`, пото�
   отправление — возврат);
 - `profit = SUM(accrued всех строк отправления) − cost` (`cost` —
   `tenant.cost_overrides`, как в v1);
-- инвариант строки: `cost_value_retail − |commission| − |logistics| −
-  |acquiring| − |loyalty| == SUM(accrued отправления)` (допуск 0,01 ₽,
-  проверяется самим сборщиком на каждом прогоне).
+- инвариант строки: `cost_value_retail − commission − logistics − acquiring
+  − loyalty == SUM(accrued отправления)` (ЗНАКОВОЕ вычитание — компоненты
+  уже несут знак, не abs(); допуск 0,01 ₽, проверяется самим сборщиком на
+  каждом прогоне).
 - Кабинетный уровень (`unit_number IS NULL`, `NON_ITEM`): бакет
   `cabinet` → `tenant.ozon_cabinet_costs` (`cost_type='accrual_<type_id>'`);
   бакет `promo` (`NONITEM_PROMO_TYPE_IDS = {41, 54, 33}`, реклама уже

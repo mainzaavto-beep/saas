@@ -23,7 +23,7 @@ unit_number, NON_ITEM — никогда (проверено отдельным 
 count(*) FILTER (WHERE unit_number IS NULL/IS NOT NULL)).
 
 При появлении новых типов сторож (check-ozon-profit-invariant, задача 4)
-не даст им потеряться молча — see partial-exit контракт ozon_accruals.py.
+не даст им потеряться молча — см. partial-exit контракт ozon_accruals.py.
 """
 
 # Маркер возвратного отправления (не корзина, отдельная константа) —

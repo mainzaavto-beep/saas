@@ -927,7 +927,21 @@ _OZ_OC_COLS = ["posting_number", "product_id", "size", "is_return", "order_dt", 
 _OZ_OC_ALLOWED_TABLES = {"ozon_order_costs", "ozon_order_costs_shadow"}
 
 
-def upsert_ozon_order_costs_many(rows, table="ozon_order_costs"):
+def _order_costs_delete_keys(rows, extra_keys=None):
+    """Чистая функция (без БД) — множество ключей DELETE для
+    upsert_ozon_order_costs_many: posting_number всех вставляемых строк
+    ОБЪЕДИНЁННЫЙ с extra_keys (исходные unit_number ВСЕХ пересобираемых в
+    этом прогоне юнитов — см. докстроку upsert_ozon_order_costs_many, I3
+    фикс-волны финального ревью задачи «переезд финансов Ozon на методы
+    начислений»). Вынесена отдельно ради юнит-теста без БД
+    (scripts/check-ozon-profit-calc.py)."""
+    keys = {r["posting_number"] for r in rows if r.get("posting_number")}
+    if extra_keys:
+        keys |= set(extra_keys)
+    return sorted(keys)
+
+
+def upsert_ozon_order_costs_many(rows, table="ozon_order_costs", extra_keys=None):
     """Batch DELETE+INSERT (одна транзакция) строк прибыли по отправлению.
 
     table — короткое имя таблицы БЕЗ "tenant." (по умолчанию боевая); второе
@@ -943,15 +957,28 @@ def upsert_ozon_order_costs_many(rows, table="ozon_order_costs"):
     db_pg.py). Для этой таблицы (PK ровно posting_number, максимум одна
     строка на отправление) ON CONFLICT DO UPDATE дал бы тот же результат, но
     явный DELETE+INSERT — тот же приём, что и в остальных пересобираемых
-    таблицах проекта, и явно гарантирует состояние "ровно из этого прогона"."""
+    таблицах проекта, и явно гарантирует состояние "ровно из этого прогона".
+
+    extra_keys — ДОПОЛНИТЕЛЬНЫЕ ключи DELETE поверх posting_number строк rows
+    (I3, фикс-волна финального ревью): исходные (сырые) unit_number всех
+    пересобираемых юнитов этого прогона. Нужны, потому что posting_number
+    строки может СМЕНИТЬСЯ между прогонами — resolve_meta() резолвит его по
+    tenant.ozon_orders, который сам пополняется отдельным сборщиком; юнит,
+    попавший в БД в прошлый раз под сырым unit_number (meta ещё не нашлась,
+    fallback), в этом прогоне может резолвиться в ПОЛНУЮ форму
+    (posting_number с финальным "-N") — DELETE по одному только НОВОМУ
+    posting_number старую fallback-строку не заденет, она осиротеет и даст
+    двойной счёт. extra_keys закрывает это: раз юнит пересобирается в этом
+    прогоне (он в списке touched), удаляем И под его сырым unit_number
+    тоже, независимо от того, как он резолвился раньше и сейчас."""
     if table not in _OZ_OC_ALLOWED_TABLES:
         raise ValueError(f"недопустимая таблица order_costs: {table!r} "
                           f"(разрешено: {sorted(_OZ_OC_ALLOWED_TABLES)})")
-    if not rows:
+    if not rows and not extra_keys:
         return 0
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
-    posting_numbers = sorted({r["posting_number"] for r in rows if r.get("posting_number")})
+    delete_keys = _order_costs_delete_keys(rows, extra_keys)
     all_cols = ["cabinet_id"] + _OZ_OC_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
     upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_OC_COLS + ["updated_at"])
@@ -960,12 +987,13 @@ def upsert_ozon_order_costs_many(rows, table="ozon_order_costs"):
     batch = [[cid] + [r.get(c) for c in _OZ_OC_COLS] + [now] for r in rows]
     with get_connection() as conn:
         with conn.cursor() as cur:
-            if posting_numbers:
+            if delete_keys:
                 cur.execute(
                     f"DELETE FROM tenant.{table} WHERE cabinet_id = %s AND posting_number = ANY(%s)",
-                    [cid, posting_numbers],
+                    [cid, delete_keys],
                 )
-            cur.executemany(sql, batch)
+            if batch:
+                cur.executemany(sql, batch)
     return len(rows)
 
 

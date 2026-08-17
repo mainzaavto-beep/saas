@@ -48,8 +48,9 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
 + русский лог + exit-код 3 по образцу ozon_accruals.py::partial_exit_code;
 строки при этом всё равно пишутся — падение по СИГНАЛУ, не по данным):
   - согласованность компонент на каждом отправлении: cost_value_retail −
-    |commission| − |logistics| − |acquiring| − |loyalty| == SUM(accrued
-    строк этого отправления) — см. build_order_costs.consistency_ok;
+    commission − logistics − acquiring − loyalty == SUM(accrued строк этого
+    отправления) — ЗНАКОВОЕ вычитание (компоненты уже несут знак после
+    build_order_costs, не abs()) — см. build_order_costs.consistency_ok;
   - инвариант периода: SUM(accrued всех прочитанных строк начислений) ==
     SUM(accrued строк, попавших в order_costs) + SUM(accrued кабинетных
     строк, включая promo) — если что-то не разнеслось (например, отправление
@@ -61,6 +62,31 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
 self_buyout всегда 0 (грабля #138, сохранено из v1). Токен НЕ нужен —
 данные уже в БД (tenant.ozon_accruals собраны отдельным сборщиком
 ozon_accruals.py).
+
+⚠️ ОКНО СБОРА vs ПОЛНАЯ ИСТОРИЯ ЮНИТА (фикс-волна финального ревью задачи
+«переезд финансов Ozon на методы начислений», Critical 1 + Important 1):
+плановый прогон вызывается с узким окном дат (run_saas_collect.sh:50,
+−2..0), а бэкфилл/онбординг — с произвольным диапазоном. Раньше collect()
+группировал по unit_number ТОЛЬКО строки, попавшие в этот диапазон — если
+у отправления есть начисления ЗА ГРАНИЦЕЙ окна (возврат/сторно/упаковка
+неделю спустя — обычное дело, docs/ozon-profit-switch-delta.md §6.3 уже
+показал тот же класс дефекта на границе календарных месяцев при пересборе
+shadow), пересборка узким окном ВИДЕЛА только часть строк юнита и своим
+DELETE+INSERT затирала ранее записанную ПОЛНУЮ строку неполной — те же
+деньги теряются молча на каждом плановом тике. Починка в два шага:
+  1) (I1) окно дат самого SELECT из tenant.ozon_accruals раздвигается тем
+     же способом, что и в ozon_accruals.py::resolve_window (импортирован
+     отсюда, не продублирован) — MIN_LOOKBACK_DAYS=45, конец окна не
+     позже вчера — иначе рестейтменты за пределами узкого планового окна,
+     но внутри 45-дневного лага Ozon, никогда не переезжают в прибыль
+     (то же самое верно и для кабинетных accrual_%-статей, т.к. они
+     читаются из ТОГО ЖЕ окна, просто по дате, а не по unit_number);
+  2) (C1) этим (уже раздвинутым) окном определяются только КАКИЕ
+     unit_number вообще трогать в этом прогоне (`touched_unit_numbers`) —
+     САМИ строки для группировки берутся ВТОРЫМ запросом без фильтра по
+     дате (`unit_number = ANY(...)`, вся история юнита). NON_ITEM
+     (кабинетные) строки этого раздвоения не касаются — они группируются
+     по (type_id, date), не по юниту, поэтому им хватает первого запроса.
 """
 import argparse
 import os
@@ -73,6 +99,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
 from ozon_profit_map import classify_row, RETURN_TYPE_IDS
+from ozon_accruals import resolve_window
 
 DEFAULT_TARGET_TABLE = "tenant.ozon_order_costs"
 ALLOWED_TARGET_TABLES = {"tenant.ozon_order_costs", "tenant.ozon_order_costs_shadow"}
@@ -343,21 +370,20 @@ def partial_exit_code(mismatches: int):
 def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     global _MISMATCHES
     short_table = _validate_target_table(target_table)
-    print(f"[ozon_order_costs] расчёт прибыли из начислений {date_from or 'начало'}.."
-          f"{date_to or 'конец'} -> {target_table}", flush=True)
+    # I1 (фикс-волна финального ревью): тот же lookback-пол, что у ozon_accruals
+    # (45 дней, конец — не позже вчера) — узкое плановое окно (−2..0) само по
+    # себе НЕ ловит рестейтменты старше 3 дней; resolve_window раздвигает его,
+    # явные широкие бэкфиллы не трогает (см. докстроку модуля).
+    d_from, d_to = resolve_window(date_from, date_to)
+    print(f"[ozon_order_costs] расчёт прибыли из начислений {d_from}..{d_to} "
+          f"-> {target_table}", flush=True)
     db_pg.init()
 
-    where = ""
-    params = []
-    if date_from:
-        where += " AND date >= %s"; params.append(date_from)
-    if date_to:
-        where += " AND date <= %s"; params.append(date_to)
-    rows = db_pg.query(
+    window_rows = db_pg.query(
         "SELECT accrual_id, line_no, date, unit_number, accrued_category, type_id, sku, "
         "accrued, seller_price, sale_price, sale_commission, coinvestment, bonus "
-        "FROM tenant.ozon_accruals WHERE 1=1" + where +
-        " ORDER BY unit_number, accrual_id, line_no", params)
+        "FROM tenant.ozon_accruals WHERE date >= %s AND date <= %s "
+        "ORDER BY unit_number, accrual_id, line_no", [d_from.isoformat(), d_to.isoformat()])
 
     # cost_overrides — единый источник себестоимости (та же логика, что в v1).
     cogs_map = {r["product_id"]: float(r["cost"]) for r in db_pg.query(
@@ -365,13 +391,26 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         "WHERE platform='ozon' AND effective_from <= current_date "
         "ORDER BY product_id, effective_from DESC") if r["cost"] is not None}
 
+    # C1 (фикс-волна финального ревью): окном (уже раздвинутым I1) определяем
+    # только КАКИЕ unit_number трогать в этом прогоне — cabinet_rows (NON_ITEM,
+    # группировка по дате, юнита не касается) берём прямо из window_rows, а вот
+    # САМИ строки для позаказной группировки — ВТОРЫМ запросом без фильтра по
+    # дате (вся история юнита, см. докстроку модуля): иначе юнит с начислением
+    # за границей окна (возврат/сторно/упаковка неделю спустя) пересобирался бы
+    # из неполных строк и затирал полную запись.
+    touched_unit_numbers = sorted({r["unit_number"] for r in window_rows if r["unit_number"] is not None})
+    cabinet_rows = [r for r in window_rows if r["unit_number"] is None]
+
+    history_rows = db_pg.query(
+        "SELECT accrual_id, line_no, date, unit_number, accrued_category, type_id, sku, "
+        "accrued, seller_price, sale_price, sale_commission, coinvestment, bonus "
+        "FROM tenant.ozon_accruals WHERE unit_number = ANY(%s) "
+        "ORDER BY unit_number, accrual_id, line_no",
+        [touched_unit_numbers]) if touched_unit_numbers else []
+
     by_unit = defaultdict(list)
-    cabinet_rows = []  # has_unit=False (NON_ITEM; unit_number всегда NULL при записи ozon_accruals.py)
-    for r in rows:
-        if r["unit_number"] is not None:
-            by_unit[r["unit_number"]].append(r)
-        else:
-            cabinet_rows.append(r)
+    for r in history_rows:
+        by_unit[r["unit_number"]].append(r)
 
     # order_dt/size/product_id/posting_number — та же логика, что в v1
     # (SELECT из ozon_orders, словарь по posting_number, последняя строка
@@ -397,8 +436,10 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     # группы дня; без этого исключения оба резолвились в posting_number
     # "63981463-0371-1", INSERT ... ON CONFLICT молча оставлял только
     # последнего в батче (44 группы -> 43 строки в БД, обнаружено сверкой
-    # после ревью задачи 3).
-    exact_unit_numbers = set(by_unit.keys())
+    # после ревью задачи 3). exact_unit_numbers == touched_unit_numbers (то же
+    # множество, что определило состав second-query выше, C1) — единственные
+    # unit_number, которые ТОЧНО резолвятся в этом прогоне.
+    exact_unit_numbers = set(touched_unit_numbers)
     order_meta_by_base = defaultdict(list)
     for pn, r in order_meta.items():
         if pn in exact_unit_numbers:
@@ -442,7 +483,7 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                      - result["acquiring"] - result["loyalty"])
             unit_sum = round(sum(_num(r.get("accrued")) for r in unit_rows), 2)
             print(f"  расхождение согласованности: posting_number={unit_number} "
-                  f"cost_value_retail-|commission|-|logistics|-|acquiring|-|loyalty|="
+                  f"cost_value_retail-commission-logistics-acquiring-loyalty="
                   f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
         unknown_types.update(result.pop("unknown_types"))
         result.pop("consistency_ok")
@@ -504,8 +545,14 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
 
     # Инвариант периода: всё прочитанное из ozon_accruals должно быть либо в
     # order_costs, либо в кабинетных строках (включая promo, который не
-    # пишется, но учтён в сумме). См. докстроку модуля.
-    total_read = round(sum(_num(r.get("accrued")) for r in rows), 2)
+    # пишется, но учтён в сумме). См. докстроку модуля. C1: "прочитанное" —
+    # это уже НЕ window_rows напрямую (POSTING/ITEM часть window_rows —
+    # подмножество history_rows по конструкции ANY(unit_number), поэтому
+    # суммировать оба значило бы задвоить эту часть) — cabinet_rows (окно, по
+    # дате) + history_rows (вся история ТРОНУТЫХ юнитов, C1).
+    total_read = round(
+        sum(_num(r.get("accrued")) for r in cabinet_rows)
+        + sum(_num(r.get("accrued")) for r in history_rows), 2)
     allocated = round(sum_order_accrued + sum_cabinet + promo_total, 2)
     invariant_diff = round(total_read - allocated, 2)
     if abs(invariant_diff) > _INVARIANT_TOLERANCE:
@@ -517,9 +564,17 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                  if skipped_no_product else ""),
               file=sys.stderr, flush=True)
 
-    n_order = db_pg.upsert_ozon_order_costs_many(order_costs_out, short_table)
-    eff_from = date_from or (min(r["date"] for r in rows) if rows else None)
-    eff_to = date_to or (max(r["date"] for r in rows) if rows else None)
+    # I3 (фикс-волна финального ревью): extra_keys = ИСХОДНЫЕ (сырые)
+    # unit_number всех пересобираемых в этом прогоне юнитов — db_pg удаляет
+    # ПО НИМ ТОЖЕ, не только по итоговому posting_number этого прогона.
+    # Без этого: если прошлый прогон резолвил posting_number в fallback
+    # (сырой unit_number, meta не нашлась) и этой строкой попал в БД, а
+    # ЭТОТ прогон нашёл meta и резолвил ПОЛНУЮ форму — старая fallback-
+    # строка осталась бы сиротой (двойной счёт), т.к. DELETE по одному
+    # только новому posting_number её не задевает.
+    n_order = db_pg.upsert_ozon_order_costs_many(
+        order_costs_out, short_table, extra_keys=touched_unit_numbers)
+    eff_from, eff_to = d_from.isoformat(), d_to.isoformat()
     n_cabinet = db_pg.upsert_ozon_cabinet_costs_many(cabinet_out, eff_from, eff_to)
 
     msg = (f"[ozon_order_costs] отправлений {len(order_costs_out)} (записано {n_order}), "

@@ -166,13 +166,8 @@ const pad = (s, n) => String(s).padEnd(n);
 const padL = (s, n) => String(s).padStart(n);
 
 const INVARIANT_SQL = `
-WITH oc_week AS (
-  SELECT posting_number
-  FROM tenant.ozon_order_costs
-  WHERE cabinet_id = $1 AND COALESCE(sale_dt, return_dt) BETWEEN $2::text AND $3::text
-),
-order_part AS (
-  SELECT COALESCE(SUM(cost_value_retail - ABS(commission) - ABS(logistics) - ABS(acquiring) - ABS(loyalty)), 0) AS s,
+WITH order_part AS (
+  SELECT COALESCE(SUM(cost_value_retail - commission - logistics - acquiring - loyalty), 0) AS s,
          count(*) AS n
   FROM tenant.ozon_order_costs
   WHERE cabinet_id = $1 AND COALESCE(sale_dt, return_dt) BETWEEN $2::text AND $3::text
