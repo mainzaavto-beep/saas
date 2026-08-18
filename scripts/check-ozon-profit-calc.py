@@ -422,6 +422,60 @@ def main():
           "'пересобираемого', но не резолвленного юнита тоже чистится)",
           keys_only_extra == ["ORPHAN-ONLY-1"], keys_only_extra)
 
+    # --- 11e. I4 (задача 6 плана «ремонт данных прибыли Ozon», НАХОДКА
+    #     после подмены — task-6-report.md): I3 закрывает ТОЛЬКО переход
+    #     «юнит записан под сырым unit_number (fallback) -> резолвится в
+    #     этом прогоне». Живые данные 2026-08-18 показали ДРУГОЙ, не
+    #     покрытый I3 переход: юнит УЖЕ был резолвлен на прошлом прогоне
+    #     (суффиксная форма "0115022887-0449-5" — resolve_meta нашёл
+    #     только уникального base-кандидата), а в этом прогоне resolve_meta
+    #     нашёл ТОЧНОЕ совпадение в tenant.ozon_orders (которая сама живая,
+    #     пополняется независимым сборщиком) и отдал БАЗОВУЮ форму
+    #     "0115022887-0449" — 20 таких пар кабинета 1 задвоили деньги
+    #     (полная сверка сумм — task-6-report.md). Ни posting_number этого
+    #     прогона, ни сырой unit_number (I3 extra_keys) не совпадают со
+    #     СТАРЫМ суффиксным posting_number -> I3-ключей недостаточно.
+    #     Фикс: ВТОРОЕ условие DELETE — по src_unit_number (worker/
+    #     db_pg.py::_order_costs_delete_unit_keys) — эта колонка хранит
+    #     ИСХОДНЫЙ unit_number буквально независимо от формы posting_number,
+    #     поэтому находит старую строку под ЛЮБОЙ её прежней формой.
+    from worker.db_pg import _order_costs_delete_unit_keys
+
+    def _simulate_order_costs_delete(existing_rows, posting_keys, unit_keys):
+        """Локальная имитация предиката DELETE
+        upsert_ozon_order_costs_many (posting_number = ANY(posting_keys) OR
+        src_unit_number = ANY(unit_keys)) — БЕЗ БД, только ради этого теста."""
+        pk, uk = set(posting_keys), set(unit_keys)
+        return [r for r in existing_rows
+                if r["posting_number"] not in pk and r.get("src_unit_number") not in uk]
+
+    prior_suffixed_row = {"posting_number": "0115022887-0449-5",
+                           "src_unit_number": "0115022887-0449"}
+    unrelated_row = {"posting_number": "UNRELATED-1", "src_unit_number": "UNRELATED-1"}
+    this_run_rows_i4 = [{"posting_number": "0115022887-0449", "product_id": 1}]
+    extra_keys_i4 = ["0115022887-0449"]  # touched_unit_numbers этого прогона
+
+    posting_keys_i4 = _order_costs_delete_keys(this_run_rows_i4, extra_keys=extra_keys_i4)
+    check("I4: I3-ключей (posting_number этого прогона ∪ сырой unit_number) НЕДОСТАТОЧНО "
+          "— старый суффиксный posting_number среди них отсутствует (это и есть баг)",
+          "0115022887-0449-5" not in posting_keys_i4, posting_keys_i4)
+
+    unit_keys_i4 = _order_costs_delete_unit_keys(extra_keys_i4)
+    check("I4: _order_costs_delete_unit_keys вернул сырой unit_number этого прогона",
+          unit_keys_i4 == ["0115022887-0449"], unit_keys_i4)
+
+    survivors_without_fix = _simulate_order_costs_delete(
+        [prior_suffixed_row, unrelated_row], posting_keys_i4, unit_keys=[])
+    check("I4: БЕЗ второго условия (src_unit_number) старая суффиксная строка "
+          "выжила бы — это и есть баг, который чинит I4",
+          survivors_without_fix == [prior_suffixed_row, unrelated_row], survivors_without_fix)
+
+    survivors_with_fix = _simulate_order_costs_delete(
+        [prior_suffixed_row, unrelated_row], posting_keys_i4, unit_keys_i4)
+    check("I4: С фиксом старая суффиксная строка удаляется по src_unit_number "
+          "(не осиротеет, двойного счёта не будет), не связанная строка выживает",
+          survivors_with_fix == [unrelated_row], survivors_with_fix)
+
     # --- 12. Датировка юнитов БЕЗ commission-блока (задача 3 плана «ремонт
     #     данных прибыли Ozon», docs/superpowers/specs/
     #     2026-08-17-ozon-data-repair-design.md §2): −1,81 млн ₽ расходов были

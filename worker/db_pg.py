@@ -946,6 +946,38 @@ def _order_costs_delete_keys(rows, extra_keys=None):
     return sorted(keys)
 
 
+def _order_costs_delete_unit_keys(extra_keys=None):
+    """Чистая функция (без БД) — множество src_unit_number для ВТОРОГО
+    условия DELETE в upsert_ozon_order_costs_many (I4, находка задачи 6
+    плана «ремонт данных прибыли Ozon», task-6-report.md: 20 задвоенных
+    постингов кабинета 1 после подмены).
+
+    I3 (см. _order_costs_delete_keys) страхует ТОЛЬКО переход «юнит
+    записан под сырым unit_number (fallback, meta не нашлась) -> в этом
+    прогоне резолвится в posting_number» — extra_keys (сырой unit_number)
+    сам оказывается ключом DELETE. Но posting_number юнита может смениться
+    и МЕЖДУ ДВУМЯ УЖЕ РЕЗОЛВЛЕННЫМИ формами: resolve_meta() резолвит его
+    против ЖИВОЙ tenant.ozon_orders на каждом прогоне без фиксации снимка
+    — если на одном прогоне точного совпадения ещё не было и юнит
+    резолвился уникальным base-кандидатом (суффиксная форма, например
+    "0115022887-0449-5"), а на следующем прогоне (после того как
+    ozon_orders догнал точное совпадение) резолвится буквально
+    ("0115022887-0449"), НИ posting_number этого прогона, НИ сырой
+    unit_number (extra_keys) не совпадают со СТАРЫМ суффиксным
+    posting_number — I3-ключи его не ловят, старая строка осиротевает,
+    двойной счёт денег одного и того же начисления.
+
+    Закрывается ВТОРЫМ условием DELETE — по src_unit_number, а не
+    posting_number: build_order_costs пишет в src_unit_number ИСХОДНЫЙ
+    (сырой) unit_number буквально, независимо от того, как резолвился
+    posting_number (см. докстроку колонки в ozon_order_costs.py) — поэтому
+    ЛЮБАЯ ранее записанная строка пересобираемого в этом прогоне юнита,
+    под какой бы формой posting_number она ни лежала, имеет src_unit_number
+    РОВНО из extra_keys и будет найдена и удалена этим условием, вне
+    зависимости от того, как юнит резолвился раньше и сейчас."""
+    return sorted(set(extra_keys)) if extra_keys else []
+
+
 def upsert_ozon_order_costs_many(rows, table="ozon_order_costs", extra_keys=None):
     """Batch DELETE+INSERT (одна транзакция) строк прибыли по отправлению.
 
@@ -975,7 +1007,21 @@ def upsert_ozon_order_costs_many(rows, table="ozon_order_costs", extra_keys=None
     posting_number старую fallback-строку не заденет, она осиротеет и даст
     двойной счёт. extra_keys закрывает это: раз юнит пересобирается в этом
     прогоне (он в списке touched), удаляем И под его сырым unit_number
-    тоже, независимо от того, как он резолвился раньше и сейчас."""
+    тоже, независимо от того, как он резолвился раньше и сейчас.
+
+    ВТОРОЕ условие DELETE — по src_unit_number (I4, находка задачи 6 плана
+    «ремонт данных прибыли Ozon», task-6-report.md): I3 закрывает только
+    переход «нерезолвлено -> резолвлено». Между ДВУМЯ УЖЕ РЕЗОЛВЛЕННЫМИ
+    формами (например, суффиксная "0115022887-0449-5" на одном прогоне ->
+    точная "0115022887-0449" на другом, resolve_meta резолвит против ЖИВОЙ
+    tenant.ozon_orders без фиксации снимка) НИ posting_number этого
+    прогона, НИ сырой unit_number (I3) со старым ключом не совпадают —
+    старая строка осиротевает, деньги считаются дважды (живые данные,
+    2026-08-18: 20 таких пар кабинета 1 после полного пересчёта). Функция
+    _order_costs_delete_unit_keys добавляет DELETE по src_unit_number =
+    ANY(extra_keys) — эта колонка хранит ИСХОДНЫЙ unit_number буквально
+    независимо от того, как резолвился posting_number, поэтому находит
+    старую строку под ЛЮБОЙ её прежней формой."""
     if table not in _OZ_OC_ALLOWED_TABLES:
         raise ValueError(f"недопустимая таблица order_costs: {table!r} "
                           f"(разрешено: {sorted(_OZ_OC_ALLOWED_TABLES)})")
@@ -984,6 +1030,7 @@ def upsert_ozon_order_costs_many(rows, table="ozon_order_costs", extra_keys=None
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
     delete_keys = _order_costs_delete_keys(rows, extra_keys)
+    delete_unit_keys = _order_costs_delete_unit_keys(extra_keys)
     all_cols = ["cabinet_id"] + _OZ_OC_COLS + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
     upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_OC_COLS + ["updated_at"])
@@ -994,8 +1041,9 @@ def upsert_ozon_order_costs_many(rows, table="ozon_order_costs", extra_keys=None
         with conn.cursor() as cur:
             if delete_keys:
                 cur.execute(
-                    f"DELETE FROM tenant.{table} WHERE cabinet_id = %s AND posting_number = ANY(%s)",
-                    [cid, delete_keys],
+                    f"DELETE FROM tenant.{table} WHERE cabinet_id = %s "
+                    f"AND (posting_number = ANY(%s) OR src_unit_number = ANY(%s))",
+                    [cid, delete_keys, delete_unit_keys],
                 )
             if batch:
                 cur.executemany(sql, batch)
