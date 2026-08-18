@@ -235,7 +235,7 @@ async function collectOzon(limit, shopName) {
             p.brand           AS brand,
             p.category        AS subject,
             p.im_url          AS im_url,
-            oc.order_dt, oc.sale_dt, oc.return_dt, o.cancel_dt,
+            oc.order_dt, oc.sale_dt, oc.return_dt, o.cancel_dt, o.status AS order_status,
             oc.is_return, oc.self_buyout,
             oc.qty,
             COALESCE(co.cost, oc.cost) AS cost,
@@ -320,6 +320,12 @@ async function collectOzon(limit, shopName) {
     const { status } = r;
     let group = "delivering", label = "Доставляется";
     if (r.is_cancel === 1 || status === "cancelled") { group = "cancelled"; label = "Отменён"; }
+    // F3 (фикс-волна финального ревью 2026-08-18): заказ УЖЕ доставлен
+    // (Ozon.status='delivered'), но order_costs его ещё не подхватил (юнит
+    // без commission-блока — сборщик его не пишет вовсе, см.
+    // worker/collectors/ozon_order_costs.py::IN_TRANSIT_ORDER_STATUSES) —
+    // раньше показывался "Доставляется" (default), хотя физически уже нет.
+    else if (status === "delivered") { group = "delivered"; label = "Доставлен"; }
     else if (status === "awaiting_packaging") { group = "delivering"; label = "Ожидает упаковки"; }
     else if (status === "awaiting_deliver") { group = "delivering"; label = "Ожидает отгрузки"; }
     mapped.push({ ...r, platform: "ozon", shop: shopName, statusGroup: group, statusLabel: label });
@@ -327,9 +333,18 @@ async function collectOzon(limit, shopName) {
   return mapped;
 }
 
+// F3 (фикс-волна финального ревью 2026-08-18): те же три "в пути" статуса
+// заказа, что worker/collectors/ozon_order_costs.py::IN_TRANSIT_ORDER_
+// STATUSES — держим синхронно (комментарий-маркер вместо общего модуля,
+// т.к. Python-сборщик и Node-роут не делят код).
+const IN_TRANSIT_ORDER_STATUSES = new Set(["delivering", "awaiting_packaging", "awaiting_deliver"]);
+
 function ozonStatusGroup(r) {
   if (r.is_return === 1) return "return";
-  if (r.sale_dt) return "delivered";
+  // Строка с sale_dt, но заказ ПО СТАТУСУ ozon_orders всё ещё в пути (после
+  // F3 в сборщике — редкий остаток: рассинхрон заказа/начислений, не
+  // штатный случай) НЕ должна показывать "доставлен".
+  if (r.sale_dt && !IN_TRANSIT_ORDER_STATUSES.has(r.order_status)) return "delivered";
   // Ozon: есть явный статус в orders.status, но в order_costs его нет —
   // используем эвристику по датам
   if (r.cancel_dt) return "cancelled";
@@ -337,7 +352,7 @@ function ozonStatusGroup(r) {
 }
 function ozonStatusLabel(r) {
   if (r.is_return === 1) return "Возврат";
-  if (r.sale_dt) return "Доставлен";
+  if (r.sale_dt && !IN_TRANSIT_ORDER_STATUSES.has(r.order_status)) return "Доставлен";
   if (r.cancel_dt) return "Отменён";
   return "Доставляется";
 }

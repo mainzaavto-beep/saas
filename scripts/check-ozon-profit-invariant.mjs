@@ -387,12 +387,32 @@ inbound AS (
   -- числа совпадений, JOIN бы задвоил accrued. Совпадение семейного ключа
   -- (не только точное) покрывает и склеенных (merge_unit_siblings)
   -- сиблингов тоже (иначе их вклад в «входящую» утечку недосчитывался бы).
+  --
+  -- F2 (фикс-волна финального ревью 2026-08-18): семейная ветка (совпадение
+  -- family_key, НЕ точное unit_number) обязана исключать строки начислений
+  -- a.unit_number, у которых уже ЕСТЬ СОБСТВЕННАЯ строка tenant.ozon_
+  -- order_costs (свой src_unit_number/posting_number, свой признанный
+  -- COALESCE(sale_dt, return_dt) — свои деньги учтены ТОЧНО через detail/
+  -- order_part где-то в СВОЁМ периоде). Без исключения неоднозначная семья
+  -- (2+ commission-братьев, merge_unit_siblings НЕ склеил — оба остались
+  -- отдельными order_costs-строками) ложно приписывает вне-недельные деньги
+  -- ЧУЖОГО, уже учтённого юнита ЭТОЙ inbound-неделе — двойной счёт, ровно то
+  -- же по духу нарушение, которое ROW_NUMBER+rn=1 в detail_candidates выше
+  -- уже предотвращает для исходящей ветки. oc_fam (выше) — тот же источник,
+  -- что и detail_candidates, переиспользуем вместо второго обращения к
+  -- tenant.ozon_order_costs.
   SELECT COALESCE(SUM(a.accrued), 0) AS s, count(*) AS n
   FROM tenant.ozon_accruals a
   WHERE a.cabinet_id = $1 AND a.date NOT BETWEEN $2::date AND $3::date
     AND (
       a.unit_number IN (SELECT unit_number FROM inbound_units)
-      OR ${familyKeySql('a.unit_number')} IN (SELECT family_key FROM inbound_units)
+      OR (
+        ${familyKeySql('a.unit_number')} IN (SELECT family_key FROM inbound_units)
+        AND NOT EXISTS (
+          SELECT 1 FROM oc_fam oc3
+          WHERE oc3.cabinet_id = $1 AND oc3.unit_col = a.unit_number
+        )
+      )
     )
 )
 SELECT
@@ -417,8 +437,9 @@ const pool = new pg.Pool(readonlyPgConfig());
 console.log('Сторож недельного инварианта прибыли Ozon (новая модель — метод начислений)');
 console.log(
   `Окно: ${periods.length} период(ов) — ${periods[0].label} .. ${periods[periods.length - 1].label} `
-  + `(пороги: promo↔ad_spend ${fmtRub(promoThreshold)} ₽, доля «неразнесено» `
-  + `${unresolvedThresholdPct}% при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽)`
+  + `(пороги: promo↔ad_spend ${fmtRub(promoThreshold)} ₽, доля «неразнесено» (Check 2) `
+  + `${unresolvedThresholdPct}% при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽, доля «входящая утечка» `
+  + `(Check 4) ${inboundThresholdPct}% при |Σ| ≥ ${fmtRub(inboundFloorRub)} ₽)`
 );
 console.log('');
 

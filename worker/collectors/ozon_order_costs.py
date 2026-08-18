@@ -148,6 +148,23 @@ _INVARIANT_TOLERANCE = 0.01
 # (см. app/api/cabinets/[id]/orders/route.js) вместо фантомного убытка.
 MATURITY_THRESHOLD_DAYS = 3
 
+# F3 (фикс-волна финального ревью 2026-08-18): зрелость юнита БЕЗ
+# commission-блока меряется от возраста ЕГО ОПЕРАЦИЙ (last_date выше) — а не
+# от факта, что заказ физически ещё в пути. Живой симптом до фикса: 48
+# строк/−32 183 ₽ августа кабинета 1 с order.status delivering/awaiting_* —
+# юнит "созревал" по возрасту операций (>= MATURITY_THRESHOLD_DAYS дней с
+# последней логистической строки) ЗАДОЛГО до того, как Ozon его реально
+# финализирует (commission-блок приходит только после доставки — см.
+# калибровку лага выше). Если резолвится заказ tenant.ozon_orders в одном
+# из этих статусов — юнит однозначно ЕЩЁ НЕ финализирован НЕЗАВИСИМО от
+# возраста операций -> immature=True безусловно. Если заказ delivered/
+# cancelled ИЛИ не резолвится вовсе (unit_number не найден в ozon_orders,
+# например, отправление старше 45-дневного окна ozon_orders) — прежняя
+# возрастная логика (MATURITY_THRESHOLD_DAYS) остаётся FALLBACK'ом (delivered
+# без commission — законный редкий случай, см. регресс-тест 12; заказ не
+# найден — статус неизвестен, возраст лучше, чем ничего).
+IN_TRANSIT_ORDER_STATUSES = frozenset({"delivering", "awaiting_packaging", "awaiting_deliver"})
+
 
 def _family_key(unit_number):
     """«Семейный» ключ unit_number для склейки сиблингов при группировке
@@ -239,6 +256,36 @@ def merge_unit_siblings(by_unit):
     return merged, {"merged_units": merged_units, "ambiguous_families": ambiguous_families}
 
 
+def _expand_to_families(touched_unit_numbers, candidate_unit_numbers):
+    """Чистая функция (без БД): расширяет touched-юниты окна до ПОЛНЫХ
+    семей (F1, фикс-волна финального ревью 2026-08-18 — .superpowers/sdd/
+    2026-08-17-ozon-data-repair/). БЕЗ этого шага C1 (см. докстроку модуля)
+    расширяет только САМИ строки уже известных touched-юнитов, а не состав
+    множества — если в окно попал РОВНО ОДИН член семьи (например, база
+    датирована событием старше 45-дневного lookback, а суффиксная форма —
+    свежим), history_rows в collect() подтягивает историю ТОЛЬКО этого
+    члена, merge_unit_siblings честно собирает "семью" из одного — и
+    пересборка ЗАТИРАЕТ ранее склеенную (полными деньгами обоих братьев)
+    строку order_costs усечённой версией. Живой пример ревью:
+    unit_number '0147423989-0115-1' (суффикс, попал в окно) при отсутствующем
+    в touched '0147423989-0115' (база, начисления старше окна) — без этой
+    функции пересборка теряет деньги базы.
+
+    candidate_unit_numbers — ШИРОКИЙ (по префиксу базы) SQL-суперсет:
+    вызывающий код (collect()) достаёт его дешёвым запросом по индексу
+    unit_number by prefix/exact match — сам SQL НЕ решает принадлежность к
+    семье (см. предупреждение в докстроке _family_key: наивный срез хвоста
+    в SQL сам по себе НЕ равнозначен family_key). Точная фильтрация —
+    ЕДИНСТВЕННЫМ источником истины _family_key() — происходит здесь, в
+    питоне, чтобы не дублировать/не расходиться с merge_unit_siblings.
+
+    Возвращает НОВЫЙ отсортированный список (touched_unit_numbers ∪
+    настоящие члены семей из candidate_unit_numbers)."""
+    family_keys = {_family_key(u) for u in touched_unit_numbers}
+    members = {u for u in candidate_unit_numbers if _family_key(u) in family_keys}
+    return sorted(set(touched_unit_numbers) | members)
+
+
 def _num(v):
     return 0.0 if v is None else float(v)
 
@@ -257,13 +304,15 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     группирует по unit_number ДО вызова, СНАЧАЛА пропустив группы через
     merge_unit_siblings — см. докстроку). Порядок строк не важен.
     meta — метаданные заказа: {'product_id', 'size', 'order_dt', 'qty',
-    'posting_number', 'posting_number_resolved'} — см. resolve_meta()
+    'status', 'posting_number', 'posting_number_resolved'} — см. resolve_meta()
     (product_id/size/order_dt тем же способом, что в v1, читались из
     ozon_orders и там же остаются; qty добавлен явно — tenant.ozon_accruals
     не несёт qty, в отличие от старого ozon_finance_report.item_qty, поэтому
     источник qty сместился на ozon_orders.qty, семантика "штук в
-    отправлении" не изменилась; posting_number/posting_number_resolved —
-    см. ниже).
+    отправлении" не изменилась; status — ozon_orders.status, используется
+    ТОЛЬКО для порога зрелости юнита без commission-блока (F3, фикс-волна
+    финального ревью 2026-08-18, см. IN_TRANSIT_ORDER_STATUSES); posting_
+    number/posting_number_resolved — см. ниже).
     costs — cogs_map: {product_id: cost} из tenant.cost_overrides (как в v1).
     today — ISO-дата 'YYYY-MM-DD' для порога зрелости (см. MATURITY_
     THRESHOLD_DAYS); None → datetime.now(timezone.utc).date() (прод). Тесты
@@ -407,12 +456,21 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # показывать фантомный убыток −логистика−cost — видимость статуса без
     # финансов даёт /orders через pending-ветку, см. app/api/cabinets/[id]/
     # orders/route.js).
+    # F3 (фикс-волна финального ревью 2026-08-18, см. IN_TRANSIT_ORDER_
+    # STATUSES выше): если заказ резолвится в ozon_orders и его статус —
+    # "физически ещё в пути" (delivering/awaiting_packaging/awaiting_deliver),
+    # юнит immature БЕЗУСЛОВНО, независимо от возраста операций — возраст
+    # (last_date) больше НЕ проверяется в этой ветке. Иначе (delivered/
+    # cancelled/статус неизвестен — заказ не резолвился) — прежняя возрастная
+    # логика как fallback.
     immature = False
     if not commission_rows:
         all_dates = [_row_date(r.get("date")) for r in accrual_rows if r.get("date") is not None]
         first_date = min(all_dates) if all_dates else None
         if is_return:
             return_dt = first_date
+        elif meta.get("status") in IN_TRANSIT_ORDER_STATUSES:
+            immature = True
         else:
             last_date = max(all_dates) if all_dates else None
             ref_today = today or datetime.now(timezone.utc).date().isoformat()
@@ -540,6 +598,7 @@ def resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product
         "size": meta.get("size"),
         "order_dt": meta.get("order_dt"),
         "qty": meta.get("qty"),
+        "status": meta.get("status"),
         "posting_number": meta.get("posting_number") if resolved else None,
         "posting_number_resolved": resolved,
     }
@@ -602,6 +661,19 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     touched_unit_numbers = sorted({r["unit_number"] for r in window_rows if r["unit_number"] is not None})
     cabinet_rows = [r for r in window_rows if r["unit_number"] is None]
 
+    # F1 (фикс-волна финального ревью 2026-08-18, критично — см. докстроку
+    # _expand_to_families): touched_unit_numbers ВЫШЕ — по ЮНИТАМ окна, не по
+    # СЕМЬЯМ (merge_unit_siblings/_family_key). Расширяем до полных семей
+    # ДЕШЁВЫМ SQL по префиксу базы (candidate-суперсет), точную
+    # принадлежность решает ТОЛЬКО _family_key() в питоне (_expand_to_families).
+    family_keys = sorted({_family_key(u) for u in touched_unit_numbers})
+    family_candidates = db_pg.query(
+        "SELECT DISTINCT unit_number FROM tenant.ozon_accruals "
+        "WHERE unit_number = ANY(%s) OR unit_number LIKE ANY(%s)",
+        [family_keys, [fk + "-%" for fk in family_keys]]) if family_keys else []
+    touched_unit_numbers = _expand_to_families(
+        touched_unit_numbers, [r["unit_number"] for r in family_candidates])
+
     history_rows = db_pg.query(
         "SELECT accrual_id, line_no, date, unit_number, accrued_category, type_id, sku, "
         "accrued, seller_price, sale_price, sale_commission, coinvestment, bonus "
@@ -637,9 +709,12 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     # раньше). qty добавлен явно — см. докстроку build_order_costs (в
     # accruals qty нет). posting_number хранится В САМОЙ строке (SELECT
     # его возвращает) — используется resolve_meta() для восстановления
-    # полного номера, когда unit_number начислений урезан (см. ниже).
+    # полного номера, когда unit_number начислений урезан (см. ниже). status
+    # (F3, фикс-волна финального ревью 2026-08-18) — статус заказа Ozon,
+    # используется build_order_costs для датировки юнитов без commission-
+    # блока (см. IN_TRANSIT_ORDER_STATUSES/MATURITY_THRESHOLD_DAYS выше).
     order_meta = {r["posting_number"]: r for r in db_pg.query(
-        "SELECT posting_number, order_dt, size, product_id, qty FROM tenant.ozon_orders")}
+        "SELECT posting_number, order_dt, size, product_id, qty, status FROM tenant.ozon_orders")}
     # «Базовый» индекс (posting_number без финального "-N") — обогащение
     # order_dt/size/qty/posting_number, когда unit_number начислений не
     # совпал буквально (см. resolve_meta). ⚠️ Кандидаты, чей posting_number

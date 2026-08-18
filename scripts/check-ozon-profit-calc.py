@@ -823,6 +823,152 @@ def main():
           merged_single == by_unit_single and stats_single["merged_units"] == []
           and stats_single["ambiguous_families"] == [], (merged_single, stats_single))
 
+    # --- 18. F1 (фикс-волна финального ревью 2026-08-18, .superpowers/sdd/
+    #     2026-08-17-ozon-data-repair/): touched-юниты окна (по ЮНИТАМ) должны
+    #     расширяться до ПОЛНЫХ семей (_family_key/merge_unit_siblings) ДО
+    #     сборки history_rows/by_unit — иначе, если в окно попал ОДИН член
+    #     семьи, merge_unit_siblings честно склеивает "семью" из одного, и
+    #     пересборка ЗАТИРАЕТ ранее склеенную (полными деньгами обоих братьев)
+    #     строку order_costs усечённой версией. Живой пример ревью:
+    #     unit_number '0147423989-0115-1' (суффикс, в окне), база
+    #     '0147423989-0115' — вне окна (старше 45-дневного lookback).
+    from worker.collectors.ozon_order_costs import _expand_to_families
+
+    # 18a. Чистая функция: широкий SQL-суперсет (LIKE-кандидаты по префиксу
+    #     базы) содержит И настоящего брата, И ПОСТОРОННЕЕ отправление с
+    #     общим числовым префиксом ('0147423989-0116' — другой заказ, НЕ
+    #     семья, та же ловушка, что и _family_key #17a) — доклассификация в
+    #     питоне обязана включить первого и исключить второго.
+    touched_f1 = ["0147423989-0115-1"]
+    candidates_f1 = ["0147423989-0115-1", "0147423989-0115", "0147423989-0116"]
+    expanded_f1 = _expand_to_families(touched_f1, candidates_f1)
+    check("F1 (18a): _expand_to_families включает настоящего брата вне окна "
+          "('0147423989-0115', база) в touched",
+          "0147423989-0115" in expanded_f1, expanded_f1)
+    check("F1 (18a): _expand_to_families ИСКЛЮЧАЕТ постороннее отправление с общим "
+          "числовым префиксом, но другим family_key ('0147423989-0116')",
+          "0147423989-0116" not in expanded_f1, expanded_f1)
+    check("F1 (18a): результат — РОВНО {суффикс, база}, без постороннего",
+          expanded_f1 == sorted({"0147423989-0115-1", "0147423989-0115"}), expanded_f1)
+    check("F1 (18b): пустой touched_unit_numbers -> пустой результат, не падает",
+          _expand_to_families([], ["irrelevant-0001"]) == [], None)
+
+    # 18c. Сквозной сценарий (ревью: «в окне один член семьи -> собраны
+    #     оба»). Симулируем collect() руками: touched видит ТОЛЬКО суффиксную
+    #     форму (окно), _expand_to_families тянет и базу, history (после
+    #     расширения) несёт ОБЕ строки, merge_unit_siblings склеивает как
+    #     обычно. Без фикса F1 by_unit нёс бы ТОЛЬКО суффикс (семья из 1) —
+    #     логистика базы (−30 ₽) терялась бы молча.
+    # ⚠️ Пре-существующий хелпер _logistics_row (17b) даёт type_id=1
+    # (ITEM/Acquiring, см. classify_row/ACQUIRING_TYPE_IDS) — бакет
+    # "acquiring", не "logistics" (имя хелпера — про роль в семье/повествование
+    # теста 17, не про итоговую корзину). Здесь нужна ИМЕННО корзина
+    # logistics, поэтому строка базы собрана явно с type_id=32 (POSTING/
+    # Logistic, PER_ORDER_LOGISTICS_TYPE_IDS).
+    def _real_logistics_row(unit, date_, accrued=-30.0):
+        return {"unit_number": unit, "accrued_category": "POSTING", "type_id": 32,
+                "sku": 1, "accrued": accrued, "date": date_,
+                "seller_price": None, "sale_price": None, "sale_commission": None,
+                "coinvestment": None, "bonus": None}
+
+    family_rows_by_unit = {
+        "0147423989-0115-1": [_commission_row("0147423989-0115-1", "2026-07-20",
+                                                accrued=1500.0, seller_price=1500.0)],
+        "0147423989-0115": [_real_logistics_row("0147423989-0115", "2026-06-30", accrued=-30.0)],
+    }
+    touched_narrow_f1 = ["0147423989-0115-1"]  # окно видит только суффикс
+    expanded_narrow_f1 = _expand_to_families(touched_narrow_f1, list(family_rows_by_unit.keys()))
+    merged_family_f1, stats_family_f1 = merge_unit_siblings(
+        {u: family_rows_by_unit[u] for u in expanded_narrow_f1})
+    check("F1 (18c): расширенный by_unit несёт ОБОИХ братьев ДО склейки (без фикса — "
+          "только суффикс)",
+          set(expanded_narrow_f1) == {"0147423989-0115-1", "0147423989-0115"}, expanded_narrow_f1)
+    check("F1 (18c): merge_unit_siblings склеил базу в суффикс (canonical — "
+          "commission-несущий)",
+          stats_family_f1["merged_units"] == [("0147423989-0115-1", ["0147423989-0115"])],
+          stats_family_f1)
+    r_f1 = build_order_costs(merged_family_f1["0147423989-0115-1"],
+                              {"product_id": 1, "qty": 1}, {}, today=MATURE_TODAY)
+    check("F1 (18c): собранная строка несёт ЛОГИСТИКУ базы (30, не 0 — иначе деньги "
+          "брата вне окна потеряны молча, живой пример ревью: comps 1581,03)",
+          r_f1["logistics"] == 30.0, r_f1)
+    check("F1 (18c): согласованность компонент == SUM(accrued обеих строк) (1500 − 30 = 1470)",
+          abs((r_f1["cost_value_retail"] - r_f1["commission"] - r_f1["logistics"]
+               - r_f1["acquiring"] - r_f1["loyalty"]) - 1470.0) <= 0.01, r_f1)
+
+    # --- 19. F3 (та же фикс-волна): зрелость юнита БЕЗ commission-блока — по
+    #     СТАТУСУ заказа Ozon (если резолвится), а не по возрасту операций.
+    #     Живой симптом до фикса: 48 строк/−32 183 ₽ августа кабинета 1 со
+    #     status delivering/awaiting_* «созревали» по возрасту операций
+    #     задолго до реальной финализации Ozon.
+    from worker.collectors.ozon_order_costs import IN_TRANSIT_ORDER_STATUSES
+
+    old_rows_no_commission = [
+        {"unit_number": "TEST-INTRANSIT-OLD-0001", "accrued_category": "ITEM", "type_id": 1,
+         "sku": 1, "accrued": -10.0, "date": "2026-06-01",  # ДАВНО старше порога 3 дн.
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    for _status in ("delivering", "awaiting_packaging", "awaiting_deliver"):
+        _r = build_order_costs(old_rows_no_commission,
+                                {"product_id": 1, "qty": 1, "status": _status}, {}, today=MATURE_TODAY)
+        check(f"F3 (19): статус заказа '{_status}' (в пути) -> immature=True БЕЗУСЛОВНО, "
+              "несмотря на возраст операций далеко за порогом (регрессия старой "
+              "чисто-возрастной логики, дающей фантомный убыток)",
+              _r is not None and _r["immature"] is True, _r)
+
+    # Заказ delivered без commission-блока (законный редкий случай, п.12) —
+    # fallback на прежнюю возрастную логику: старый -> датирован как раньше.
+    r_delivered_old = build_order_costs(old_rows_no_commission,
+                                         {"product_id": 1, "qty": 1, "status": "delivered"},
+                                         {}, today=MATURE_TODAY)
+    check("F3 (19): статус 'delivered' -> fallback на возрастную логику, юнит старый -> "
+          "immature=False, sale_dt проставлен",
+          r_delivered_old["immature"] is False and r_delivered_old["sale_dt"] == "2026-06-01",
+          r_delivered_old)
+
+    # Заказ delivered, но СВЕЖИЙ (возраст меньше порога) — fallback на
+    # возрастную логику даёт immature=True, как и раньше (F3 не отменяет
+    # возрастной запас на свежедоставленные).
+    fresh_delivered_rows = [
+        {"unit_number": "TEST-DELIVERED-FRESH-0001", "accrued_category": "ITEM", "type_id": 1,
+         "sku": 1, "accrued": -10.0, "date": "2026-08-16",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_delivered_fresh = build_order_costs(fresh_delivered_rows,
+                                           {"product_id": 1, "qty": 1, "status": "delivered"},
+                                           {}, today="2026-08-18")  # возраст 2 дн., младше порога
+    check("F3 (19): статус 'delivered', но СВЕЖИЙ (возраст 2 дн. < порога) -> fallback "
+          "на возрастную логику -> immature=True (F3 не отменяет возрастной запас на "
+          "свежедоставленные)",
+          r_delivered_fresh["immature"] is True, r_delivered_fresh)
+
+    # Заказ НЕ резолвился (status отсутствует в meta) -> статус неизвестен ->
+    # тот же fallback на возрастную логику, что и раньше (регресс: F3 не
+    # требует резолва заказа).
+    r_no_status = build_order_costs(old_rows_no_commission, {"product_id": 1, "qty": 1}, {},
+                                     today=MATURE_TODAY)
+    check("F3 (19): заказ НЕ резолвился (status отсутствует в meta) -> fallback на "
+          "возрастную логику как раньше -> immature=False (юнит старый)",
+          r_no_status["immature"] is False and r_no_status["sale_dt"] == "2026-06-01", r_no_status)
+
+    # Возвратный юнит (45/59) со статусом «в пути» — статусная проверка
+    # НЕПРИМЕНИМА, return-ветка безусловна (регрессия того же правила, что и
+    # тест 16 для возрастного порога).
+    r_return_intransit = build_order_costs(fresh_return_rows,
+                                            {"product_id": 1, "qty": 1, "status": "delivering"},
+                                            {}, today="2026-08-18")
+    check("F3 (19): возвратный юнит со статусом 'delivering' — статусная проверка "
+          "НЕПРИМЕНИМА (return-ветка безусловна), immature=False, return_dt проставлен",
+          r_return_intransit["immature"] is False and r_return_intransit["is_return"] == 1
+          and r_return_intransit["return_dt"] == "2026-08-17", r_return_intransit)
+
+    check("F3 (19): IN_TRANSIT_ORDER_STATUSES содержит ровно три статуса Ozon "
+          "(delivering, awaiting_packaging, awaiting_deliver)",
+          IN_TRANSIT_ORDER_STATUSES == frozenset({"delivering", "awaiting_packaging", "awaiting_deliver"}),
+          IN_TRANSIT_ORDER_STATUSES)
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")
