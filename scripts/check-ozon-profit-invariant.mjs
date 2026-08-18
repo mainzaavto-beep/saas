@@ -8,9 +8,17 @@
 // сторожу не нужны права на запись, admin-креды здесь не используются.
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// Три проверки, все по обоим кабинетам (1, 1008), период по умолчанию —
-// ПРОШЛАЯ ISO-неделя (пн..вс) относительно даты запуска; --from/--to — для
-// ручных прогонов за произвольный период.
+// Три проверки, все по обоим кабинетам (1, 1008), СКОЛЬЗЯЩЕЕ ОКНО из 4
+// последних ЗАКРЫТЫХ ISO-недель (пн..вс) по умолчанию (задача 4 плана
+// «ремонт данных прибыли Ozon», .superpowers/sdd/2026-08-17-ozon-data-repair/
+// task-4-brief.md) — раньше сторож смотрел только на прошлую неделю и не
+// замечал бы регресс, случившийся 2-3 недели назад и с тех пор не
+// повторившийся. Каждая неделя окна печатает СВОЙ блок (обе проверки, оба
+// кабинета) и вносит СВОЙ вклад в итоговый exit-код — одна плохая неделя не
+// теряется в общем «ALL PASS» по последней. `--weeks N` меняет размер окна
+// для ручных прогонов (например, --weeks 8 для повторной калибровки порога
+// проверки 2). `--from`/`--to` — старый режим: ОДИН произвольный период
+// вместо окна (для точечного разбора конкретной находки).
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // 1) ИНВАРИАНТ ПЕРИОДА: сумма боевой tenant.ozon_order_costs (по её
@@ -52,7 +60,21 @@
 //        хранит ВСЮ историю отправления, а не только события своей недели.
 //      • `no_row` — у отправления вообще нет строки tenant.ozon_order_costs
 //        (не резолвилось сборщиком целиком — например, SKU не найден в
-//        каталоге, см. риск §7 docs/ozon-profit-switch-delta.md).
+//        каталоге, см. риск §7 docs/ozon-profit-switch-delta.md). ПОИСК
+//        строки — по COALESCE(oc.src_unit_number, oc.posting_number), а не
+//        по голому posting_number (задача 4 плана 2026-08-17-ozon-data-
+//        repair, компонент 4 спеки): сборщик задачи 3 умеет резолвить
+//        posting_number (переписывать номер отправления по каталогу), из-за
+//        чего он расходится с СЫРЫМ unit_number начислений, по которому
+//        реально ключуется detail-JOIN. Колонка `src_unit_number` (миграция
+//        042) хранит именно сырой номер — до полного пересчёта задачи 5 она
+//        заполнена только у строк, пересобранных после 2026-08-17 19:00 UTC,
+//        поэтому JOIN обязан деградировать честно к posting_number через
+//        COALESCE, а не требовать src_unit_number NOT NULL. После пересчёта
+//        задачи 5 (когда колонка заполнена везде) `no_row` перестанет ложно
+//        ловить резолвленные номера — сейчас часть строк ещё может числиться
+//        `no_row`, хотя строка order_costs физически есть, просто под старым
+//        (нерезолвленным) индексированием.
 //    Раньше эти три категории печатались одной суммой под общей подписью
 //    «известный риск NULL sale_dt» — неточно (ревью задачи 6, Minor): запрос
 //    шире одного феномена. Теперь разложены и подписаны честно.
@@ -95,8 +117,9 @@
 //    по умолчанию, настраивается --promo-threshold.
 //
 // Использование:
-//   node scripts/check-ozon-profit-invariant.mjs
-//   node scripts/check-ozon-profit-invariant.mjs --from 2026-08-10 --to 2026-08-16
+//   node scripts/check-ozon-profit-invariant.mjs                     (окно — 4 последние закрытые ISO-недели)
+//   node scripts/check-ozon-profit-invariant.mjs --weeks 8           (окно — 8 недель, напр. для перекалибровки)
+//   node scripts/check-ozon-profit-invariant.mjs --from 2026-08-10 --to 2026-08-16   (один произвольный период вместо окна)
 //   node scripts/check-ozon-profit-invariant.mjs --promo-threshold 150
 //   node scripts/check-ozon-profit-invariant.mjs --unresolved-threshold-pct 30 --unresolved-floor-rub 500
 import pg from 'pg';
@@ -108,10 +131,11 @@ const INVARIANT_TOL_RUB = 1;
 const DEFAULT_PROMO_THRESHOLD_RUB = 100;
 const DEFAULT_UNRESOLVED_THRESHOLD_PCT = 40;
 const DEFAULT_UNRESOLVED_FLOOR_RUB = 1000;
+const DEFAULT_WEEKS = 4;
 
 function parseArgs(argv) {
   const out = {
-    from: null, to: null,
+    from: null, to: null, weeks: DEFAULT_WEEKS,
     promoThreshold: DEFAULT_PROMO_THRESHOLD_RUB,
     unresolvedThresholdPct: DEFAULT_UNRESOLVED_THRESHOLD_PCT,
     unresolvedFloorRub: DEFAULT_UNRESOLVED_FLOOR_RUB,
@@ -120,11 +144,13 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--from') out.from = argv[++i];
     else if (a === '--to') out.to = argv[++i];
+    else if (a === '--weeks') out.weeks = Number(argv[++i]);
     else if (a === '--promo-threshold') out.promoThreshold = Number(argv[++i]);
     else if (a === '--unresolved-threshold-pct') out.unresolvedThresholdPct = Number(argv[++i]);
     else if (a === '--unresolved-floor-rub') out.unresolvedFloorRub = Number(argv[++i]);
     else if (a.startsWith('--from=')) out.from = a.slice('--from='.length);
     else if (a.startsWith('--to=')) out.to = a.slice('--to='.length);
+    else if (a.startsWith('--weeks=')) out.weeks = Number(a.slice('--weeks='.length));
     else if (a.startsWith('--promo-threshold=')) out.promoThreshold = Number(a.slice('--promo-threshold='.length));
     else if (a.startsWith('--unresolved-threshold-pct=')) out.unresolvedThresholdPct = Number(a.slice('--unresolved-threshold-pct='.length));
     else if (a.startsWith('--unresolved-floor-rub=')) out.unresolvedFloorRub = Number(a.slice('--unresolved-floor-rub='.length));
@@ -151,14 +177,37 @@ function previousIsoWeek(today = new Date()) {
   const prevSunday = new Date(thisMonday); prevSunday.setDate(prevSunday.getDate() - 1);
   return { from: toIsoLocal(prevMonday), to: toIsoLocal(prevSunday) };
 }
+// ── скользящее окно из N последних ЗАКРЫТЫХ ISO-недель, хронологически
+// (старая → новая), последняя элемента == previousIsoWeek() ──
+function lastClosedIsoWeeks(n, today = new Date()) {
+  const thisMonday = mondayOf(today);
+  const weeks = [];
+  for (let i = n; i >= 1; i--) {
+    const monday = new Date(thisMonday); monday.setDate(monday.getDate() - 7 * i);
+    const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+    weeks.push({ from: toIsoLocal(monday), to: toIsoLocal(sunday) });
+  }
+  return weeks;
+}
 
 const args = parseArgs(process.argv.slice(2));
-const defaults = previousIsoWeek();
-const dateFrom = args.from || defaults.from;
-const dateTo = args.to || defaults.to;
 const promoThreshold = Number.isFinite(args.promoThreshold) ? args.promoThreshold : DEFAULT_PROMO_THRESHOLD_RUB;
 const unresolvedThresholdPct = Number.isFinite(args.unresolvedThresholdPct) ? args.unresolvedThresholdPct : DEFAULT_UNRESOLVED_THRESHOLD_PCT;
 const unresolvedFloorRub = Number.isFinite(args.unresolvedFloorRub) ? args.unresolvedFloorRub : DEFAULT_UNRESOLVED_FLOOR_RUB;
+
+// --from/--to заданы вручную → ОДИН период вместо окна (точечный разбор);
+// иначе — окно из --weeks (по умолчанию 4) последних закрытых ISO-недель.
+let periods;
+if (args.from || args.to) {
+  if (!args.from || !args.to) {
+    console.error('--from и --to указываются вместе (или не указываются вовсе — тогда окно из последних закрытых ISO-недель)');
+    process.exit(2);
+  }
+  periods = [{ from: args.from, to: args.to, label: `${args.from}..${args.to} (ручной период)` }];
+} else {
+  const weeksCount = Number.isFinite(args.weeks) && args.weeks > 0 ? Math.floor(args.weeks) : DEFAULT_WEEKS;
+  periods = lastClosedIsoWeeks(weeksCount).map((w) => ({ ...w, label: `${w.from}..${w.to} (ISO-неделя)` }));
+}
 
 const num = (v) => (v === null || v === undefined ? 0 : Number(v));
 const fmtRub = (n) => n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -204,7 +253,8 @@ detail AS (
     END AS reason
   FROM tenant.ozon_accruals a
   LEFT JOIN tenant.ozon_order_costs oc
-    ON oc.cabinet_id = a.cabinet_id AND oc.posting_number = a.unit_number
+    ON oc.cabinet_id = a.cabinet_id
+   AND COALESCE(oc.src_unit_number, oc.posting_number) = a.unit_number
   WHERE a.cabinet_id = $1 AND a.date BETWEEN $2::date AND $3::date AND a.unit_number IS NOT NULL
     AND (oc.posting_number IS NULL
          OR COALESCE(oc.sale_dt, oc.return_dt) IS NULL
@@ -239,15 +289,151 @@ const AD_SPEND_SQL = `
 
 const pool = new pg.Pool(readonlyPgConfig());
 
-let byCabinet;
+console.log('Сторож недельного инварианта прибыли Ozon (новая модель — метод начислений)');
+console.log(
+  `Окно: ${periods.length} период(ов) — ${periods[0].label} .. ${periods[periods.length - 1].label} `
+  + `(пороги: promo↔ad_spend ${fmtRub(promoThreshold)} ₽, доля «неразнесено» `
+  + `${unresolvedThresholdPct}% при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽)`
+);
+console.log('');
+
+let violations = 0;
+const periodSummaries = [];
+
 try {
-  byCabinet = {};
-  for (const cabinetId of CABINETS) {
-    const [{ rows: [inv] }, { rows: [ad] }] = await Promise.all([
-      pool.query(INVARIANT_SQL, [cabinetId, dateFrom, dateTo, [...NONITEM_PROMO_TYPE_IDS]]),
-      pool.query(AD_SPEND_SQL, [cabinetId, dateFrom, dateTo]),
-    ]);
-    byCabinet[cabinetId] = { inv, ad };
+  for (const period of periods) {
+    const { from: dateFrom, to: dateTo } = period;
+    console.log(`═══ Неделя: ${period.label} ═══`);
+    console.log('');
+
+    const byCabinet = {};
+    for (const cabinetId of CABINETS) {
+      const [{ rows: [inv] }, { rows: [ad] }] = await Promise.all([
+        pool.query(INVARIANT_SQL, [cabinetId, dateFrom, dateTo, [...NONITEM_PROMO_TYPE_IDS]]),
+        pool.query(AD_SPEND_SQL, [cabinetId, dateFrom, dateTo]),
+      ]);
+      byCabinet[cabinetId] = { inv, ad };
+    }
+
+    let periodViolations = 0;
+
+    // ── Проверка 1: инвариант периода ──
+    // Вердикт считается по ОСТАТКУ (сырая разница минус диагностированная сумма
+    // «неразнесено по датам недели»), а не по сырой разнице напрямую. Это НЕ
+    // подгонка порога 1 ₽ (он не меняется) — это корректная область применения
+    // проверки: docs/ozon-profit-switch-delta.md §8 п.6 УЖЕ документирует и
+    // количественно оценивает основной вклад в этот разрыв (~половина строк
+    // новой модели без sale_dt) как принятый владельцем риск с прямым указанием
+    // "не чинить в этом раунде" (датировка — предмет следующего плана). Если
+    // вердикт по СЫРОЙ разнице, таймер будет красным КАЖДУЮ неделю бессрочно из-
+    // за уже известной причины — шум, а не сигнал, подрывающий саму цель
+    // еженедельного сторожа (ловить НОВОЕ). Рост самой суммы «неразнесено» —
+    // отдельная проверка 2 ниже (ловит именно то, что эта проверка маскирует).
+    console.log('─── Проверка 1: order_costs + cabinet_costs(accrual_%) + promo = ИТОГО начислений периода (допуск 1 ₽ на ОСТАТОК после вычета «неразнесено по датам недели») ───');
+    console.log(
+      pad('кабинет', 10) + padL('order_costs, ₽', 18) + padL('cabinet accrual_%, ₽', 22)
+      + padL('promo, ₽', 14) + padL('ЛЕВО (сумма), ₽', 18) + padL('начислено ИТОГО, ₽', 20)
+      + padL('разница (сырая), ₽', 20)
+    );
+    const perCabinet = {};
+    for (const cabinetId of CABINETS) {
+      const { inv } = byCabinet[cabinetId];
+      const orderPart = num(inv.order_part);
+      const cabinetPart = num(inv.cabinet_part);
+      const promoPart = num(inv.promo_part);
+      const accrualTotal = num(inv.accrual_total);
+      const lhs = orderPart + cabinetPart + promoPart;
+      const diff = lhs - accrualTotal;
+      console.log(
+        pad(String(cabinetId), 10) + padL(fmtRub(orderPart), 18) + padL(fmtRub(cabinetPart), 22)
+        + padL(fmtRub(promoPart), 14) + padL(fmtRub(lhs), 18) + padL(fmtRub(accrualTotal), 20)
+        + padL(fmtRub(diff), 20)
+      );
+      const unresolvedSum = num(inv.unresolved_sum);
+      const unresolvedN = Number(inv.unresolved_n);
+      const noRowSum = num(inv.no_row_s), noRowN = Number(inv.no_row_n);
+      const nullDateSum = num(inv.null_date_s), nullDateN = Number(inv.null_date_n);
+      const otherPeriodSum = num(inv.other_period_s), otherPeriodN = Number(inv.other_period_n);
+      perCabinet[cabinetId] = { accrualTotal, unresolvedSum, unresolvedN, noRowSum, noRowN, nullDateSum, nullDateN, otherPeriodSum, otherPeriodN };
+
+      const residual = diff + unresolvedSum;
+      const ok = Math.abs(residual) <= INVARIANT_TOL_RUB;
+      if (!ok) periodViolations++;
+      console.log(
+        `    неразнесено по датам недели (unit есть в начислениях периода, но не попал в order_costs `
+        + `этой недели): ${unresolvedN} строк(и), Σ=${fmtRub(unresolvedSum)} ₽ — из них:`
+      );
+      console.log(
+        `      • null_date (нет sale_dt/return_dt — известный принятый риск, docs/ozon-profit-switch-delta.md `
+        + `§8 п.6, датировка — предмет следующего плана): ${nullDateN} строк(и), Σ=${fmtRub(nullDateSum)} ₽`
+      );
+      console.log(
+        `      • other_period (дата резолвится, но в другом периоде — межпериодный сосед, не находка): `
+        + `${otherPeriodN} строк(и), Σ=${fmtRub(otherPeriodSum)} ₽`
+      );
+      console.log(
+        `      • no_row (нет строки order_costs вовсе): ${noRowN} строк(и), Σ=${fmtRub(noRowSum)} ₽`
+      );
+      console.log(`    остаток после вычета: ${fmtRub(residual)} ₽  ` + (ok ? 'ok' : 'РАСХОЖДЕНИЕ (необъяснённая находка)'));
+    }
+    console.log('');
+
+    // ── Проверка 2: рост доли «неразнесено по датам недели» ──
+    // Автоматическая проверка САМОЙ суммы «неразнесено» (не остатка после её
+    // вычета, как в проверке 1) — иначе рост этой категории (в т.ч. из-за
+    // нового бага, оставляющего больше дат NULL) остаётся незамеченным сторожем,
+    // пока продолжает полностью гаситься в остатке проверки 1. Порог и его
+    // калибровка — см. комментарий в шапке файла.
+    console.log(`─── Проверка 2: доля «неразнесено по датам недели» от ИТОГО начислений — допуск ${unresolvedThresholdPct}% (при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽, иначе не проверяется) ───`);
+    console.log(
+      pad('кабинет', 10) + padL('неразнесено, ₽', 18) + padL('ИТОГО начислений, ₽', 22)
+      + padL('доля, %', 12) + '  вердикт'
+    );
+    for (const cabinetId of CABINETS) {
+      const { accrualTotal, unresolvedSum } = perCabinet[cabinetId];
+      const absUnresolved = Math.abs(unresolvedSum);
+      const pct = accrualTotal !== 0 ? (absUnresolved / Math.abs(accrualTotal)) * 100 : (absUnresolved !== 0 ? 100 : 0);
+      const belowFloor = absUnresolved < unresolvedFloorRub;
+      const ok = belowFloor || pct <= unresolvedThresholdPct;
+      if (!ok) periodViolations++;
+      console.log(
+        pad(String(cabinetId), 10) + padL(fmtRub(unresolvedSum), 18) + padL(fmtRub(accrualTotal), 22)
+        + padL(pct.toFixed(2) + '%', 12) + '  '
+        + (ok ? (belowFloor ? 'ok (ниже пола)' : 'ok') : 'РАСХОЖДЕНИЕ (доля неразнесённого выросла ненормально)')
+      );
+    }
+    console.log('');
+
+    // ── Проверка 3: продвижение (promo) ↔ ad_spend ──
+    console.log(`─── Проверка 3: |promo-начисления| ↔ SUM(ad_spend) (источник — tenant.ozon_daily_efficiency.ad_spend, тот же, что lib/ozonMetrics.js::ozAdSpend), допуск ${fmtRub(promoThreshold)} ₽ ───`);
+    console.log(
+      pad('кабинет', 10) + padL('|promo|, ₽', 16) + padL('ad_spend, ₽', 16)
+      + padL('разница, ₽', 14) + padL('дней ad_spend', 15) + '  вердикт'
+    );
+    for (const cabinetId of CABINETS) {
+      const { inv, ad } = byCabinet[cabinetId];
+      const promoAbs = Math.abs(num(inv.promo_part));
+      const adSpendSum = num(ad.s);
+      const adSpendN = Number(ad.n);
+      const diff = adSpendSum - promoAbs;
+      const ok = Math.abs(diff) <= promoThreshold;
+      if (!ok) periodViolations++;
+      console.log(
+        pad(String(cabinetId), 10) + padL(fmtRub(promoAbs), 16) + padL(fmtRub(adSpendSum), 16)
+        + padL(fmtRub(diff), 14) + padL(String(adSpendN), 15) + '  ' + (ok ? 'ok' : 'РАСХОЖДЕНИЕ')
+      );
+    }
+    console.log('');
+
+    console.log(
+      periodViolations === 0
+        ? `Неделя ${period.label}: PASS (0 расхождений)`
+        : `Неделя ${period.label}: ${periodViolations} РАСХОЖДЕНИЕ(Й)`
+    );
+    console.log('');
+
+    violations += periodViolations;
+    periodSummaries.push({ label: period.label, violations: periodViolations });
   }
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.message}`);
@@ -257,128 +443,15 @@ try {
   await pool.end().catch(() => {});
 }
 
-console.log('Сторож недельного инварианта прибыли Ozon (новая модель — метод начислений)');
-console.log(
-  `Период: ${dateFrom}..${dateTo} (по умолчанию — прошлая ISO-неделя; пороги: `
-  + `promo↔ad_spend ${fmtRub(promoThreshold)} ₽, доля «неразнесено» `
-  + `${unresolvedThresholdPct}% при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽)`
-);
-console.log('');
-
-let violations = 0;
-
-// ── Проверка 1: инвариант периода ──
-// Вердикт считается по ОСТАТКУ (сырая разница минус диагностированная сумма
-// «неразнесено по датам недели»), а не по сырой разнице напрямую. Это НЕ
-// подгонка порога 1 ₽ (он не меняется) — это корректная область применения
-// проверки: docs/ozon-profit-switch-delta.md §8 п.6 УЖЕ документирует и
-// количественно оценивает основной вклад в этот разрыв (~половина строк
-// новой модели без sale_dt) как принятый владельцем риск с прямым указанием
-// "не чинить в этом раунде" (датировка — предмет следующего плана). Если
-// вердикт по СЫРОЙ разнице, таймер будет красным КАЖДУЮ неделю бессрочно из-
-// за уже известной причины — шум, а не сигнал, подрывающий саму цель
-// еженедельного сторожа (ловить НОВОЕ). Рост самой суммы «неразнесено» —
-// отдельная проверка 2 ниже (ловит именно то, что эта проверка маскирует).
-console.log('─── Проверка 1: order_costs + cabinet_costs(accrual_%) + promo = ИТОГО начислений периода (допуск 1 ₽ на ОСТАТОК после вычета «неразнесено по датам недели») ───');
-console.log(
-  pad('кабинет', 10) + padL('order_costs, ₽', 18) + padL('cabinet accrual_%, ₽', 22)
-  + padL('promo, ₽', 14) + padL('ЛЕВО (сумма), ₽', 18) + padL('начислено ИТОГО, ₽', 20)
-  + padL('разница (сырая), ₽', 20)
-);
-const perCabinet = {};
-for (const cabinetId of CABINETS) {
-  const { inv } = byCabinet[cabinetId];
-  const orderPart = num(inv.order_part);
-  const cabinetPart = num(inv.cabinet_part);
-  const promoPart = num(inv.promo_part);
-  const accrualTotal = num(inv.accrual_total);
-  const lhs = orderPart + cabinetPart + promoPart;
-  const diff = lhs - accrualTotal;
-  console.log(
-    pad(String(cabinetId), 10) + padL(fmtRub(orderPart), 18) + padL(fmtRub(cabinetPart), 22)
-    + padL(fmtRub(promoPart), 14) + padL(fmtRub(lhs), 18) + padL(fmtRub(accrualTotal), 20)
-    + padL(fmtRub(diff), 20)
-  );
-  const unresolvedSum = num(inv.unresolved_sum);
-  const unresolvedN = Number(inv.unresolved_n);
-  const noRowSum = num(inv.no_row_s), noRowN = Number(inv.no_row_n);
-  const nullDateSum = num(inv.null_date_s), nullDateN = Number(inv.null_date_n);
-  const otherPeriodSum = num(inv.other_period_s), otherPeriodN = Number(inv.other_period_n);
-  perCabinet[cabinetId] = { accrualTotal, unresolvedSum, unresolvedN, noRowSum, noRowN, nullDateSum, nullDateN, otherPeriodSum, otherPeriodN };
-
-  const residual = diff + unresolvedSum;
-  const ok = Math.abs(residual) <= INVARIANT_TOL_RUB;
-  if (!ok) violations++;
-  console.log(
-    `    неразнесено по датам недели (unit есть в начислениях периода, но не попал в order_costs `
-    + `этой недели): ${unresolvedN} строк(и), Σ=${fmtRub(unresolvedSum)} ₽ — из них:`
-  );
-  console.log(
-    `      • null_date (нет sale_dt/return_dt — известный принятый риск, docs/ozon-profit-switch-delta.md `
-    + `§8 п.6, датировка — предмет следующего плана): ${nullDateN} строк(и), Σ=${fmtRub(nullDateSum)} ₽`
-  );
-  console.log(
-    `      • other_period (дата резолвится, но в другом периоде — межпериодный сосед, не находка): `
-    + `${otherPeriodN} строк(и), Σ=${fmtRub(otherPeriodSum)} ₽`
-  );
-  console.log(
-    `      • no_row (нет строки order_costs вовсе): ${noRowN} строк(и), Σ=${fmtRub(noRowSum)} ₽`
-  );
-  console.log(`    остаток после вычета: ${fmtRub(residual)} ₽  ` + (ok ? 'ok' : 'РАСХОЖДЕНИЕ (необъяснённая находка)'));
+console.log('═══ Итог по окну ═══');
+for (const p of periodSummaries) {
+  console.log(`  ${p.label}: ` + (p.violations === 0 ? 'PASS' : `${p.violations} РАСХОЖДЕНИЕ(Й)`));
 }
 console.log('');
-
-// ── Проверка 2: рост доли «неразнесено по датам недели» ──
-// Автоматическая проверка САМОЙ суммы «неразнесено» (не остатка после её
-// вычета, как в проверке 1) — иначе рост этой категории (в т.ч. из-за
-// нового бага, оставляющего больше дат NULL) остаётся незамеченным сторожем,
-// пока продолжает полностью гаситься в остатке проверки 1. Порог и его
-// калибровка — см. комментарий в шапке файла.
-console.log(`─── Проверка 2: доля «неразнесено по датам недели» от ИТОГО начислений — допуск ${unresolvedThresholdPct}% (при |Σ| ≥ ${fmtRub(unresolvedFloorRub)} ₽, иначе не проверяется) ───`);
-console.log(
-  pad('кабинет', 10) + padL('неразнесено, ₽', 18) + padL('ИТОГО начислений, ₽', 22)
-  + padL('доля, %', 12) + '  вердикт'
-);
-for (const cabinetId of CABINETS) {
-  const { accrualTotal, unresolvedSum } = perCabinet[cabinetId];
-  const absUnresolved = Math.abs(unresolvedSum);
-  const pct = accrualTotal !== 0 ? (absUnresolved / Math.abs(accrualTotal)) * 100 : (absUnresolved !== 0 ? 100 : 0);
-  const belowFloor = absUnresolved < unresolvedFloorRub;
-  const ok = belowFloor || pct <= unresolvedThresholdPct;
-  if (!ok) violations++;
-  console.log(
-    pad(String(cabinetId), 10) + padL(fmtRub(unresolvedSum), 18) + padL(fmtRub(accrualTotal), 22)
-    + padL(pct.toFixed(2) + '%', 12) + '  '
-    + (ok ? (belowFloor ? 'ok (ниже пола)' : 'ok') : 'РАСХОЖДЕНИЕ (доля неразнесённого выросла ненормально)')
-  );
-}
-console.log('');
-
-// ── Проверка 3: продвижение (promo) ↔ ad_spend ──
-console.log(`─── Проверка 3: |promo-начисления| ↔ SUM(ad_spend) (источник — tenant.ozon_daily_efficiency.ad_spend, тот же, что lib/ozonMetrics.js::ozAdSpend), допуск ${fmtRub(promoThreshold)} ₽ ───`);
-console.log(
-  pad('кабинет', 10) + padL('|promo|, ₽', 16) + padL('ad_spend, ₽', 16)
-  + padL('разница, ₽', 14) + padL('дней ad_spend', 15) + '  вердикт'
-);
-for (const cabinetId of CABINETS) {
-  const { inv, ad } = byCabinet[cabinetId];
-  const promoAbs = Math.abs(num(inv.promo_part));
-  const adSpendSum = num(ad.s);
-  const adSpendN = Number(ad.n);
-  const diff = adSpendSum - promoAbs;
-  const ok = Math.abs(diff) <= promoThreshold;
-  if (!ok) violations++;
-  console.log(
-    pad(String(cabinetId), 10) + padL(fmtRub(promoAbs), 16) + padL(fmtRub(adSpendSum), 16)
-    + padL(fmtRub(diff), 14) + padL(String(adSpendN), 15) + '  ' + (ok ? 'ok' : 'РАСХОЖДЕНИЕ')
-  );
-}
-console.log('');
-
 if (violations === 0) {
-  console.log('ALL PASS — все три проверки, оба кабинета, расхождений нет.');
+  console.log(`ALL PASS — ${periods.length} период(ов), все три проверки, оба кабинета, расхождений нет.`);
 } else {
-  console.log(`${violations} РАСХОЖДЕНИЕ(Й) — см. таблицы и диагностику выше.`);
+  console.log(`ИТОГО ${violations} РАСХОЖДЕНИЕ(Й) по ${periods.length} период(ам) — см. блоки выше.`);
   console.log('Проверка 1: необъяснённый остаток после вычета «неразнесено по датам недели» — самостоятельная находка.');
   console.log('Проверка 2: доля «неразнесено» выше калиброванного порога — ловит рост категории независимо от проверки 1.');
   console.log('Проверка 3: |promo| и ad_spend разошлись больше порога — независимая находка (см. lib/ozonMetrics.js::ozAdSpend).');
