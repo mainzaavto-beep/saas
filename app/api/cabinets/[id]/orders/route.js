@@ -137,7 +137,7 @@ async function collectWB(limit, shopName) {
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
-     ORDER BY oc.order_dt DESC
+     ORDER BY oc.order_dt DESC NULLS LAST
      LIMIT ?`
   ).all(limit);
 
@@ -253,7 +253,7 @@ async function collectOzon(limit, shopName) {
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
-     ORDER BY oc.order_dt DESC
+     ORDER BY oc.order_dt DESC NULLS LAST
      LIMIT ?`
   ).all(limit);
 
