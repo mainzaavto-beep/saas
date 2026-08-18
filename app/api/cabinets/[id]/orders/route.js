@@ -281,7 +281,17 @@ async function collectOzon(limit, shopName) {
             COALESCE(co.cost, 0) AS cost,
             o.total          AS order_total,
             0                AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
-            -COALESCE(co.cost, 0) * o.qty AS profit,
+            -- profit = 0, НЕ -cost*qty (решение владельца, задача 6 плана
+            -- «ремонт данных прибыли Ozon», round 3): pending-заказы (в пути/
+            -- свежедоставленные/незрелые отменённые, без строки order_costs —
+            -- включая юниты без commission-блока, ещё не финализированные
+            -- Ozon'ом и потому НЕ записанные сборщиком вовсе, см.
+            -- worker/collectors/ozon_order_costs.py) не должны показывать
+            -- фантомный убыток (был: -cost*qty — списывали себестоимость, но
+            -- Ozon ещё не подтвердил ни продажу, ни возврат). Раньше это было
+            -- невидимо в /orders вовсе (order_costs не пишет незрелые строки),
+            -- теперь видно строкой статуса с нулевыми финансами.
+            0                AS profit,
             o.posting_number AS posting_id,
             o.updated_at,
             o.status,

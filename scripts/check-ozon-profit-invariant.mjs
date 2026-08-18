@@ -134,12 +134,28 @@
 //    NOT NULL AND date BETWEEN ..., без --groupByProduct). Порог — 100 ₽/неделя
 //    по умолчанию, настраивается --promo-threshold.
 //
+// 4) РОСТ ВХОДЯЩЕЙ УТЕЧКИ («упаковка на стыке недель», задача 6 плана
+//    «ремонт данных прибыли Ozon», task-6-report.md) — ЗЕРКАЛО проверки 2,
+//    тем же приёмом (доля от ИТОГО начислений недели, а не остаток после
+//    вычета — иначе рост маскируется проверкой 1 точно так же, как рост
+//    исходящей утечки маскировался бы без проверки 2). Калибровка (8
+//    последних ISO-недель, оба кабинета, 16 точек, |Σ| ≥ пол — тот же пол,
+//    что и у проверки 2, --inbound-floor-rub): наблюдённый максимум —
+//    34,80% (кабинет 1, 2026-07-27..08-02), среднее — 5,91%. Порог по
+//    умолчанию — 50% (заметный запас над наблюдённым максимумом, тот же
+//    принцип калибровки, что и у проверки 2 — см. её комментарий выше).
+//    Настраивается --inbound-threshold-pct / --inbound-floor-rub
+//    независимо от --unresolved-threshold-pct / --unresolved-floor-rub
+//    (проверка 2 сознательно НЕ включает входящую сумму — она про ДРУГОЕ
+//    направление утечки, у нёе своя калибровка).
+//
 // Использование:
 //   node scripts/check-ozon-profit-invariant.mjs                     (окно — 4 последние закрытые ISO-недели)
 //   node scripts/check-ozon-profit-invariant.mjs --weeks 8           (окно — 8 недель, напр. для перекалибровки)
 //   node scripts/check-ozon-profit-invariant.mjs --from 2026-08-10 --to 2026-08-16   (один произвольный период вместо окна)
 //   node scripts/check-ozon-profit-invariant.mjs --promo-threshold 150
 //   node scripts/check-ozon-profit-invariant.mjs --unresolved-threshold-pct 30 --unresolved-floor-rub 500
+//   node scripts/check-ozon-profit-invariant.mjs --inbound-threshold-pct 60 --inbound-floor-rub 500
 import pg from 'pg';
 import { readonlyPgConfig } from './lib/pgpass.mjs';
 import { NONITEM_PROMO_TYPE_IDS } from './lib/ozon-promo-type-ids.mjs';
@@ -149,6 +165,8 @@ const INVARIANT_TOL_RUB = 1;
 const DEFAULT_PROMO_THRESHOLD_RUB = 100;
 const DEFAULT_UNRESOLVED_THRESHOLD_PCT = 40;
 const DEFAULT_UNRESOLVED_FLOOR_RUB = 1000;
+const DEFAULT_INBOUND_THRESHOLD_PCT = 50;
+const DEFAULT_INBOUND_FLOOR_RUB = 1000;
 const DEFAULT_WEEKS = 4;
 
 function parseArgs(argv) {
@@ -157,6 +175,8 @@ function parseArgs(argv) {
     promoThreshold: DEFAULT_PROMO_THRESHOLD_RUB,
     unresolvedThresholdPct: DEFAULT_UNRESOLVED_THRESHOLD_PCT,
     unresolvedFloorRub: DEFAULT_UNRESOLVED_FLOOR_RUB,
+    inboundThresholdPct: DEFAULT_INBOUND_THRESHOLD_PCT,
+    inboundFloorRub: DEFAULT_INBOUND_FLOOR_RUB,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -166,12 +186,16 @@ function parseArgs(argv) {
     else if (a === '--promo-threshold') out.promoThreshold = Number(argv[++i]);
     else if (a === '--unresolved-threshold-pct') out.unresolvedThresholdPct = Number(argv[++i]);
     else if (a === '--unresolved-floor-rub') out.unresolvedFloorRub = Number(argv[++i]);
+    else if (a === '--inbound-threshold-pct') out.inboundThresholdPct = Number(argv[++i]);
+    else if (a === '--inbound-floor-rub') out.inboundFloorRub = Number(argv[++i]);
     else if (a.startsWith('--from=')) out.from = a.slice('--from='.length);
     else if (a.startsWith('--to=')) out.to = a.slice('--to='.length);
     else if (a.startsWith('--weeks=')) out.weeks = Number(a.slice('--weeks='.length));
     else if (a.startsWith('--promo-threshold=')) out.promoThreshold = Number(a.slice('--promo-threshold='.length));
     else if (a.startsWith('--unresolved-threshold-pct=')) out.unresolvedThresholdPct = Number(a.slice('--unresolved-threshold-pct='.length));
     else if (a.startsWith('--unresolved-floor-rub=')) out.unresolvedFloorRub = Number(a.slice('--unresolved-floor-rub='.length));
+    else if (a.startsWith('--inbound-threshold-pct=')) out.inboundThresholdPct = Number(a.slice('--inbound-threshold-pct='.length));
+    else if (a.startsWith('--inbound-floor-rub=')) out.inboundFloorRub = Number(a.slice('--inbound-floor-rub='.length));
   }
   return out;
 }
@@ -212,6 +236,8 @@ const args = parseArgs(process.argv.slice(2));
 const promoThreshold = Number.isFinite(args.promoThreshold) ? args.promoThreshold : DEFAULT_PROMO_THRESHOLD_RUB;
 const unresolvedThresholdPct = Number.isFinite(args.unresolvedThresholdPct) ? args.unresolvedThresholdPct : DEFAULT_UNRESOLVED_THRESHOLD_PCT;
 const unresolvedFloorRub = Number.isFinite(args.unresolvedFloorRub) ? args.unresolvedFloorRub : DEFAULT_UNRESOLVED_FLOOR_RUB;
+const inboundThresholdPct = Number.isFinite(args.inboundThresholdPct) ? args.inboundThresholdPct : DEFAULT_INBOUND_THRESHOLD_PCT;
+const inboundFloorRub = Number.isFinite(args.inboundFloorRub) ? args.inboundFloorRub : DEFAULT_INBOUND_FLOOR_RUB;
 
 // --from/--to заданы вручную → ОДИН период вместо окна (точечный разбор);
 // иначе — окно из --weeks (по умолчанию 4) последних закрытых ISO-недель.
@@ -232,6 +258,22 @@ const fmtRub = (n) => n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maxi
 const pad = (s, n) => String(s).padEnd(n);
 const padL = (s, n) => String(s).padStart(n);
 
+// «Семейный» ключ unit_number (задача 6 плана «ремонт данных прибыли
+// Ozon», round 3/4 — та же логика, что worker/collectors/ozon_order_costs
+// .py::_family_key): строки с ≥2 дефисами срезают последний сегмент
+// (суффикс товара), строки с 1 дефисом (уже полная 2-частная форма) —
+// сами себе ключ. НУЖНО здесь потому, что merge_unit_siblings в сборщике
+// склеивает base/suffix сиблингов ДО записи — итоговая order_costs-строка
+// несёт ОДИН src_unit_number (canonical), а деньги физически пришли под
+// ДВУМЯ разными сырыми unit_number в tenant.ozon_accruals. Простое
+// равенство `a.unit_number = oc.src_unit_number` не находит склеенного
+// сиблинга — тот ложно попадал бы в 'no_row' (деньги ЕСТЬ и в order_part,
+// и второй раз добавлялись бы в unresolved — двойной учёт, ложный остаток
+// Check 1). familyKeySql(col) даёт SQL-выражение того же семейного ключа.
+function familyKeySql(col) {
+  return `(CASE WHEN (length(${col}) - length(replace(${col}, '-', ''))) >= 2 ` +
+         `THEN regexp_replace(${col}, '-[^-]*$', '') ELSE ${col} END)`;
+}
 const INVARIANT_SQL = `
 WITH order_part AS (
   SELECT COALESCE(SUM(cost_value_retail - commission - logistics - acquiring - loyalty), 0) AS s,
@@ -262,21 +304,46 @@ accrual_total AS (
 --                  (это и есть §8 п.6);
 --   other_period — строка есть, дата резолвится, но не в этот период
 --                  (межпериодный сосед, не «неизвестность»).
+-- oc_fam — family_key каждой order_costs-строки, посчитан ОДИН раз (не по
+-- разу на пару, как в LATERAL) — join ниже становится хэшируемым по
+-- family_key, на порядки быстрее корректного, но медленного LATERAL per-row
+-- варианта (тот же результат, ~70 сек на прогон окна — неприемлемо против
+-- ориентира ~1 мин, см. докстроку).
+oc_fam AS (
+  SELECT cabinet_id, posting_number, sale_dt, return_dt,
+         COALESCE(src_unit_number, posting_number) AS unit_col,
+         ${familyKeySql('COALESCE(src_unit_number, posting_number)')} AS family_key
+  FROM tenant.ozon_order_costs
+),
+detail_candidates AS (
+  SELECT a.accrual_id, a.line_no, a.accrued, oc.posting_number, oc.sale_dt, oc.return_dt,
+    ROW_NUMBER() OVER (
+      PARTITION BY a.accrual_id, a.line_no
+      ORDER BY (oc.unit_col = a.unit_number) DESC NULLS LAST
+    ) AS rn
+  FROM tenant.ozon_accruals a
+  LEFT JOIN oc_fam oc
+    ON oc.cabinet_id = a.cabinet_id
+   AND oc.family_key = ${familyKeySql('a.unit_number')}
+  WHERE a.cabinet_id = $1 AND a.date BETWEEN $2::date AND $3::date AND a.unit_number IS NOT NULL
+),
+-- Неоднозначная семья (2+ order_costs-строк с одним family_key,
+-- merge_unit_siblings их сознательно НЕ склеил) может дать 2+ кандидата на
+-- одну строку начислений — ROW_NUMBER + rn=1 (точное совпадение
+-- приоритетнее) гарантирует РОВНО один результат на строку, без задвоения
+-- accrued в SUM ниже (тот же принцип, что LATERAL LIMIT 1 выше, дешевле).
 detail AS (
-  SELECT a.accrued,
+  SELECT accrued,
     CASE
-      WHEN oc.posting_number IS NULL THEN 'no_row'
-      WHEN COALESCE(oc.sale_dt, oc.return_dt) IS NULL THEN 'null_date'
+      WHEN posting_number IS NULL THEN 'no_row'
+      WHEN COALESCE(sale_dt, return_dt) IS NULL THEN 'null_date'
       ELSE 'other_period'
     END AS reason
-  FROM tenant.ozon_accruals a
-  LEFT JOIN tenant.ozon_order_costs oc
-    ON oc.cabinet_id = a.cabinet_id
-   AND COALESCE(oc.src_unit_number, oc.posting_number) = a.unit_number
-  WHERE a.cabinet_id = $1 AND a.date BETWEEN $2::date AND $3::date AND a.unit_number IS NOT NULL
-    AND (oc.posting_number IS NULL
-         OR COALESCE(oc.sale_dt, oc.return_dt) IS NULL
-         OR COALESCE(oc.sale_dt, oc.return_dt) NOT BETWEEN $2::text AND $3::text)
+  FROM detail_candidates
+  WHERE rn = 1
+    AND (posting_number IS NULL
+         OR COALESCE(sale_dt, return_dt) IS NULL
+         OR COALESCE(sale_dt, return_dt) NOT BETWEEN $2::text AND $3::text)
 ),
 unresolved AS (
   SELECT
@@ -308,15 +375,25 @@ unresolved AS (
 -- см. task-6-report.md — независимое доказательство: кабинет 1008,
 -- 2026-08-10..16, 43,49 ₽ идентично числу ДО полного пересчёта).
 inbound_units AS (
-  SELECT DISTINCT COALESCE(src_unit_number, posting_number) AS unit_number
+  SELECT DISTINCT COALESCE(src_unit_number, posting_number) AS unit_number,
+         ${familyKeySql('COALESCE(src_unit_number, posting_number)')} AS family_key
   FROM tenant.ozon_order_costs
   WHERE cabinet_id = $1 AND COALESCE(sale_dt, return_dt) BETWEEN $2::text AND $3::text
 ),
 inbound AS (
+  -- IN (полу-соединение по хэшу малого множества inbound_units), не JOIN:
+  -- семейное совпадение может задеть 2+ inbound_units строки (неоднозначная
+  -- семья) — IN считает строку начисления РОВНО один раз независимо от
+  -- числа совпадений, JOIN бы задвоил accrued. Совпадение семейного ключа
+  -- (не только точное) покрывает и склеенных (merge_unit_siblings)
+  -- сиблингов тоже (иначе их вклад в «входящую» утечку недосчитывался бы).
   SELECT COALESCE(SUM(a.accrued), 0) AS s, count(*) AS n
   FROM tenant.ozon_accruals a
-  JOIN inbound_units u ON u.unit_number = a.unit_number
   WHERE a.cabinet_id = $1 AND a.date NOT BETWEEN $2::date AND $3::date
+    AND (
+      a.unit_number IN (SELECT unit_number FROM inbound_units)
+      OR ${familyKeySql('a.unit_number')} IN (SELECT family_key FROM inbound_units)
+    )
 )
 SELECT
   order_part.s AS order_part, order_part.n AS order_n,
@@ -487,6 +564,31 @@ try {
     }
     console.log('');
 
+    // ── Проверка 4: рост доли ВХОДЯЩЕЙ утечки («упаковка на стыке недель»,
+    // задача 6 плана «ремонт данных прибыли Ozon») — зеркало проверки 2,
+    // тот же приём (доля САМОЙ суммы от ИТОГО начислений, не остатка после
+    // вычета — иначе рост маскируется проверкой 1). Калибровка и порог —
+    // см. комментарий в шапке файла.
+    console.log(`─── Проверка 4: доля ВХОДЯЩЕЙ утечки («упаковка на стыке недель») от ИТОГО начислений — допуск ${inboundThresholdPct}% (при |Σ| ≥ ${fmtRub(inboundFloorRub)} ₽, иначе не проверяется) ───`);
+    console.log(
+      pad('кабинет', 10) + padL('входящая, ₽', 18) + padL('ИТОГО начислений, ₽', 22)
+      + padL('доля, %', 12) + '  вердикт'
+    );
+    for (const cabinetId of CABINETS) {
+      const { accrualTotal, inboundSum } = perCabinet[cabinetId];
+      const absInbound = Math.abs(inboundSum);
+      const pct = accrualTotal !== 0 ? (absInbound / Math.abs(accrualTotal)) * 100 : (absInbound !== 0 ? 100 : 0);
+      const belowFloor = absInbound < inboundFloorRub;
+      const ok = belowFloor || pct <= inboundThresholdPct;
+      if (!ok) periodViolations++;
+      console.log(
+        pad(String(cabinetId), 10) + padL(fmtRub(inboundSum), 18) + padL(fmtRub(accrualTotal), 22)
+        + padL(pct.toFixed(2) + '%', 12) + '  '
+        + (ok ? (belowFloor ? 'ok (ниже пола)' : 'ok') : 'РАСХОЖДЕНИЕ (доля входящей утечки выросла ненормально)')
+      );
+    }
+    console.log('');
+
     console.log(
       periodViolations === 0
         ? `Неделя ${period.label}: PASS (0 расхождений)`
@@ -511,11 +613,12 @@ for (const p of periodSummaries) {
 }
 console.log('');
 if (violations === 0) {
-  console.log(`ALL PASS — ${periods.length} период(ов), все три проверки, оба кабинета, расхождений нет.`);
+  console.log(`ALL PASS — ${periods.length} период(ов), все четыре проверки, оба кабинета, расхождений нет.`);
 } else {
   console.log(`ИТОГО ${violations} РАСХОЖДЕНИЕ(Й) по ${periods.length} период(ам) — см. блоки выше.`);
-  console.log('Проверка 1: необъяснённый остаток после вычета «неразнесено по датам недели» — самостоятельная находка.');
-  console.log('Проверка 2: доля «неразнесено» выше калиброванного порога — ловит рост категории независимо от проверки 1.');
+  console.log('Проверка 1: необъяснённый остаток после вычета обеих утечек (исходящей и входящей) — самостоятельная находка.');
+  console.log('Проверка 2: доля исходящей утечки выше калиброванного порога — ловит рост категории независимо от проверки 1.');
   console.log('Проверка 3: |promo| и ad_spend разошлись больше порога — независимая находка (см. lib/ozonMetrics.js::ozAdSpend).');
+  console.log('Проверка 4: доля входящей утечки («упаковка на стыке недель») выше калиброванного порога — зеркало проверки 2.');
 }
 process.exit(violations ? 1 : 0);

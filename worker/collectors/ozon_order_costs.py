@@ -61,10 +61,22 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
   - незнакомый type_id (classify_row возвращает known=False) — не
     выбрасывается молча, только считается и логируется.
   - инвариант датировки (задача 3 плана «ремонт данных прибыли Ozon», §2):
-    после датировки строк с NULL в ОБЕИХ датах (sale_dt и return_dt) быть не
-    должно вовсе — счётчик both_dates_null_count, попадает в mismatches,
-    exit-код 3 (ревью задачи 3, Important: до этой правки инвариант был
-    защищён только тестами, не runtime-проверкой).
+    после датировки НАПИСАННЫХ строк с NULL в ОБЕИХ датах (sale_dt и
+    return_dt) быть не должно вовсе — счётчик both_dates_null_count,
+    попадает в mismatches, exit-код 3 (ревью задачи 3, Important: до этой
+    правки инвариант был защищён только тестами, не runtime-проверкой).
+    ⚠️ УТОЧНЕНО задачей 6 (round 3/4, task-6-report.md): юнит без
+    commission-блока младше MATURITY_THRESHOLD_DAYS (иначе получил бы обе
+    даты NULL) теперь СОВСЕМ НЕ ПИШЕТСЯ (immature_count, отдельный от
+    mismatches — это ожидаемое поведение, не находка) — товар в
+    пути/только доставлен без финализации Ozon показывается панелью через
+    /orders pending-ветку с нулевыми финансами (продуктовое решение
+    владельца), а не строкой order_costs с фантомным убытком. См. также
+    merge_unit_siblings/_family_key: ДО датировки/порога зрелости юниты,
+    чьи данные Ozon репортит под соседними формами сырого unit_number
+    (логистика под одной, commission под другой — одно и то же реальное
+    отправление), склеиваются в один — устраняет БОЛЬШУЮ ЧАСТЬ ложных
+    «незрелых»/нулевых строк без всякого порога.
 
 self_buyout всегда 0 (грабля #138, сохранено из v1). Токен НЕ нужен —
 данные уже в БД (tenant.ozon_accruals собраны отдельным сборщиком
@@ -99,6 +111,7 @@ import argparse
 import os
 import sys
 from collections import defaultdict
+from datetime import date, datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -114,6 +127,117 @@ ALLOWED_TARGET_TABLES = {"tenant.ozon_order_costs", "tenant.ozon_order_costs_sha
 _CONSISTENCY_TOLERANCE = 0.01
 _INVARIANT_TOLERANCE = 0.01
 
+# Порог зрелости юнита БЕЗ commission-блока (задача 6 плана «ремонт данных
+# прибыли Ozon», round 3 фикс — владелец нашёл: 350 строк августа кабинета 1
+# показывали «продажу» с нулевой выручкой и profit = −логистика−cost, хотя
+# юнит физически ещё в пути/только доставлен, Ozon его не финализировал).
+# КАЛИБРОВКА (под saas_ro, снимок 2026-08-18, полный разбор — task-6-report.md
+# round 4): лаг «первая операция юнита → приход commission-блока» по 8 529
+# юнитам кабинета 1 с продажей — p50=0, p90=0, p99=0, max=1 день (commission,
+# когда он вообще приходит, приходит день-в-день с первой строкой юнита
+# практически ВСЕГДА). Отдельно проверено (контролёр, перепроверено): 232 из
+# 350 «нулевых» строк на самом деле уже ИМЕЮТ продажу в начислениях — просто
+# под СОСЕДНЕЙ формой сырого unit_number (см. merge_unit_siblings/_family_key
+# ниже) — это ГЛАВНАЯ причина, чинится склейкой, НЕ порогом зрелости. Порог
+# ниже — тонкая подстраховка ТОЛЬКО для оставшихся действительно свежих
+# юнитов (моложе нескольких дней, без commission ни под одной формой номера)
+# — «p99 (0) + буфер» на возможные выходные/таймзонные/технические сдвиги
+# коллекции. 3 дня — заметный запас над наблюдённым max=1 день, но короткий
+# ровно потому, что calibration показала: если commission вообще будет, он
+# почти наверняка уже есть; юнит младше порога получает НУЛИ через pending
+# (см. app/api/cabinets/[id]/orders/route.js) вместо фантомного убытка.
+MATURITY_THRESHOLD_DAYS = 3
+
+
+def _family_key(unit_number):
+    """«Семейный» ключ unit_number для склейки сиблингов при группировке
+    (merge_unit_siblings, задача 6 плана, round 3/4 фикс — task-6-report.md):
+    Ozon иногда репортит РАЗНЫЕ типы начислений ОДНОГО реального отправления
+    под РАЗНЫМИ сырыми unit_number — например, логистика под
+    '0115022887-0449' (2-частная форма «префикс-заказ»), commission под
+    '0115022887-0449-5' (та же форма + суффикс товара). Суффикс товара
+    ВСЕГДА добавляется ПОСЛЕ уже полной 2-частной формы — поэтому ключ
+    семьи это 2-частная форма: у строк с ≥2 дефисами срезается ПОСЛЕДНИЙ
+    сегмент (суффикс товара), у строк с 1 дефисом (уже 2-частная форма)
+    ключ — она сама.
+
+    ⚠️ НЕ путать с построением order_meta_by_base в collect() (та срезает
+    ВСЕГДА, `pn.rsplit("-", 1)[0] if "-" in pn else pn`) — её входы
+    ИСКЛЮЧИТЕЛЬНО tenant.ozon_orders.posting_number, который по докстроке
+    resolve_meta ГАРАНТИРОВАННО 3-частный (полная форма + суффикс товара
+    несётся ВСЕГДА). Здесь входы — сырой unit_number начислений, который
+    может быть И 2-частным (уже полная форма), И 3-частным — слепое
+    применение той же логики (срезать всегда) ошибочно схлопнуло бы РАЗНЫЕ
+    отправления, делящие общий числовой префикс: живой пример находки —
+    '0229108520-0830' и '0229108520-0831' — ДВА РАЗНЫХ отправления (оба
+    2-частные, НЕ братья, отличаются номером заказа), тогда как
+    '0229108520-0831' и '0229108520-0831-1' — братья (тот же заказ, второй
+    несёт суффикс товара)."""
+    return unit_number.rsplit("-", 1)[0] if unit_number.count("-") >= 2 else unit_number
+
+
+def _has_commission_block(rows):
+    """Есть ли среди строк юнита commission-блок (POSTING, type_id IS NULL —
+    та же граница, что и bucket 'commission' в ozon_profit_map.classify_row,
+    записана здесь явно ради простоты и независимости от исполнения
+    classify_row при склейке ДО построения commission_rows внутри
+    build_order_costs)."""
+    return any(r.get("accrued_category") == "POSTING" and r.get("type_id") is None for r in rows)
+
+
+def merge_unit_siblings(by_unit):
+    """Чистая функция (без БД): склеивает сиблингов base/suffix форм
+    unit_number в ОДНУ группу СТРОК, когда РОВНО ОДИН член «семьи»
+    (_family_key) несёт commission-блок (задача 6 плана «ремонт данных
+    прибыли Ozon», round 3/4 фикс, task-6-report.md). Возвращает НОВЫЙ dict
+    (исходный by_unit не мутируется — чистота ради теста без БД,
+    scripts/check-ozon-profit-calc.py) и статистику:
+        {'merged_units': [(canonical_unit_number, [merged_away, ...]), ...],
+         'ambiguous_families': [(family_key, [commission_members, ...]), ...]}
+
+    Правила (симметрично по направлению — не важно, у КАКОЙ формы
+    commission-блок):
+      • семья из 1 члена — нечего сливать;
+      • РОВНО ОДИН член семьи несёт commission-блок — остальные (без
+        commission) сливаются В НЕГО (canonical = commission-несущий член,
+        его unit_number становится ключом объединённой группы и, ниже по
+        цепочке build_order_costs, её src_unit_number — «суффиксная форма
+        как основная», если commission именно под суффиксом, но правило
+        симметрично: canonical — ЛЮБОЙ член семьи с commission, независимо
+        от того, base он или suffix);
+      • НОЛЬ членов семьи несёт commission — сливать некуда, все остаются
+        независимыми (по-прежнему могут быть учтены сборщиком как
+        отдельные, «настоящие» юниты без продажи — маршрут: возврат/сервис,
+        либо порог зрелости MATURITY_THRESHOLD_DAYS, если совсем свежие);
+      • ДВА И БОЛЕЕ членов семьи несут commission-блок — НЕОДНОЗНАЧНО (не
+        решить, к какому из них относится остальная часть семьи без
+        commission) — НЕ склеивается, попадает в ambiguous_families для
+        счётчика/лога в collect(), юниты обрабатываются раздельно как
+        обычно."""
+    merged = {u: list(rows) for u, rows in by_unit.items()}
+    families = defaultdict(list)
+    for u in merged:
+        families[_family_key(u)].append(u)
+
+    merged_units = []
+    ambiguous_families = []
+    for fam_key, members in families.items():
+        if len(members) < 2:
+            continue
+        commission_members = [m for m in members if _has_commission_block(merged[m])]
+        if len(commission_members) == 1:
+            canonical = commission_members[0]
+            merged_away = [m for m in members if m != canonical]
+            for m in merged_away:
+                merged[canonical].extend(merged[m])
+                del merged[m]
+            merged_units.append((canonical, merged_away))
+        elif len(commission_members) >= 2:
+            ambiguous_families.append((fam_key, commission_members))
+        # len(commission_members) == 0: сиблинги есть, но ни у кого нет
+        # commission-блока — сливать некуда, члены остаются независимыми.
+    return merged, {"merged_units": merged_units, "ambiguous_families": ambiguous_families}
+
 
 def _num(v):
     return 0.0 if v is None else float(v)
@@ -125,12 +249,13 @@ def _row_date(v):
     return None if v is None else str(v)
 
 
-def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
+def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = None):
     """Чистая функция (без БД): одно отправление → строка tenant.ozon_order_costs.
 
     accrual_rows — строки tenant.ozon_accruals ОДНОГО unit_number (категории
     POSTING/ITEM, unit_number IS NOT NULL — вызывающий код (collect())
-    группирует по unit_number ДО вызова). Порядок строк не важен.
+    группирует по unit_number ДО вызова, СНАЧАЛА пропустив группы через
+    merge_unit_siblings — см. докстроку). Порядок строк не важен.
     meta — метаданные заказа: {'product_id', 'size', 'order_dt', 'qty',
     'posting_number', 'posting_number_resolved'} — см. resolve_meta()
     (product_id/size/order_dt тем же способом, что в v1, читались из
@@ -140,6 +265,9 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     отправлении" не изменилась; posting_number/posting_number_resolved —
     см. ниже).
     costs — cogs_map: {product_id: cost} из tenant.cost_overrides (как в v1).
+    today — ISO-дата 'YYYY-MM-DD' для порога зрелости (см. MATURITY_
+    THRESHOLD_DAYS); None → datetime.now(timezone.utc).date() (прод). Тесты
+    передают явно ради детерминизма (scripts/check-ozon-profit-calc.py).
 
     ⚠️ ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ (не устранено, унаследовано от v1): модель
     «1 unit_number = 1 запись order_costs» не различает товары ВНУТРИ
@@ -165,7 +293,12 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     'consistency_ok' (bool), 'unknown_types' (list[(category, type_id)] с
     known=False среди строк этого отправления), 'posting_number_resolved'
     (bool — резолвлен ли posting_number реальной строкой tenant.ozon_orders
-    или записан fallback'ом как unit_number).
+    или записан fallback'ом как unit_number), 'immature' (bool — задача 6
+    плана, round 3/4: юнит без commission-блока, младше MATURITY_
+    THRESHOLD_DAYS — collect() ОБЯЗАН пропустить запись этой строки вовсе
+    (не писать в БД), см. докстроку модуля/MATURITY_THRESHOLD_DAYS; при
+    immature=True sale_dt и return_dt ОБА None — это не «инвариант датировки
+    нарушен», а осознанный сигнал «рано» collect()).
     """
     if not accrual_rows:
         return None
@@ -247,27 +380,49 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
     sale_dt = min(sale_dates) if sale_dates else None
 
     # Датировка юнитов БЕЗ commission-блока (задача 3 плана «ремонт данных
-    # прибыли Ozon», docs/superpowers/specs/2026-08-17-ozon-data-repair-design.md
-    # §2): такой юнит не несёт ни одной commission-строки, поэтому sale_dt
-    # выше остаётся None ВСЕГДА (sale_dates строится только из commission_rows)
-    # — а return_dt остаётся None тоже, если is_return не взведён строками
-    # RETURN_TYPE_IDS (см. return_dates выше). Итог — юнит без commission-
-    # блока и без кодов 45/59 не получал вовсе никакой даты, хотя деньги по
-    # нему были начислены: −1,81 млн ₽ расходов невидимы в помесячных
-    # разрезах панели (находка ревью). Правило спеки: min(date) ВСЕХ строк
-    # юнита (не только commission/return-типных) → return_dt, если юнит
-    # возвратный (та же is_return, что уже вычислена выше), иначе → sale_dt.
-    # Применяется ТОЛЬКО когда commission-блока нет вовсе — юнит С
-    # commission-блоком датируется как раньше (регресс-проверка
-    # scripts/check-ozon-profit-calc.py, п.12: правило первой операции НЕ
-    # должно "утекать" на несвязанную более раннюю логистическую строку).
+    # прибыли Ozon», §2): такой юнит не несёт ни одной commission-строки,
+    # поэтому sale_dt выше остаётся None ВСЕГДА (sale_dates строится только
+    # из commission_rows) — а return_dt остаётся None тоже, если is_return не
+    # взведён строками RETURN_TYPE_IDS (см. return_dates выше). Правило: min
+    # (date) ВСЕХ строк юнита (не только commission/return-типных) →
+    # return_dt, если юнит возвратный (та же is_return, что уже вычислена
+    # выше), иначе → sale_dt. Применяется ТОЛЬКО когда commission-блока нет
+    # вовсе — юнит С commission-блоком датируется как раньше (регресс-
+    # проверка scripts/check-ozon-profit-calc.py, п.12: правило первой
+    # операции НЕ должно "утекать" на несвязанную более раннюю логистическую
+    # строку).
+    #
+    # ⚠️ ПОРОГ ЗРЕЛОСТИ (задача 6 плана «ремонт данных прибыли Ozon», round 3
+    # фикс — task-6-report.md; см. MATURITY_THRESHOLD_DAYS выше для полной
+    # калибровки): если юнит is_return=0 (значит return_dt УЖЕ был бы
+    # проставлен веткой return_dates выше, будь он возвратным — is_return==1
+    # без commission_rows возможен ТОЛЬКО через return_dates, см. return_dates
+    # выше, поэтому return-ветка ниже применяется БЕЗУСЛОВНО, порог зрелости
+    # к ней неприменим — у возвратного юнита дата и деньги уже есть) —
+    # применяется правило первой операции ТОЛЬКО если юнит «созрел»:
+    # последняя операция юнита (max(date) его строк) старше
+    # MATURITY_THRESHOLD_DAYS дней. Иначе — юнит «immature»: даты остаются
+    # None (ОБЕ), collect() строку СОВСЕМ НЕ ПИШЕТ (владелец, продуктовое
+    # решение: товар в пути/только доставлен без финализации Ozon НЕ должен
+    # показывать фантомный убыток −логистика−cost — видимость статуса без
+    # финансов даёт /orders через pending-ветку, см. app/api/cabinets/[id]/
+    # orders/route.js).
+    immature = False
     if not commission_rows:
         all_dates = [_row_date(r.get("date")) for r in accrual_rows if r.get("date") is not None]
         first_date = min(all_dates) if all_dates else None
         if is_return:
             return_dt = first_date
         else:
-            sale_dt = first_date
+            last_date = max(all_dates) if all_dates else None
+            ref_today = today or datetime.now(timezone.utc).date().isoformat()
+            age_days = ((date.fromisoformat(ref_today) - date.fromisoformat(last_date)).days
+                        if last_date is not None else None)
+            is_mature = age_days is not None and age_days >= MATURITY_THRESHOLD_DAYS
+            if is_mature:
+                sale_dt = first_date
+            else:
+                immature = True
 
     commission_sum = round(-commission_raw, 2)
     logistics_sum = round(-logistics_raw, 2)
@@ -328,6 +483,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict):
         "consistency_ok": consistency_ok,
         "unknown_types": unknown_types,
         "posting_number_resolved": posting_number_resolved,
+        "immature": immature,
     }
 
 
@@ -457,6 +613,24 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     for r in history_rows:
         by_unit[r["unit_number"]].append(r)
 
+    # Склейка сиблингов base/suffix форм unit_number (задача 6 плана, round
+    # 3/4 фикс — task-6-report.md): ДО resolve_meta/build_order_costs, чтобы
+    # объединённая группа обрабатывалась как ОДИН юнит с ПОЛНЫМИ деньгами
+    # (commission + логистика вместе), а не как два независимых (один —
+    # фантомная «нулевая продажа», другой — недостача логистики). См.
+    # merge_unit_siblings/_family_key выше.
+    by_unit, _merge_stats = merge_unit_siblings(by_unit)
+    merged_sibling_count = sum(len(away) for _, away in _merge_stats["merged_units"])
+    ambiguous_sibling_families = _merge_stats["ambiguous_families"]
+    for canonical, away in _merge_stats["merged_units"]:
+        print(f"  склейка сиблингов unit_number: {away} -> {canonical} "
+              f"(ровно один брат семьи несёт commission-блок)", file=sys.stderr, flush=True)
+    for fam_key, commission_members in ambiguous_sibling_families:
+        print(f"  НЕОДНОЗНАЧНАЯ семья unit_number (база {fam_key}): "
+              f"{len(commission_members)} братьев с commission-блоком "
+              f"{sorted(commission_members)} — не склеено, юниты обработаны раздельно",
+              file=sys.stderr, flush=True)
+
     # order_dt/size/product_id/posting_number — та же логика, что в v1
     # (SELECT из ozon_orders, словарь по posting_number, последняя строка
     # мульти-товарного отправления выигрывает — то же упрощение, что и
@@ -519,28 +693,46 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     # без товара, а не пропущенные.
     no_product_count = 0
     unresolved_posting_number = 0
-    # Инвариант датировки (задача 3 плана «ремонт данных прибыли Ozon», §2):
-    # «после датировки строк с NULL в обеих датах быть не должно вовсе —
-    # сборщик проверяет и считает». До сих пор это было защищено ТОЛЬКО
-    # тестами (scripts/check-ozon-profit-calc.py) и случайностью схемы
-    # (ozon_accruals.date — NOT NULL, поэтому build_order_costs при непустых
-    # accrual_rows физически не может отдать обе даты NULL при текущей
-    # реализации) — без runtime-проверки регресс в build_order_costs (или
-    # смена схемы вверх по потоку) прошёл бы в БД молча. Счётчик — по образцу
-    # трёх других инвариантов файла (consistency_ok, инвариант периода,
-    # unknown_types): считаем, логируем по-русски, добавляем в mismatches →
-    # exit 3 (partial_exit_code), строку при этом всё равно пишем (падение по
-    # СИГНАЛУ, не по данным, как и остальные инварианты здесь).
+    # Инвариант датировки (задача 3 плана «ремонт данных прибыли Ozon», §2,
+    # уточнён задачей 6 round 3/4): «после датировки НАПИСАННЫХ строк с NULL
+    # в обеих датах быть не должно вовсе». До round 3 это было безусловно —
+    # теперь юнит без commission-блока младше MATURITY_THRESHOLD_DAYS ВООБЩЕ
+    # НЕ ПИШЕТСЯ (см. immature_count ниже) именно потому, что у него ОБЕ даты
+    # были бы NULL — поэтому both_dates_null_count/«ИНВАРИАНТ ДАТИРОВКИ
+    # НАРУШЕН» теперь диагностирует ТОЛЬКО генuinely недостижимый (по
+    # конструкции build_order_costs) случай для НАПИСАННЫХ строк — оставлен
+    # как защитная сетка на будущий регресс (например, схема ozon_accruals.
+    # date перестанет быть NOT NULL), не активный сценарий сегодня.
     both_dates_null_count = 0
+    # Незрелые юниты (задача 6 плана, round 3/4 фикс) — без commission-блока,
+    # моложе MATURITY_THRESHOLD_DAYS: строка НЕ пишется вовсе (нули через
+    # /orders pending-ветку, а не фантомный убыток). Их деньги НЕ попадают в
+    # sum_order_accrued — это ОЖИДАЕМЫЙ, посчитанный (не потерянный молча)
+    # разрыв: sum_immature_accrued явно вычитается из инварианта периода
+    # ниже и печатается отдельной строкой лога; сторож видит их через
+    # категорию no_row diagnostic (unit есть в начислениях, строки
+    # order_costs — нет).
+    immature_count = 0
+    sum_immature_accrued = 0.0
+    today_str = datetime.now(timezone.utc).date().isoformat()
     sum_order_accrued = 0.0
 
     for unit_number, unit_rows in by_unit.items():
         meta = resolve_meta(unit_number, unit_rows, order_meta, order_meta_by_base, product_by_sku)
-        result = build_order_costs(unit_rows, meta, cogs_map)
+        result = build_order_costs(unit_rows, meta, cogs_map, today=today_str)
         if result is None:
             # Теоретически недостижимо при непустом unit_rows (build_order_costs
             # возвращает None только для accrual_rows=[]) — защитная сетка,
             # не влияет на инвариант периода (строка не разнесена нигде).
+            continue
+        unknown_types.update(result.pop("unknown_types"))
+        if result.pop("immature"):
+            immature_count += 1
+            sum_immature_accrued += round(sum(_num(r.get("accrued")) for r in unit_rows), 2)
+            print(f"  незрелый юнит без commission-блока (моложе "
+                  f"{MATURITY_THRESHOLD_DAYS} дн., деньги начислены, но Ozon ещё не "
+                  f"финализировал) — строка НЕ записана: unit_number={unit_number}",
+                  file=sys.stderr, flush=True)
             continue
         if result["product_id"] is None:
             no_product_count += 1
@@ -558,7 +750,6 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
             print(f"  расхождение согласованности: posting_number={unit_number} "
                   f"cost_value_retail-commission-logistics-acquiring-loyalty="
                   f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
-        unknown_types.update(result.pop("unknown_types"))
         result.pop("consistency_ok")
         if not result.pop("posting_number_resolved"):
             unresolved_posting_number += 1
@@ -627,7 +818,14 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         sum(_num(r.get("accrued")) for r in cabinet_rows)
         + sum(_num(r.get("accrued")) for r in history_rows), 2)
     allocated = round(sum_order_accrued + sum_cabinet + promo_total, 2)
-    invariant_diff = round(total_read - allocated, 2)
+    invariant_diff_raw = round(total_read - allocated, 2)
+    # Незрелые юниты (задача 6 плана, round 3/4) сознательно НЕ разнесены —
+    # их деньги учтены отдельно (sum_immature_accrued), поэтому вычитаются
+    # из невязки ДО сравнения с допуском, точно так же, как строки без
+    # product_id (задача 3, §3) уже учтены в sum_order_accrued. Это не
+    # подгонка допуска (_INVARIANT_TOLERANCE не меняется) — это честный учёт
+    # ИЗВЕСТНОЙ, посчитанной и залогированной причины расхождения.
+    invariant_diff = round(invariant_diff_raw - sum_immature_accrued, 2)
     if abs(invariant_diff) > _INVARIANT_TOLERANCE:
         mismatches += 1
         # (задача 3 плана, §3): строки без product_id больше не пропускаются
@@ -637,7 +835,8 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         # арифметика) и требует отдельного разбора.
         print(f"  ИНВАРИАНТ НАРУШЕН: прочитано начислений на {total_read:.2f} ₽, "
               f"разнесено (order_costs + cabinet + promo) на {allocated:.2f} ₽, "
-              f"разница {invariant_diff:+.2f} ₽", file=sys.stderr, flush=True)
+              f"незрелых (не разнесено осознанно) на {sum_immature_accrued:.2f} ₽, "
+              f"остаточная разница {invariant_diff:+.2f} ₽", file=sys.stderr, flush=True)
 
     # I3 (фикс-волна финального ревью): extra_keys = ИСХОДНЫЕ (сырые)
     # unit_number всех пересобираемых в этом прогоне юнитов — db_pg удаляет
@@ -656,6 +855,16 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
            f"кабинетных статей {len(cabinet_out)} (записано {n_cabinet}), "
            f"промо не пишется (учтено в ad_spend Performance API): {promo_count} строк, "
            f"Σ={promo_total:.2f} ₽")
+    if merged_sibling_count:
+        msg += (f", склеено сиблингов base/suffix формы (одна семья, один брат с "
+                f"commission-блоком): {merged_sibling_count}")
+    if ambiguous_sibling_families:
+        msg += (f", неоднозначных семей unit_number (2+ братьев с commission-блоком, "
+                f"не склеено): {len(ambiguous_sibling_families)}")
+    if immature_count:
+        msg += (f", незрелых юнитов (моложе {MATURITY_THRESHOLD_DAYS} дн., без "
+                f"commission-блока, строка НЕ записана): {immature_count}, "
+                f"Σ={sum_immature_accrued:.2f} ₽")
     if no_product_count:
         msg += f", без товара (product_id NULL, строка записана): {no_product_count}"
     if both_dates_null_count:

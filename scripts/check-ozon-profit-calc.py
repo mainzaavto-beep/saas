@@ -52,6 +52,18 @@ FIXTURE_DIR = os.path.join(REPO_ROOT, "scripts", "fixtures", "ozon-accruals")
 ACCRUALS_FIXTURE = os.path.join(FIXTURE_DIR, "accrual-by-day-2026-08-05-cab1.json")
 KNOWN_TOTAL_AMOUNT = 31643.50  # см. брифы задач 1-3 плана: сверенная сумма дня 2026-08-05, кабинет 1
 
+# «today» для тестов датировки/зрелости (задача 6 плана, round 3/4 фикс —
+# MATURITY_THRESHOLD_DAYS в worker/collectors/ozon_order_costs.py): ВСЕ
+# фикстурные/синтетические даты этого файла лежат между 2026-06-01 и
+# 2026-08-05 — MATURE_TODAY заведомо (на месяцы) старше порога зрелости
+# (3 дня) для любой из них, поэтому тесты, ожидающие «юнит датирован»,
+# передают его явно — БЕЗ этого build_order_costs брал бы реальный
+# datetime.now(timezone.utc) (прод-дефолт), и тест либо проходил случайно
+# по совпадению с датой запуска, либо стал бы хрупким/детерминированным
+# только сегодня (антипаттерн: тест обязан быть детерминирован всегда, не
+# «пока не прошло 3 дня с сегодня»).
+MATURE_TODAY = "2026-12-01"
+
 failed = 0
 
 
@@ -157,7 +169,8 @@ def main():
     check(f"{zero_unit}: нет кодов возврата 45/59",
           not ({r["type_id"] for r in zero_rows} & {45, 59}))
     r3 = build_order_costs(zero_rows, {"product_id": 888, "size": "S",
-                                        "order_dt": "2026-08-01T00:00:00Z", "qty": 1}, {})
+                                        "order_dt": "2026-08-01T00:00:00Z", "qty": 1}, {},
+                            today=MATURE_TODAY)
     check("нулевое: build_order_costs вернул строку (не None)", r3 is not None)
     check("нулевое: is_return == 0 (НЕ путается с возвратом)", r3["is_return"] == 0, r3)
     check("нулевое: cost_value_retail == 0 (sale_price=0 / нет продажи)",
@@ -190,7 +203,7 @@ def main():
     #     сумма total_amount фикстуры (31 643,50 ₽).
     sum_order = 0.0
     for unit_number, rows in by_unit.items():
-        result = build_order_costs(rows, {"product_id": 1, "qty": 1}, {})
+        result = build_order_costs(rows, {"product_id": 1, "qty": 1}, {}, today=MATURE_TODAY)
         sum_order += sum_accrued(rows) if result is not None else 0.0
     sum_cabinet_all = sum_accrued(cabinet_rows)  # cabinet + promo вместе (обе корзины из total_amount)
     allocated = round(sum_order + sum_cabinet_all, 2)
@@ -524,7 +537,8 @@ def main():
          "seller_price": None, "sale_price": None, "sale_commission": None,
          "coinvestment": None, "bonus": None},
     ]
-    r_nodate_sale = build_order_costs(nodate_sale_rows, {"product_id": 1, "qty": 1}, {})
+    r_nodate_sale = build_order_costs(nodate_sale_rows, {"product_id": 1, "qty": 1}, {},
+                                       today=MATURE_TODAY)
     check("без commission, не возврат (синтетика): sale_dt == min ВСЕХ строк юнита ('2026-07-01')",
           r_nodate_sale["sale_dt"] == "2026-07-01", r_nodate_sale)
     check("без commission, не возврат (синтетика): return_dt IS NULL", r_nodate_sale["return_dt"] is None, r_nodate_sale)
@@ -592,64 +606,222 @@ def main():
           "src_unit_number тоже 'XYZ' (совпадает, т.к. posting_number сам fallback на него)",
           r_unresolved.get("src_unit_number") == "XYZ", r_unresolved)
 
-    # --- 15. Инвариант: после датировки строк с NULL в ОБЕИХ датах быть не
-    #     должно вовсе — ни на одном из 44 реальных отправлений фикстуры, ни
-    #     на синтетике этого файла (мультитоварное, окно C1, без-commission,
-    #     без товара).
+    # --- 15. Инвариант: после датировки ЗРЕЛЫХ (today=MATURE_TODAY, задача 6
+    #     round 3/4 — иначе кандидаты без commission-блока моложе порога
+    #     зрелости остаются НЕ датированы намеренно, см. 16 ниже) строк с
+    #     NULL в ОБЕИХ датах быть не должно вовсе — ни на одном из 44
+    #     реальных отправлений фикстуры, ни на синтетике этого файла
+    #     (мультитоварное, окно C1, без-commission, без товара).
     all_dated = True
     for unit_number, rows in by_unit.items():
-        result = build_order_costs(rows, {"product_id": 1, "qty": 1}, {})
+        result = build_order_costs(rows, {"product_id": 1, "qty": 1}, {}, today=MATURE_TODAY)
         if result is not None and result["sale_dt"] is None and result["return_dt"] is None:
             all_dated = False
             print(f"  ОБЕ ДАТЫ NULL: unit_number={unit_number}")
-    check("инвариант датировки: ни один из 44 реальных отправлений фикстуры не имеет "
-          "NULL в обеих датах", all_dated)
+    check("инвариант датировки: ни один из 44 реальных отправлений фикстуры (все зрелые "
+          "относительно MATURE_TODAY) не имеет NULL в обеих датах", all_dated)
     synthetic_results = [r1, r2, r3, r_multi, r_full, r_nodate_ret, r_nodate_sale,
                           r_commission_regress, r_no_product, r_resolved, r_unresolved]
     check("инвариант датировки: ни одна синтетическая/фикстурная строка теста не имеет "
           "NULL в обеих датах",
           all(not (r["sale_dt"] is None and r["return_dt"] is None) for r in synthetic_results))
 
-    # --- 16. Runtime-инструментирование инварианта датировки в collect()
-    #     (ревью задачи 3, Important): «после датировки строк с NULL в обеих
-    #     датах быть не должно вовсе — сборщик проверяет и считает» (спека
-    #     §2) — до этой правки инвариант был защищён ТОЛЬКО тестами выше и
-    #     случайностью схемы (tenant.ozon_accruals.date — NOT NULL,
-    #     db/migrations/040_ozon_accruals.sql:32), а не runtime-проверкой:
-    #     регресс в build_order_costs прошёл бы в БД молча. collect() теперь
-    #     считает both_dates_null_count по ТОМУ ЖЕ условию, что и проверка
-    #     15 выше (result["sale_dt"] is None and result["return_dt"] is None),
-    #     инкрементирует mismatches → exit-код 3 (partial_exit_code) и
-    #     печатает русский лог — см. worker/collectors/ozon_order_costs.py,
-    #     докстрока модуля (список инвариантов) + тело collect(). Без БД
-    #     collect() целиком не протестировать (он делает SELECT) — этот тест
-    #     доказывает ДРУГУЮ половину контракта: что build_order_costs МОЖЕТ
-    #     физически вернуть обе даты NULL, если строки начислений приходят с
-    #     date=None (наперекор документированному NOT NULL — например, будущий
-    #     баг парсинга ИЛИ смена схемы вверх по потоку) — то есть условие
-    #     срабатывания счётчика в collect() достижимо, не dead code.
+    # --- 16. Порог зрелости (MATURITY_THRESHOLD_DAYS) — задача 6 плана
+    #     «ремонт данных прибыли Ozon», round 3/4 фикс (task-6-report.md).
+    #     ДО этого раунда «инвариант датировки» требовал, чтобы ЛЮБОЙ юнит
+    #     без commission-блока и без 45/59 всё равно получал дату (min(date)
+    #     всех строк) — задача 3. Владелец нашёл дефект: для СВЕЖИХ (юнит в
+    #     пути/только доставлен) юнитов это давало фантомную «продажу» с
+    #     нулевой выручкой и profit = −логистика−cost, хотя Ozon ещё не
+    #     финализировал сделку. Правило уточнено: датируем ТОЛЬКО «зрелые»
+    #     (last_date старше MATURITY_THRESHOLD_DAYS дней относительно today);
+    #     свежие остаются immature=True, sale_dt/return_dt ОБА None,
+    #     collect() строку вовсе не пишет (см. докстроку build_order_costs).
+    from worker.collectors.ozon_order_costs import MATURITY_THRESHOLD_DAYS
+
+    fresh_rows = [
+        {"unit_number": "TEST-FRESH-0001", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -10.0, "date": "2026-08-16",  # последняя операция юнита
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    # today на 2 дня позже последней операции — МЕНЬШЕ порога (3 дня) -> immature.
+    r_fresh = build_order_costs(fresh_rows, {"product_id": 1, "qty": 1}, {}, today="2026-08-18")
+    check(f"порог зрелости (16): юнит младше {MATURITY_THRESHOLD_DAYS} дн. (возраст 2 дн.) -> "
+          "immature=True, строка НЕ будет записана collect()",
+          r_fresh is not None and r_fresh["immature"] is True, r_fresh)
+    check("порог зрелости (16): immature -> sale_dt и return_dt ОБА None (осознанный сигнал "
+          "«рано», не инвариант-нарушение)",
+          r_fresh["sale_dt"] is None and r_fresh["return_dt"] is None, r_fresh)
+
+    # today РОВНО на пороге (MATURITY_THRESHOLD_DAYS дней) -> уже зрелый (>=,
+    # не >) -> датирован как обычно.
+    r_exactly_mature = build_order_costs(
+        fresh_rows, {"product_id": 1, "qty": 1}, {},
+        today="2026-08-19")  # 2026-08-19 − 2026-08-16 = 3 дня == порог
+    check(f"порог зрелости (16): возраст РОВНО {MATURITY_THRESHOLD_DAYS} дн. -> зрелый "
+          "(граница включительно, >=) -> immature=False, sale_dt проставлен",
+          r_exactly_mature["immature"] is False and r_exactly_mature["sale_dt"] == "2026-08-16",
+          r_exactly_mature)
+
+    # today далеко в будущем (MATURE_TODAY) -> тот же юнит давно созрел.
+    r_mature = build_order_costs(fresh_rows, {"product_id": 1, "qty": 1}, {}, today=MATURE_TODAY)
+    check("порог зрелости (16): тот же юнит с today=MATURE_TODAY -> зрелый, immature=False, "
+          "sale_dt == min(date) строк ('2026-08-16')",
+          r_mature["immature"] is False and r_mature["sale_dt"] == "2026-08-16", r_mature)
+
+    # Возвратный (45/59) юнит — порог зрелости НЕПРИМЕНИМ: return_dt уже
+    # проставлен веткой return_dates независимо от commission-блока/today.
+    fresh_return_rows = [
+        {"unit_number": "TEST-FRESH-RETURN-0001", "accrued_category": "POSTING", "type_id": 45,
+         "sku": 1, "accrued": -10.0, "date": "2026-08-17",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_fresh_return = build_order_costs(fresh_return_rows, {"product_id": 1, "qty": 1}, {},
+                                        today="2026-08-18")  # возраст 1 день — младше порога
+    check("порог зрелости (16): возвратный юнит (код 45) младше порога — ВСЁ РАВНО "
+          "immature=False (return_dates уже даёт дату безусловно, порог его не касается)",
+          r_fresh_return["immature"] is False and r_fresh_return["is_return"] == 1
+          and r_fresh_return["return_dt"] == "2026-08-17", r_fresh_return)
+
+    # Полностью dateless (date=None у единственной строки) — last_date=None,
+    # age_days не вычислим -> считается immature (безопасная деградация:
+    # раньше это давало ЗАПИСАННУЮ строку с обеими датами NULL — задача 3;
+    # теперь просто не пишется вовсе, тот же дух «не терять деньги молча»,
+    # деньги остаются видны сторожу через no_row).
     dateless_rows = [
         {"unit_number": "TEST-ALLNULL-DATE-1", "accrued_category": "POSTING", "type_id": 32,
          "sku": 1, "accrued": -10.0, "date": None,
          "seller_price": None, "sale_price": None, "sale_commission": None,
          "coinvestment": None, "bonus": None},
     ]
-    r_dateless = build_order_costs(dateless_rows, {"product_id": 1, "qty": 1}, {})
-    check("runtime-инвариант (16): build_order_costs МОЖЕТ вернуть обе даты NULL, если "
-          "строки приходят без даты (date=None) — условие счётчика both_dates_null_count "
-          "в collect() достижимо, не dead code",
-          r_dateless is not None and r_dateless["sale_dt"] is None and r_dateless["return_dt"] is None,
+    r_dateless = build_order_costs(dateless_rows, {"product_id": 1, "qty": 1}, {}, today=MATURE_TODAY)
+    check("порог зрелости (16): строка без даты вовсе (date=None) -> immature=True "
+          "(нет last_date -> возраст не вычислим -> консервативно 'рано'), обе даты None",
+          r_dateless is not None and r_dateless["immature"] is True
+          and r_dateless["sale_dt"] is None and r_dateless["return_dt"] is None,
           r_dateless)
-    # То самое условие, которое collect() использует для инкремента
-    # both_dates_null_count (скопировано дословно из тела collect(), чтобы
-    # регресс в условии там был бы замечен здесь тоже, если кто-то поправит
-    # одно и забудет другое).
-    would_trigger_counter = r_dateless["sale_dt"] is None and r_dateless["return_dt"] is None
-    check("runtime-инвариант (16): та же строка НЕ триггерит счётчик, когда дата есть "
-          "(normalной фикстурный r1) — счётчик не ложноположительный",
-          not (r1["sale_dt"] is None and r1["return_dt"] is None))
-    check("runtime-инвариант (16): условие счётчика both_dates_null_count в collect() "
-          "истинно для этой синтетики (would_trigger_counter)", would_trigger_counter)
+
+    # --- 17. Склейка сиблингов base/suffix форм unit_number (задача 6 плана,
+    #     round 3/4 фикс, task-6-report.md): контролёр перепроверил числом —
+    #     232 из 350 «нулевых» строк августа кабинета 1 на самом деле УЖЕ
+    #     имеют продажу в начислениях, просто под СОСЕДНЕЙ формой сырого
+    #     unit_number (логистика под базовой '0115022887-0449', commission
+    #     под суффиксной '0115022887-0449-5' — ОДНО реальное отправление,
+    #     разделённое Ozon'ом на два сырых unit_number). merge_unit_siblings
+    #     — чистая функция без БД, склеивает ТАКИЕ пары ДО build_order_costs.
+    from worker.collectors.ozon_order_costs import merge_unit_siblings, _family_key
+
+    # 17a. _family_key — регрессия НАЙДЕННОЙ живой ошибки: слепое "срезать
+    #     последний дефис всегда" (как в order_meta_by_base, чьи входы
+    #     ГАРАНТИРОВАННО 3-частные — posting_number из tenant.ozon_orders)
+    #     ошибочно схлопнуло бы РАЗНЫЕ отправления с общим числовым
+    #     префиксом ('0229108520-0830' и '0229108520-0831' — два РАЗНЫХ
+    #     заказа) в одну "семью". Правильно: строки с 1 дефисом (уже полная
+    #     2-частная форма) — САМИ себе семья; только 2+ дефиса срезают
+    #     последний сегмент (суффикс товара).
+    check("_family_key: 2-частная форма (1 дефис) — сама себе ключ, НЕ срезается "
+          "('0229108520-0830' остаётся собой)",
+          _family_key("0229108520-0830") == "0229108520-0830", _family_key("0229108520-0830"))
+    check("_family_key: РАЗНЫЕ отправления с общим префиксом НЕ считаются семьёй "
+          "('0229108520-0830' != '0229108520-0831')",
+          _family_key("0229108520-0830") != _family_key("0229108520-0831"))
+    check("_family_key: 3-частная форма (2 дефиса) срезает суффикс товара -> "
+          "совпадает с базовым братом ('0115022887-0449-5' -> '0115022887-0449')",
+          _family_key("0115022887-0449-5") == "0115022887-0449")
+    check("_family_key: суффиксный брат и его база — ОДНА семья",
+          _family_key("0115022887-0449-5") == _family_key("0115022887-0449"))
+
+    def _commission_row(unit, date_, accrued=300.0, seller_price=300.0):
+        return {"unit_number": unit, "accrued_category": "POSTING", "type_id": None,
+                "sku": 1, "accrued": accrued, "date": date_,
+                "seller_price": seller_price, "sale_price": accrued, "sale_commission": 0.0,
+                "coinvestment": 0.0, "bonus": 0.0}
+
+    def _logistics_row(unit, date_, accrued=-12.12):
+        return {"unit_number": unit, "accrued_category": "ITEM", "type_id": 1,
+                "sku": 1, "accrued": accrued, "date": date_,
+                "seller_price": None, "sale_price": None, "sale_commission": None,
+                "coinvestment": None, "bonus": None}
+
+    # 17b. «Одна база + один брат»: РОВНО один член семьи несёт commission —
+    #     однозначно, склеивается. Направление А (живой пример round 3/4):
+    #     логистика под базовой формой, commission под суффиксной.
+    by_unit_pair = {
+        "0115022887-0449": [_logistics_row("0115022887-0449", "2026-08-14")],
+        "0115022887-0449-5": [_commission_row("0115022887-0449-5", "2026-08-14")],
+    }
+    merged_pair, stats_pair = merge_unit_siblings(by_unit_pair)
+    check("склейка (17b): «база + один брат» — база пропала из результата "
+          "(слита в суффиксную форму)",
+          "0115022887-0449" not in merged_pair, merged_pair)
+    check("склейка (17b): суффиксная форма (canonical, несёт commission) осталась и "
+          "получила ОБЕ строки (логистика + commission)",
+          "0115022887-0449-5" in merged_pair and len(merged_pair["0115022887-0449-5"]) == 2,
+          merged_pair.get("0115022887-0449-5"))
+    check("склейка (17b): stats.merged_units == [('0115022887-0449-5', ['0115022887-0449'])]",
+          stats_pair["merged_units"] == [("0115022887-0449-5", ["0115022887-0449"])],
+          stats_pair)
+    check("склейка (17b): stats.ambiguous_families пуст", stats_pair["ambiguous_families"] == [],
+          stats_pair)
+
+    # 17b-symmetric. Направление Б: commission под БАЗОВОЙ формой, логистика
+    #     под суффиксной — «подумай о симметрии» (round 3/4), canonical —
+    #     ЛЮБОЙ член семьи с commission, независимо от того, base он или suffix.
+    by_unit_pair_reverse = {
+        "9998887770-0001": [_commission_row("9998887770-0001", "2026-08-15")],
+        "9998887770-0001-2": [_logistics_row("9998887770-0001-2", "2026-08-15")],
+    }
+    merged_reverse, stats_reverse = merge_unit_siblings(by_unit_pair_reverse)
+    check("склейка (17b-симметрия): commission под БАЗОВОЙ формой -> canonical = база, "
+          "суффиксный брат слит в неё (не наоборот)",
+          "9998887770-0001" in merged_reverse and len(merged_reverse["9998887770-0001"]) == 2
+          and "9998887770-0001-2" not in merged_reverse, merged_reverse)
+
+    # 17c. «Одна база + два брата» — ДВА члена семьи несут commission-блок ->
+    #     неоднозначно (не решить, к какому относится остальная часть семьи
+    #     без commission) — НЕ склеивается, попадает в ambiguous_families.
+    by_unit_ambiguous = {
+        "7776665550-0009": [_logistics_row("7776665550-0009", "2026-08-10")],
+        "7776665550-0009-1": [_commission_row("7776665550-0009-1", "2026-08-10")],
+        "7776665550-0009-2": [_commission_row("7776665550-0009-2", "2026-08-10", accrued=150.0,
+                                               seller_price=150.0)],
+    }
+    merged_ambiguous, stats_ambiguous = merge_unit_siblings(by_unit_ambiguous)
+    check("склейка (17c): «база + два брата с commission» — НЕОДНОЗНАЧНО, все 3 юнита "
+          "остались независимыми (ничего не слито)",
+          set(merged_ambiguous.keys()) == set(by_unit_ambiguous.keys()), merged_ambiguous)
+    check("склейка (17c): stats.merged_units пуст (не склеено)",
+          stats_ambiguous["merged_units"] == [], stats_ambiguous)
+    check("склейка (17c): stats.ambiguous_families несёт семью '7776665550-0009' с "
+          "обоими commission-братьями",
+          stats_ambiguous["ambiguous_families"] ==
+          [("7776665550-0009", ["7776665550-0009-1", "7776665550-0009-2"])]
+          or stats_ambiguous["ambiguous_families"] ==
+          [("7776665550-0009", ["7776665550-0009-2", "7776665550-0009-1"])],
+          stats_ambiguous)
+
+    # 17d. Семья есть, но НИ У КОГО нет commission-блока — сливать некуда,
+    #     оба остаются независимыми (не ambiguous, не merged — «нейтральный»
+    #     случай, каждый идёт своим путём — обычно порог зрелости).
+    by_unit_no_commission = {
+        "5554443330-0007": [_logistics_row("5554443330-0007", "2026-08-01")],
+        "5554443330-0007-1": [_logistics_row("5554443330-0007-1", "2026-08-01", accrued=-5.0)],
+    }
+    merged_nc, stats_nc = merge_unit_siblings(by_unit_no_commission)
+    check("склейка (17d): семья без единого commission-блока — не склеена, не помечена "
+          "неоднозначной, оба юнита независимы",
+          set(merged_nc.keys()) == set(by_unit_no_commission.keys())
+          and stats_nc["merged_units"] == [] and stats_nc["ambiguous_families"] == [],
+          (merged_nc, stats_nc))
+
+    # 17e. Одиночный unit_number (семья из 1) — merge_unit_siblings не трогает.
+    by_unit_single = {"LONE-0001": [_commission_row("LONE-0001", "2026-08-05")]}
+    merged_single, stats_single = merge_unit_siblings(by_unit_single)
+    check("склейка (17e): одиночный unit_number (семья из 1) не трогается",
+          merged_single == by_unit_single and stats_single["merged_units"] == []
+          and stats_single["ambiguous_families"] == [], (merged_single, stats_single))
 
     print()
     if failed:
