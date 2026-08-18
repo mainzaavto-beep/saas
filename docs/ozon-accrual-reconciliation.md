@@ -900,5 +900,5 @@ Ozon `delivering`/`awaiting_packaging`/`awaiting_deliver`). Фикс
 корректно скрывает от неё ложную метку в обоих направлениях).
 
 Тесты — `scripts/check-ozon-profit-calc.py` блоки 18 (F1) и 19 (F3), все
-существующие не сломаны: 111/111 PASS (было 92). Полный отчёт —
+существующие не сломаны: 108/108 PASS (было 92, +16 новых). Полный отчёт —
 `.superpowers/sdd/2026-08-17-ozon-data-repair/finalfix-report.md`.
