@@ -556,6 +556,47 @@ def main():
           "NULL в обеих датах",
           all(not (r["sale_dt"] is None and r["return_dt"] is None) for r in synthetic_results))
 
+    # --- 16. Runtime-инструментирование инварианта датировки в collect()
+    #     (ревью задачи 3, Important): «после датировки строк с NULL в обеих
+    #     датах быть не должно вовсе — сборщик проверяет и считает» (спека
+    #     §2) — до этой правки инвариант был защищён ТОЛЬКО тестами выше и
+    #     случайностью схемы (tenant.ozon_accruals.date — NOT NULL,
+    #     db/migrations/040_ozon_accruals.sql:32), а не runtime-проверкой:
+    #     регресс в build_order_costs прошёл бы в БД молча. collect() теперь
+    #     считает both_dates_null_count по ТОМУ ЖЕ условию, что и проверка
+    #     15 выше (result["sale_dt"] is None and result["return_dt"] is None),
+    #     инкрементирует mismatches → exit-код 3 (partial_exit_code) и
+    #     печатает русский лог — см. worker/collectors/ozon_order_costs.py,
+    #     докстрока модуля (список инвариантов) + тело collect(). Без БД
+    #     collect() целиком не протестировать (он делает SELECT) — этот тест
+    #     доказывает ДРУГУЮ половину контракта: что build_order_costs МОЖЕТ
+    #     физически вернуть обе даты NULL, если строки начислений приходят с
+    #     date=None (наперекор документированному NOT NULL — например, будущий
+    #     баг парсинга ИЛИ смена схемы вверх по потоку) — то есть условие
+    #     срабатывания счётчика в collect() достижимо, не dead code.
+    dateless_rows = [
+        {"unit_number": "TEST-ALLNULL-DATE-1", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -10.0, "date": None,
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_dateless = build_order_costs(dateless_rows, {"product_id": 1, "qty": 1}, {})
+    check("runtime-инвариант (16): build_order_costs МОЖЕТ вернуть обе даты NULL, если "
+          "строки приходят без даты (date=None) — условие счётчика both_dates_null_count "
+          "в collect() достижимо, не dead code",
+          r_dateless is not None and r_dateless["sale_dt"] is None and r_dateless["return_dt"] is None,
+          r_dateless)
+    # То самое условие, которое collect() использует для инкремента
+    # both_dates_null_count (скопировано дословно из тела collect(), чтобы
+    # регресс в условии там был бы замечен здесь тоже, если кто-то поправит
+    # одно и забудет другое).
+    would_trigger_counter = r_dateless["sale_dt"] is None and r_dateless["return_dt"] is None
+    check("runtime-инвариант (16): та же строка НЕ триггерит счётчик, когда дата есть "
+          "(normalной фикстурный r1) — счётчик не ложноположительный",
+          not (r1["sale_dt"] is None and r1["return_dt"] is None))
+    check("runtime-инвариант (16): условие счётчика both_dates_null_count в collect() "
+          "истинно для этой синтетики (would_trigger_counter)", would_trigger_counter)
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")

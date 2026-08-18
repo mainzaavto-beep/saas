@@ -60,6 +60,11 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
     «без товара» в итоговой строке лога.
   - незнакомый type_id (classify_row возвращает known=False) — не
     выбрасывается молча, только считается и логируется.
+  - инвариант датировки (задача 3 плана «ремонт данных прибыли Ozon», §2):
+    после датировки строк с NULL в ОБЕИХ датах (sale_dt и return_dt) быть не
+    должно вовсе — счётчик both_dates_null_count, попадает в mismatches,
+    exit-код 3 (ревью задачи 3, Important: до этой правки инвариант был
+    защищён только тестами, не runtime-проверкой).
 
 self_buyout всегда 0 (грабля #138, сохранено из v1). Токен НЕ нужен —
 данные уже в БД (tenant.ozon_accruals собраны отдельным сборщиком
@@ -514,6 +519,19 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     # без товара, а не пропущенные.
     no_product_count = 0
     unresolved_posting_number = 0
+    # Инвариант датировки (задача 3 плана «ремонт данных прибыли Ozon», §2):
+    # «после датировки строк с NULL в обеих датах быть не должно вовсе —
+    # сборщик проверяет и считает». До сих пор это было защищено ТОЛЬКО
+    # тестами (scripts/check-ozon-profit-calc.py) и случайностью схемы
+    # (ozon_accruals.date — NOT NULL, поэтому build_order_costs при непустых
+    # accrual_rows физически не может отдать обе даты NULL при текущей
+    # реализации) — без runtime-проверки регресс в build_order_costs (или
+    # смена схемы вверх по потоку) прошёл бы в БД молча. Счётчик — по образцу
+    # трёх других инвариантов файла (consistency_ok, инвариант периода,
+    # unknown_types): считаем, логируем по-русски, добавляем в mismatches →
+    # exit 3 (partial_exit_code), строку при этом всё равно пишем (падение по
+    # СИГНАЛУ, не по данным, как и остальные инварианты здесь).
+    both_dates_null_count = 0
     sum_order_accrued = 0.0
 
     for unit_number, unit_rows in by_unit.items():
@@ -526,6 +544,12 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
             continue
         if result["product_id"] is None:
             no_product_count += 1
+        if result["sale_dt"] is None and result["return_dt"] is None:
+            both_dates_null_count += 1
+            mismatches += 1
+            print(f"  ИНВАРИАНТ ДАТИРОВКИ НАРУШЕН: posting_number={unit_number} "
+                  f"обе даты NULL (sale_dt и return_dt) — строка записана, "
+                  f"но без даты", file=sys.stderr, flush=True)
         if not result["consistency_ok"]:
             mismatches += 1
             comps = (result["cost_value_retail"] - result["commission"] - result["logistics"]
@@ -634,6 +658,8 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
            f"Σ={promo_total:.2f} ₽")
     if no_product_count:
         msg += f", без товара (product_id NULL, строка записана): {no_product_count}"
+    if both_dates_null_count:
+        msg += f", БЕЗ ДАТЫ (sale_dt и return_dt оба NULL, инвариант нарушен): {both_dates_null_count}"
     if unresolved_posting_number:
         msg += f", posting_number не резолвлен (записан unit_number): {unresolved_posting_number}"
     if fbo_sku_collisions:
