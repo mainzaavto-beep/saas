@@ -432,6 +432,73 @@ const AD_SPEND_SQL = `
   FROM tenant.ozon_daily_efficiency
   WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date AND ad_spend IS NOT NULL`;
 
+// ── Класс «расхождение компонентной раскладки» (задача 3 плана «витрина
+// заказов», .superpowers/sdd/2026-08-18-orders-vitrina/, docs/ozon-accrual-
+// reconciliation.md §13) — СПРАВОЧНАЯ строка, НЕ входит в окно недель выше и
+// НЕ считается в violations/exit-код: это ВСЯ ИСТОРИЯ обоих кабинетов (не
+// последние 4 недели), задача — сделать класс ВИДИМЫМ на каждом прогоне
+// сторожа, а не искать регресс в узком окне.
+//
+// Формула (ЗНАКОВАЯ, та же, что consistency_ok сборщика,
+// worker/collectors/ozon_order_costs.py::build_order_costs): cost_value_
+// retail − commission − logistics − acquiring − loyalty − SUM(accrued) — где
+// SUM(accrued) отправления/семьи ТОЖДЕСТВЕННО profit + COALESCE(cost, 0)
+// (profit = SUM(accrued) − cost, см. build_order_costs). profit САМ строится
+// из SUM(accrued), эта строка на profit не влияет — только на 5 денежных
+// КОМПОНЕНТ (cost_value_retail/commission/logistics/acquiring/loyalty),
+// которые несколько роутов панели (app/api/cabinets/[id]/overview,
+// products-summary, rnp-summary, plan/fact) складывают САМИ, а не читают
+// готовый profit — на этих 60 отправлениях их собственный пересчёт разойдётся
+// с профилем ровно на печатаемую сумму.
+//
+// МЕХАНИЗМ (разбор задачи 3, 60/60 объяснено до копейки без остатка,
+// проверочный запрос — .superpowers/sdd/2026-08-18-orders-vitrina/
+// task-3-report.md): commission-блок POSTING (type_id IS NULL) несёт accrued
+// = sale_price + sale_commission + coinvestment + bonus (тождество,
+// проверено на живых строках). Формула build_order_costs предполагает
+// ДРУГОЕ тождество — seller_price = sale_price + coinvestment + bonus (§2
+// этого документа, footnote¹, «проверено программно, 0 расхождений» — но
+// только на выборке ОДНОГО дня, 29 записей 2026-08-05, кабинет 1). На этих
+// 60 отправлениях (0,42% всех commission-несущих unit_number) тождество НЕ
+// держится — расхождение ЦЕЛИКОМ объясняется разницей (sale_price −
+// seller_price + coinvestment + bonus), это СВОЙСТВО данных Ozon (вероятно,
+// промо-схема с иным способом финансирования скидки, нераспознаваемая по
+// имеющимся полям), НЕ баг парсинга/суммирования нашего сборщика (проверено:
+// пересчёт формулы ТОЛЬКО из seller_price/sale_price/coinvestment/bonus,
+// уже хранящихся в tenant.ozon_accruals, воспроизводит расхождение до
+// копейки на всех 60 без остатка). У ВОЗВРАТОВ с ненулевым commission-блоком
+// добавляется вторая, независимая причина: cost_value_retail сознательно
+// обнуляется для ЛЮБОГО возврата (build_order_costs: «0.0 if is_return else
+// seller_price», продуктовое решение — колонка «стоимость заказа» не должна
+// показывать откат цены товара на возврате), но у возвратов С commission-
+// блоком (развёрнутая продажа, а не чистый логистический возврат)
+// seller_price при этом честно ненулевой и полностью «выпадает» из comps —
+// расхождение здесь равно ИМЕННО seller_price (сам commission-блок возврата
+// внутренне согласован — тождество seller_price=sale_price+coinvestment+
+// bonus держится, проверено на всех возвратных строках класса).
+//
+// СТАБИЛЬНОСТЬ КЛАССА (обоснование решения «без порога» — прямое требование
+// брифа задачи 3): после ПОЛНОГО пересчёта истории обоих кабинетов
+// 2026-08-18 (§10-12 этого документа — вся таблица переписана заново из
+// начислений) класс остался РОВНО 60 строк, максимальная дата аномалии —
+// 2026-06-16, свежих (июль-август 2026) аномалий НЕТ ни одной, хотя
+// пересчёт коснулся вообще всех дат таблицы (max дата любой строки —
+// 2026-08-18). Класс НЕ растёт — заморожен ~2 месяца несмотря на полную
+// пересборку — поэтому порог роста НЕ введён (брифу требуется числовое
+// обоснование стабильности, а не рост, чтобы порог не добавлять; см. отчёт
+// задачи 3). Если класс когда-либо начнёт расти (новые даты появятся в
+// выводе), это будет видно ГЛАЗАМИ на каждом прогоне — строка печатается
+// ВСЕГДА, а не только при нарушении.
+const CONSISTENCY_CLASS_SQL = `
+  SELECT count(*) AS n,
+         COALESCE(SUM(ABS((cost_value_retail - commission - logistics - acquiring - loyalty)
+                          - (profit + COALESCE(cost, 0)))), 0) AS abs_sum,
+         MAX(COALESCE(sale_dt, return_dt)) AS max_dt
+  FROM tenant.ozon_order_costs
+  WHERE cabinet_id = $1
+    AND ABS((cost_value_retail - commission - logistics - acquiring - loyalty)
+            - (profit + COALESCE(cost, 0))) > 0.01`;
+
 const pool = new pg.Pool(readonlyPgConfig());
 
 console.log('Сторож недельного инварианта прибыли Ozon (новая модель — метод начислений)');
@@ -620,6 +687,25 @@ try {
     violations += periodViolations;
     periodSummaries.push({ label: period.label, violations: periodViolations });
   }
+
+  // ── Справочная строка (не входит в окно недель, не влияет на exit-код) ──
+  // «расхождение компонентной раскладки» на ВСЕЙ истории обоих кабинетов —
+  // см. комментарий у CONSISTENCY_CLASS_SQL выше и docs/ozon-accrual-
+  // reconciliation.md §13. profit не затронут никогда (формула этой строки
+  // сравнивает 5 компонент с profit + cost, т.е. с тем же SUM(accrued), из
+  // которого сам profit и построен) — расхождение может задеть только
+  // отдельно читаемые компоненты (commission/logistics/acquiring/
+  // cost_value_retail) в тех роутах панели, что складывают их сами.
+  console.log('─── Справочно: расхождение компонентной раскладки (cost_value_retail−commission−logistics−acquiring−loyalty ≠ SUM(accrued), ВСЯ ИСТОРИЯ, не окно недель; profit не затронут, порога нет — класс стабилен, см. docs/ozon-accrual-reconciliation.md §13) ───');
+  console.log(pad('кабинет', 10) + padL('строк', 10) + padL('Σ|расхождение|, ₽', 20) + padL('последняя дата', 16));
+  for (const cabinetId of CABINETS) {
+    const { rows: [c] } = await pool.query(CONSISTENCY_CLASS_SQL, [cabinetId]);
+    const n = Number(c.n);
+    const absSum = num(c.abs_sum);
+    const maxDt = c.max_dt ? String(c.max_dt).slice(0, 10) : '—';
+    console.log(pad(String(cabinetId), 10) + padL(String(n), 10) + padL(fmtRub(absSum), 20) + padL(maxDt, 16));
+  }
+  console.log('');
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.message}`);
   await pool.end().catch(() => {});
