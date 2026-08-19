@@ -323,10 +323,14 @@ async function collectOzon(limit, shopName) {
      -- строку "не найдена" и заказ дублируется в ленте (основная строка из
      -- order_costs + фиктивная pending). Симулировано на живой БД: сегодня
      -- пересечений с NULL product_id нет (0 дублей), это регресс-щит на
-     -- будущее. posting_number NOT NULL с обеих сторон (проверено схемой) —
-     -- меняем и его для симметрии предиката, поведение не отличается.
+     -- будущее. posting_number НЕ трогаем — NOT NULL с обеих сторон
+     -- (проверено схемой), поэтому '=' и IS NOT DISTINCT FROM дают
+     -- одинаковый результат, но '=' на равенстве позволяет планировщику
+     -- строить Hash Anti Join; IS NOT DISTINCT FROM на этом предикате
+     -- (ревью) валит план в Nested Loop — ~200x медленнее (EXPLAIN ANALYZE:
+     -- 7 мс → 1515 мс каб.1), поэтому здесь оставлен '='.
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc
-                       WHERE oc.posting_number IS NOT DISTINCT FROM o.posting_number
+                       WHERE oc.posting_number = o.posting_number
                          AND oc.product_id IS NOT DISTINCT FROM o.product_id)
      ORDER BY o.order_dt DESC`
   ).all();
