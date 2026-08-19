@@ -19,6 +19,9 @@ from typing import Any, Iterator
 
 import requests
 
+REQUEST_PAUSE_SEC = 1.0  # ≥1 с между страницами пагинации (см. iter_postings) —
+                         # тот же лимит и та же константа, что в ozon_accruals.py
+
 SELLER_HOST = "https://api-seller.ozon.ru"
 # ВНИМАНИЕ: api-analytics.ozon.ru НЕ резолвится с нашего сервера (проверено в Фазе 2,
 # 2026-06-17). Все методы, которые раньше шли на analytics_host
@@ -252,11 +255,19 @@ class OzonClient:
         """Итератор по всем отправлениям FBO за период (КУРСОРНАЯ пагинация API 2026).
         На каждой странице Ozon возвращает cursor — передаём его в следующий запрос.
         Выход: has_next=false или пустая страница. Защита от зацикливания: проверяем,
-        что cursor меняется между запросами (иначе break — не зависнем как раньше)."""
+        что cursor меняется между запросами (иначе break — не зависнем как раньше).
+        Пауза ≥1 с ПЕРЕД каждой страницей, кроме первой (тот же приём и константа
+        REQUEST_PAUSE_SEC, что в ozon_accruals.py — Ozon лимитирует частые подряд
+        запросы; расширение окна ozon_orders до 45 дней даёт заметно больше страниц
+        на кабинет с активными продажами)."""
         limit = 50
         cursor = None
         seen_cursors = set()
+        first = True
         while True:
+            if not first:
+                time.sleep(REQUEST_PAUSE_SEC)
+            first = False
             data = self.posting_fbo_list(since, to, status, limit, cursor)
             postings = data.get("postings", []) if isinstance(data, dict) else []
             for p in postings:

@@ -4,10 +4,30 @@ SaaS-сборщик ЗАКАЗОВ Ozon (FBO) → tenant.ozon_orders.
 /v3/posting/fbo/list за период. Один posting → несколько строк (по product_id).
 sku (fbo_sku) маппится в product_id через tenant.ozon_products.
 Токен из env (воркер). Без Google Sheets.
+
+⚠️ ОКНО СБОРА — размораживание статусов (задача «Размораживание статусов
+ozon_orders», .superpowers/sdd/2026-08-18-orders-vitrina/): /v3/posting/fbo/list
+фильтрует по дате СОЗДАНИЯ отправления (`since`/`to`), а плановый прогон
+(run_saas_collect.sh, MAIN_COLLECTORS) вызывает сборщик узким окном −2..сегодня
+(DAYS_FROM=2, DAYS_TO=0) — отправление старше 2 дней больше никогда не
+переспрашивается, и его `status` замерзает навсегда, даже когда продажа давно
+завершена (497 строк на живой БД застряли в in-transit, `updated_at` не
+двигался месяц — подтверждено ре-ревью чтением кода и данных).
+
+Починка — тот же lookback-пол, что у ozon_accruals.py/ozon_order_costs.py
+(resolve_window, MIN_LOOKBACK_DAYS=45 дней, импортирован отсюда, не
+продублирован), но с ПРОТИВОПОЛОЖНЫМ концом окна: у начислений конец —
+не позже вчера (Ozon дополняет сегодняшний день постепенно), а у заказов
+статус СЕГОДНЯШНЕГО отправления нужен сразу — поэтому resolve_window
+вызывается с cap_to_yesterday=False. Верхняя граница периода при этом не
+округляется до полуночи текущих суток (иначе сегодняшние отправления снова
+выпадали бы из окна) — берётся текущий момент `datetime.now(timezone.utc)`.
+Каждый плановый прогон переспрашивает и идемпотентно освежает status/
+cancel_dt/updated_at всех отправлений, созданных за последние 45 дней.
 """
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,6 +35,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
 from ozon_client import OzonClient
+from ozon_accruals import resolve_window
 
 
 def collect(since=None, to=None):
@@ -22,15 +43,18 @@ def collect(since=None, to=None):
     db_pg.init()
     cli = OzonClient()
 
-    if since is None:
-        since = datetime.now() - timedelta(days=7)
-    if to is None:
-        to = datetime.now()
-    if isinstance(since, str):
-        since = datetime.fromisoformat(since)
-    if isinstance(to, str):
-        to = datetime.fromisoformat(to)
-    print(f"  период: {since.date()}..{to.date()}", flush=True)
+    d_from, d_to = resolve_window(since, to, cap_to_yesterday=False)
+    now_utc = datetime.now(timezone.utc)
+    since_dt = datetime.combine(d_from, datetime.min.time(), tzinfo=timezone.utc)
+    if d_to >= now_utc.date():
+        # Конец окна — сегодня: берём текущий момент, а не полночь суток
+        # (иначе сегодняшние отправления снова выпадали бы из окна).
+        to_dt = now_utc
+    else:
+        to_dt = datetime.combine(d_to, datetime.max.time(), tzinfo=timezone.utc)
+    print(f"  период: {d_from}..{d_to}"
+          + (" (конец = сейчас)" if d_to >= now_utc.date() else ""), flush=True)
+    since, to = since_dt, to_dt
 
     # Карта fbo_sku → product_id из PG (вместо прямого sqlite3.connect).
     sku2pid = {}

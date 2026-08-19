@@ -216,22 +216,31 @@ def check_single_page(data: dict, day) -> None:
 MIN_LOOKBACK_DAYS = 45
 
 
-def resolve_window(date_from=None, date_to=None, *, today=None):
+def resolve_window(date_from=None, date_to=None, *, today=None, cap_to_yesterday=True):
     """Вычислить фактический период сбора из CLI-аргументов даты (или их
     отсутствия). См. комментарий выше модуля MIN_LOOKBACK_DAYS. `today` —
     только для тестов (юнит-проверка без зависимости от реального времени),
-    в проде не передаётся. Возвращает (d_from, d_to) — datetime.date."""
+    в проде не передаётся. Возвращает (d_from, d_to) — datetime.date.
+
+    `cap_to_yesterday` (по умолчанию True, поведение не меняется для
+    начислений/order_costs): конец окна не позже вчера — Ozon дополняет
+    сегодняшний день в течение суток, финансовые методы собирать его раньше
+    срока не должны. Параметризовано ради ozon_orders.py — у заказов
+    противоположная семантика: статус СЕГОДНЯШНЕГО отправления нужен сразу
+    (задача «Размораживание статусов ozon_orders»), поэтому там конец окна —
+    сегодня (cap_to_yesterday=False), пол в MIN_LOOKBACK_DAYS дней тот же."""
     today = today or datetime.now(timezone.utc).date()
     yesterday = today - timedelta(days=1)
+    ceiling = yesterday if cap_to_yesterday else today
 
     if date_to is None:
-        d_to = yesterday
+        d_to = ceiling
     elif isinstance(date_to, str):
         d_to = datetime.fromisoformat(date_to).date()
     else:
         d_to = date_to
-    if d_to > yesterday:
-        d_to = yesterday
+    if d_to > ceiling:
+        d_to = ceiling
 
     if date_from is None:
         d_from = d_to
