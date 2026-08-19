@@ -168,7 +168,15 @@ async function collectWB(limit, shopName) {
             o.price_with_disc AS order_total,
             0               AS sale_total,
             0               AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
-            -COALESCE(co.cost, 0) AS profit,
+            -- profit = 0, НЕ -cost (решение владельца — план «витрина заказов»
+            -- 2026-08-18, компонента 2, зеркально Ozon-фиксу выше): pending-
+            -- заказы WB (в пути, без строки order_costs — она наполняется из
+            -- финансового report-detail, который появляется только по факту
+            -- продажи/логистики) не должны показывать фантомный убыток (было:
+            -- -cost — списывали себестоимость, хотя товар ещё даже не продан
+            -- и, возможно, будет отменён/возвращён). Компоненты и так нули;
+            -- строка «Итого» перестаёт занижаться на себестоимость недоставленных.
+            0               AS profit,
             o.g_number      AS posting_id,
             o.updated_at,
             o.is_cancel
@@ -180,6 +188,10 @@ async function collectWB(limit, shopName) {
          AND effective_from <= COALESCE(substr(o.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
+     -- Guard не нужен: srid — NOT NULL и в orders, и в order_costs (проверено
+     -- схемой и живой БД, план «витрина заказов» 2026-08-18, компонента 3) —
+     -- в отличие от Ozon-ветки, здесь нет аналога "заказа без товара",
+     -- дубли от NULL-сравнения структурно невозможны.
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc WHERE oc.srid = o.srid)
      ORDER BY o.order_dt DESC`
   ).all();
@@ -304,8 +316,18 @@ async function collectOzon(limit, shopName) {
          AND effective_from <= COALESCE(substr(o.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
+     -- Guard от дублей (план «витрина заказов» 2026-08-18, компонента 3):
+     -- IS NOT DISTINCT FROM вместо '=' — product_id в order_costs nullable
+     -- (строки без определённого товара, ~4-6 тыс. у каб.1); с обычным '='
+     -- сравнение NULL = NULL даёт NULL (не true), NOT EXISTS считает такую
+     -- строку "не найдена" и заказ дублируется в ленте (основная строка из
+     -- order_costs + фиктивная pending). Симулировано на живой БД: сегодня
+     -- пересечений с NULL product_id нет (0 дублей), это регресс-щит на
+     -- будущее. posting_number NOT NULL с обеих сторон (проверено схемой) —
+     -- меняем и его для симметрии предиката, поведение не отличается.
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc
-                       WHERE oc.posting_number = o.posting_number AND oc.product_id = o.product_id)
+                       WHERE oc.posting_number IS NOT DISTINCT FROM o.posting_number
+                         AND oc.product_id IS NOT DISTINCT FROM o.product_id)
      ORDER BY o.order_dt DESC`
   ).all();
 
