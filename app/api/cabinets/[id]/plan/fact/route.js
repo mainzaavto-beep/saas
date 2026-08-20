@@ -6,25 +6,27 @@
 // КОНТРАКТ фронт↔API сверен с PlanPage.jsx (MonthPlan + QuarterYear.agg):
 //   items[] — строки плана с полями плана И факт-полями (null для новых SKU).
 //
-// Модель прибыли = КАНОН SaaS (как products-summary/route.js): операционная
-// прибыль пересчитывается из компонентов с правильным НДС+УСН (calcTotalTax,
-// урок D14). Цифры факта согласованы с P&L/Сводкой по товарам. Готовый
-// order_costs.profit не используем (он не учитывает НДС → завышен).
+// Модель прибыли ФАКТА = КАНОН (lib/wbMetrics.js::wbProfitProduct,
+// lib/ozonMetrics.js::ozProfitProduct — задача 5 плана унификации прибыли),
+// та же формула, что products-summary/rnp-summary/pnl/detail. margin_fact_rub
+// = canon.profit — себестоимость факта берётся из order_costs.cost (реальная,
+// НЕ плановая cost_plan) — «факт-COGS», цель задачи 5. Плановые колонки
+// (qty_plan/cost_plan/revenue_plan/drr_plan/margin_plan_*) НЕ трогаются.
 //
-// Источники (сверено с lib/wbMetrics.js, lib/ozonMetrics.js):
-//   WB:    finance_report (выручка/комиссия/логистика), sales (шт),
-//          daily_metrics.ad_spend (реклама), articles (имя/фото),
-//          cost_overrides (себест).
-//   OZON:  order_costs (выручка/себест/расходы/шт — грабля #134, НЕ sales),
-//          daily_metrics.ad_spend, products (имя/фото), cost_overrides.
+// Источники факта (сверено с lib/wbMetrics.js, lib/ozonMetrics.js):
+//   WB:    order_costs (канон), sales (шт факт), daily_metrics.ad_spend
+//          (реклама — информационная колонка, canon.ads=0 на товаре),
+//          wb_articles (имя/фото).
+//   OZON:  order_costs (канон, включая шт факт), daily_metrics.ad_spend
+//          (информационная), ozon_products (имя/фото).
 //
 // Перенос эталона fin/plan.py:plan_fact() под tenantQuery (PG+RLS).
 import { NextResponse } from "next/server";
 import { DatabaseSync, tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { wbFinancePeriodByNm, wbSold, wbAdTotal } from "@/lib/wbMetrics.js";
-import { ozOrderCostsByProduct, ozAdSpend } from "@/lib/ozonMetrics.js";
-import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
+import { wbSold, wbAdTotal, wbProfitProduct } from "@/lib/wbMetrics.js";
+import { ozAdSpend, ozProfitProduct } from "@/lib/ozonMetrics.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,19 +69,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const toEnd = to + "T23:59:59";
 
   // 2. Предзагрузка факта за период (один проход по источнику, не построчно).
-  //    YA — нет источника (как в эталоне).
-  let wbFin = {}, wbSoldMap = {}, wbAd = {}, wbNames = {};
-  let ozMap = {}, ozAd = {}, ozNames = {};
+  //    YA — нет источника (как в эталоне). Деньги факта — КАНОН, по строке
+  //    плана (мало строк живых данных — см. докстроку файла), вызывается
+  //    НИЖЕ прямо в цикле сборки items; здесь только штуки/реклама/имена
+  //    (не часть канона, батчем — дёшево).
+  let wbDb = null, wbSoldMap = {}, wbAd = {}, wbNames = {};
+  let ozDb = null, ozSold = {}, ozAd = {}, ozNames = {};
   const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
   const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
   const taxMode = platform === "OZON" ? ozonTax : wbTax;
 
   if (platform === "WB") {
     try {
-      const db = new DatabaseSync("wb", { readOnly: true });
-      wbFin = await wbFinancePeriodByNm(db, { from, to: toEnd.slice(0, 10) });
-      wbSoldMap = await wbSold(db, { from, to: toEnd.slice(0, 10) });
-      wbAd = await wbAdTotal(db, { from, to: toEnd.slice(0, 10), groupByNm: true });
+      wbDb = new DatabaseSync("wb", { readOnly: true });
+      wbSoldMap = await wbSold(wbDb, { from, to: toEnd.slice(0, 10) });
+      wbAd = await wbAdTotal(wbDb, { from, to: toEnd.slice(0, 10), groupByNm: true });
     } catch (e) { /* БД WB может быть пуста/нет данных — факт = null, не падаем. */ }
     // Имена/фото/категория из wb_articles (вне DatabaseSync-мапа, raw tenant).
     try {
@@ -90,9 +94,20 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     } catch {}
   } else if (platform === "OZON") {
     try {
-      const db = new DatabaseSync("ozon", { readOnly: true });
-      ozMap = await ozOrderCostsByProduct(db, { from, to });
-      ozAd = await ozAdSpend(db, { from, to, groupByProduct: true });
+      ozDb = new DatabaseSync("ozon", { readOnly: true });
+      // Штуки факта (is_return=0), симметрично старому ozOrderCostsByProduct.sold —
+      // деньги теперь идут через ozProfitProduct (канон), не отсюда.
+      for (const r of await ozDb.prepare(
+        `SELECT product_id, SUM(CASE WHEN is_return=0 THEN 1 ELSE 0 END) AS n
+         FROM order_costs
+         WHERE product_id IS NOT NULL
+           AND substr(COALESCE(sale_dt, return_dt),1,10) >= ?
+           AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?
+         GROUP BY product_id`
+      ).all(from, to)) {
+        ozSold[r.product_id] = r.n || 0;
+      }
+      ozAd = await ozAdSpend(ozDb, { from, to, groupByProduct: true });
     } catch (e) {}
     try {
       const rows = await tenantQuery(
@@ -104,7 +119,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   // 3. Сборка строк план-факт.
   const today = new Date().toISOString().slice(0, 10);
-  const items = planRows.map((row) => {
+  const items = [];
+  for (const row of planRows) {
     const nm = row.nm_id;
     const pid = row.product_id;
     const is_new = Boolean(row.is_new_sku) || (nm == null && pid == null);
@@ -187,37 +203,27 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     };
 
     // 4. ФАКТ — только для обрабатываемых SKU (не new/waiting) с источником.
-    if (is_waiting) return item;
-    let f = null, ad = 0;
-    if (platform === "WB" && nm != null && wbFin[nm]) {
-      f = wbFin[nm];
-      ad = wbAd[nm] || 0;
-    } else if (platform === "OZON" && pid != null && ozMap[pid]) {
-      f = ozMap[pid];
-      ad = ozAd[pid] || 0;
-    }
-    if (!f) return item; // нет факта — оставляем null.
+    // Деньги — КАНОН (wbProfitProduct/ozProfitProduct, задача 5 плана
+    // унификации прибыли): margin_fact_rub = f.profit, себестоимость факта —
+    // ФАКТ из order_costs.cost (f.cogs), НЕ плановая cost_plan (была
+    // аппроксимацией costPlan×qtyFact) — цель задачи 5 «факт-COGS». ads
+    // канона на товаре всегда 0 — ad_spend остаётся реальной информационной
+    // колонкой (drr_fact/roi_fact её используют для отображения, profit её
+    // больше не вычитает).
+    if (is_waiting) { items.push(item); continue; }
+    if (platform === "WB" && nm == null) { items.push(item); continue; }
+    if (platform === "OZON" && pid == null) { items.push(item); continue; }
 
-    const qtyFact = platform === "WB" ? (wbSoldMap[nm] || 0) : (f.sold || 0);
-    const revenueFact = round2(f.salesRub != null ? f.salesRub : f.revenue) || 0;
-    if (!qtyFact && !revenueFact) return item; // нулевой факт — % выполнения бессмысленен.
+    const qtyFact = platform === "WB" ? (wbSoldMap[nm] || 0) : (ozSold[pid] || 0);
+    const adSp = round2(platform === "WB" ? (wbAd[nm] || 0) : (ozAd[pid] || 0));
+    const f = platform === "WB"
+      ? await wbProfitProduct(wbDb, taxMode, { from, to: toEnd.slice(0, 10) }, nm)
+      : await ozProfitProduct(ozDb, taxMode, { from, to }, pid);
+    const revenueFact = round2(f.revenue) || 0;
+    if (!qtyFact && !revenueFact) { items.push(item); continue; } // нулевой факт — % выполнения бессмысленен.
 
-    // Расходы из компонентов (канон SaaS). WB: fin.commission/logistics/acquiring.
-    // OZON: f.cost/commission/logistics/acquiring/loyalty (уже из order_costs).
-    const commission = round2(f.commission || 0);
-    const acquiring = round2(f.acquiring || 0);
-    const logistics = round2(f.logistics || 0);
-    const loyalty = round2(f.loyalty || 0);
-    // Себестоимость: per-SKU из cost_overrides нет на строке плана — используем
-    // cost_plan (плановая) как аппроксимацию для ROI факта (задокументировано).
-    const costRub = round2(((costPlan || 0)) * qtyFact) || 0;
-    const adSp = round2(ad);
-    const itemExpenses = (commission || 0) + (acquiring || 0) + (logistics || 0) + (loyalty || 0) + costRub + adSp;
-    const tax = calcTotalTax(taxMode, revenueFact, itemExpenses).total;
-    // ЧИСТАЯ операционная прибыль = выручка − все расходы − налог (как products-summary).
-    const marginFactRub = round2(
-      revenueFact - (commission || 0) - (acquiring || 0) - (logistics || 0) - (loyalty || 0) - costRub - adSp - tax
-    );
+    const costRub = f.cogs; // ФАКТ-себестоимость (канон), не cost_plan
+    const marginFactRub = f.profit;
 
     item.qty_fact = qtyFact;
     item.revenue_fact = revenueFact;
@@ -226,14 +232,14 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     item.drr_fact = revenueFact > 0 ? round4(adSp / revenueFact) : null;
     item.margin_fact_rub = marginFactRub;
     item.margin_fact_pct = revenueFact > 0 ? round4(marginFactRub / revenueFact) : null;
-    // ROI факт — Пр факт ₽ / (Себест × Факт шт). Использует cost_plan (аппроксимация).
+    // ROI факт — Пр факт ₽ / Себест факт ₽ (была аппроксимация cost_plan×qty).
     item.roi_fact = (costRub > 0 && marginFactRub != null) ? round4(marginFactRub / costRub) : null;
     // % выполнения: ДРР инвертируется (ниже плана = лучше, >100% = перевыполнили).
     item.qty_fulfill = safeDiv(qtyFact, qtyPlan);
     item.revenue_fulfill = safeDiv(revenueFact, revenuePlan);
     item.margin_fulfill = safeDiv(marginFactRub, marginPlanRub);
-    return item;
-  });
+    items.push(item);
+  }
 
   return NextResponse.json({ count: items.length, items });
 });

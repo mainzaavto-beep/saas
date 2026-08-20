@@ -9,13 +9,15 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import {
   WAREHOUSE_REGION,
   wbOrdersByDay, wbOrderRubByDay, wbSoldByDay, wbStockByDay,
-  wbFinancePeriod, wbFinanceByDay, wbUnitCost,
+  wbFinanceByDay, wbUnitCost, wbProfitProduct,
 } from "@/lib/wbMetrics.js";
-import { ozOrderCostsAggregate } from "@/lib/ozonMetrics.js";
+import { ozProfitProduct } from "@/lib/ozonMetrics.js";
 import { calcTotalTax, normalizeTaxMode, describeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const round2 = (v) => Math.round(((v || 0) + Number.EPSILON) * 100) / 100;
 
 const RU_WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 function weekdayOf(dateStr) {
@@ -250,8 +252,13 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   const stockDayByDate = stripKey(await wbStockByDay(db, { from, to, nmIds: [nm] }));
   const finByDate = stripKey(await wbFinanceByDay(db, { from, to, nmIds: [nm] }));
 
-  // 5б) Финансы периода.
-  const fin = await wbFinancePeriod(db, { from, to, nmId: nm });
+  // 5б) Финансы периода — КАНОН (wbProfitProduct, задача 5 плана унификации
+  // прибыли): revenue/commission/logistics/acquiring/loyalty/returnLogistics/
+  // tax/profit ЕДИНЫЕ с products-summary/rnp-summary/pnl. ads канона при nmId
+  // всегда 0 (см. докстроку wbProfitProduct) — totals.adSpend НИЖЕ остаётся
+  // РЕАЛЬНЫМ информационным per-SKU расходом (данные у WB физически есть,
+  // profit их просто больше не вычитает — решение владельца, шлюз).
+  const fin = await wbProfitProduct(db, taxMode, { from, to }, nm);
   const unitCost = await wbUnitCost(db, nm);
 
   // 6) Сборка days.
@@ -354,19 +361,16 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   totals.price_with_spp = lastDay.price_with_spp ?? null;
   for (const k of SUM_KEYS) if (k.endsWith("spend")) totals[k] = Math.round(totals[k] * 100) / 100;
 
-  const sold = totals.sales || 0;
-  const salesRub = fin.salesRub;
-  const forPay = fin.forPay || 0; // ppvz_for_pay — ЭТАЛОН выручки для profit (урок D15)
-  const costRub = Math.round(((unitCost ?? 0) * sold) * 100) / 100;
+  // Итоги периода — КАНОН (fin = wbProfitProduct выше). adSp остаётся
+  // РЕАЛЬНЫМ информационным per-SKU расходом (см. коммент у fin выше) —
+  // profit его больше не вычитает (canon.ads при nmId = 0, решение задачи 2).
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
-  // Налог и profit — от forPay (комиссия/эквайринг/лояльность уже внутри, не вычитаем).
-  const wbExpenses = (fin.logistics || 0) + costRub + adSp;
-  const tax = calcTotalTax(taxMode, forPay, wbExpenses).total;
-  totals.revenue = salesRub; totals.cost = costRub;
+  totals.revenue = fin.revenue; totals.cost = fin.cogs;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
-  totals.acquiring = fin.acquiring; totals.loyalty = 0;
-  totals.adSpend = adSp; totals.tax = tax;
-  totals.profit = Math.round((forPay - (fin.logistics || 0) - costRub - adSp - tax) * 100) / 100;
+  totals.acquiring = fin.acquiring; totals.loyalty = fin.loyalty;
+  totals.returnLogistics = fin.returnLogistics;
+  totals.adSpend = adSp; totals.tax = fin.tax;
+  totals.profit = fin.profit;
 
   // 7) Ключевые слова (могут быть пусты — graceful).
   const kwByDay = new Map();
@@ -399,6 +403,7 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
     fin: {
       revenue: totals.revenue, cost: totals.cost, commission: totals.commission,
       logistics: totals.logistics, acquiring: totals.acquiring, loyalty: totals.loyalty,
+      returnLogistics: totals.returnLogistics,
       adSpend: totals.adSpend, tax: totals.tax, profit: totals.profit,
     },
   };
@@ -489,8 +494,15 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     }));
   } catch {}
 
-  // Финансы периода.
-  const finPeriod = await ozOrderCostsAggregate(db, { from, to, productId: nm });
+  // Финансы периода — КАНОН (ozProfitProduct, задача 5 плана унификации
+  // прибыли): revenue/cogs/commission/logistics/acquiring/loyalty/
+  // returnLogistics/tax/profit ЕДИНЫЕ с products-summary/rnp-summary/pnl
+  // (SUM(order_costs.profit) БЕЗ фильтра is_return — возвраты внутри, см.
+  // докстроку ozProfitProduct). ads канона при productId всегда 0
+  // (Performance API не даёт пер-SKU расход) — totals.ad_spend НИЖЕ
+  // остаётся тем же источником, что и раньше (daily_metrics.ad_spend,
+  // сегодня пуст по SKU у Ozon — как и было).
+  const finPeriod = await ozProfitProduct(db, taxMode, { from, to }, nm);
 
   // Динамика по дням.
   const profitByDay = new Map();
@@ -521,10 +533,18 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // Сборка days.
   const dateList = wbDateList(from, to);
   const dayMap = new Map(metricRows.map((r) => [r.date, r]));
+  // profitGross — справочная валовая прибыль (выручка минус прямые расходы
+  // уровня заказа, ДО рекламы/налога), тот же смысл, что grossProfit в
+  // pnl/mpBlock (задача 4) — канон не отдаёт это поле напрямую, считаем из
+  // его слагаемых.
+  const ozGrossProfit = round2(
+    finPeriod.revenue - finPeriod.cogs - finPeriod.commission - finPeriod.logistics
+    - finPeriod.acquiring - finPeriod.loyalty
+  );
   const totals = {
     orders: 0, clicks: 0, cart: 0, ad_spend: 0, ad_views: 0, ad_clicks: 0, ad_orders: 0,
-    orders_sum: 0, revenue: Math.round((finPeriod.revenue || 0) * 100) / 100,
-    profit: 0, profitGross: finPeriod.profitGross,
+    orders_sum: 0, revenue: finPeriod.revenue,
+    profit: 0, profitGross: ozGrossProfit,
   };
   let lastRating = null;
 
@@ -591,12 +611,13 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   for (const k of ["ad_spend", "ad_views", "ad_clicks", "ad_orders", "orders_sum"]) {
     totals[k] = Math.round(totals[k] * 100) / 100;
   }
-  // Налог: УСН (база = выручка без НДС) + НДС (выделение). profit вычитает total.
-  // profitGross = выручка − комиссия − логистика − себестоимость (уже вычтены).
-  const ozRevenue = totals.revenue || 0;
-  const ozExpenses = Math.max(0, ozRevenue - (totals.profitGross || 0)) + (totals.ad_spend || 0);
-  totals.tax = calcTotalTax(taxMode, ozRevenue, ozExpenses).total;
-  totals.profit = Math.round(((totals.profitGross || 0) - (totals.ad_spend || 0) - totals.tax) * 100) / 100;
+  // Налог/прибыль периода — КАНОН (finPeriod = ozProfitProduct выше). ads
+  // канона при productId = 0 — totals.ad_spend (реальный daily_metrics-
+  // расход, у Ozon сегодня пуст по SKU) остаётся информационной колонкой,
+  // profit её больше не вычитает (решение задачи 1/5, симметрично WB).
+  totals.tax = finPeriod.tax;
+  totals.profit = finPeriod.profit;
+  totals.returnLogistics = finPeriod.returnLogistics;
 
   return {
     period: { from, to, days: dateList.length },
@@ -604,11 +625,10 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     stocks: { items: stockRows, total: stockTotal, snapshotDate: stockDateRow?.d || null },
     sales: { total: ordTotal, localPct: null, byWarehouse: [], byCluster: [], byCity },
     fin: {
-      revenue: totals.revenue, cost: Math.round((finPeriod.cost || 0) * 100) / 100,
-      commission: Math.round((finPeriod.commission || 0) * 100) / 100,
-      logistics: Math.round((finPeriod.logistics || 0) * 100) / 100,
-      acquiring: Math.round((finPeriod.acquiring || 0) * 100) / 100,
-      loyalty: Math.round((finPeriod.loyalty || 0) * 100) / 100,
+      revenue: totals.revenue, cost: finPeriod.cogs,
+      commission: finPeriod.commission, logistics: finPeriod.logistics,
+      acquiring: finPeriod.acquiring, loyalty: finPeriod.loyalty,
+      returnLogistics: totals.returnLogistics,
       adSpend: totals.ad_spend, tax: totals.tax, profit: totals.profit,
     },
   };

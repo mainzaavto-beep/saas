@@ -1,13 +1,9 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import {
-  wbFinancePeriodByNm, wbSold, wbAdTotal, wbUnitCost, calcOperatingProfit,
-} from "@/lib/wbMetrics.js";
-import {
-  ozOrderCostsByProduct, ozAdSpend, calcOperatingProfit as ozCalcProfit,
-} from "@/lib/ozonMetrics.js";
-import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
+import { wbAdTotal, wbProfitProduct } from "@/lib/wbMetrics.js";
+import { ozProfitProduct } from "@/lib/ozonMetrics.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 
 export const runtime = "nodejs";
@@ -128,13 +124,28 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     const totals = aggTotals(items);
 
-    // ⚠ Правка 2026-06-27: totals.adSpend пересчитываем честно — ВСЯ реклама
-    // периода из daily_metrics (WB+Ozon), а не сумма по строкам товаров.
-    // aggTotals теряет рекламу по товарам без строки (нет продаж в периоде),
-    // что давало расхождение ~2к₽ с /api/overview. Реклама = расход периода
-    // (потрачена независимо от продаж), поэтому весь объём должен входить в
-    // totals. После пересчёта adSpend пересчитываем и profit (старая сумма
-    // рекламы занижала прибыль на величину потерянной рекламы).
+    // ⚠️ КАНОН (задача 5 плана унификации прибыли): it.profit теперь = canon
+    // profitProduct(nm/pid).profit, где ads ВСЕГДА 0 (реклама у Ozon физически
+    // не разносится по SKU, у WB — решение задачи 2 «симметрично Ozon», см.
+    // докстроку wbProfitProduct) — Σ(item.profit) НЕ содержит рекламу вовсе.
+    // Чтобы totals.profit сходился с pnl.profit (товарная часть = profitProduct
+    // БЕЗ productId, где ads(кабинета) вычитается ОДИН раз) — см. Task 1
+    // check-profit-canon.mjs, проверка «productId-фильтр аддитивен»: Σ profit
+    // (товар) − ads(кабинета) = profit(без фильтра) — вычитаем ПОЛНУЮ кабинетную
+    // рекламу периода здесь, единым блоком (totals.adSpend — информационная
+    // колонка «сколько потрачено на рекламу», как и раньше, item.adSpend
+    // остаётся реальным per-SKU расходом для ДРР/CPA/ROMI, просто больше не
+    // вычитается из item.profit — решение владельца, шлюз
+    // docs/profit-unification-delta.md).
+    //
+    // logistics больше НЕ пересчитывается отдельным «полным» блоком (в отличие
+    // от рекламы): canon-логистика каждого товара — это ПРЯМАЯ сумма
+    // order_costs.logistics ЗА ЭТОТ nm/product_id (не finance_report-агрегат,
+    // который создавал запись только для nm с «Продажей» и терял logistics-
+    // only nm) — rows строится из ВСЕХ nm/product_id, когда-либо встречавшихся
+    // в order_costs (см. коммент у SQL rows ниже), поэтому Σ(item.logistics)
+    // уже полна и аддитивна сама по себе (проверено check-profit-canon.mjs,
+    // «слагаемые аддитивны»), никакого top-up не требуется.
     if (from && to) {
       // ⚠️ Грабля SAAS (та же что с logistics): отдельный prepare().get() для
       // агрегата после предыдущих запросов в транзакции возвращает 0 (баг
@@ -169,38 +180,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           fullAd += (ozad && ozad.s) || 0;
         } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
       }
-      const adDelta = round2(fullAd - (totals.adSpend || 0));
       totals.adSpend = round2(fullAd);
-      // Прибыль уменьшается на дельту рекламы (больше рекламы учли → меньше profit).
-      totals.profit = round2((totals.profit || 0) - adDelta);
-
-      // ⚠ Правка 2026-07-09 (Этап 2 единого слоя метрик): totals.logistics для WB
-      // тоже пересчитываем честно — ВСЯ логистика периода из finance_report
-      // (операция «Логистика», все nm>0), а не сумма по строкам товаров.
-      // aggTotals теряет логистику по nm БЕЗ продажи в периоде (wbFinancePeriodByNm
-      // создаёт запись только для nm с Продажей → логистика nm-без-продажи не
-      // попадает в items). Симметрично adSpend выше. Без этого Сводка расходилась
-      // с Главной на ~466₽ за июль (gotcha раскрыта при сверке Этапа 2). Логистика —
-      // расход периода (доставка состоялась), учитываем весь объём. УСН и маржа
-      // от выручки, а не логистики → пересчёта tax/margin по логистике не требуется.
-      if (platform !== "ozon") {
-        try {
-          // ⚠️ Грабля SAAS: отдельный prepare().get() для этого агрегата после
-          // предыдущих запросов в транзакции возвращает 0 (баг эмулятора
-          // DatabaseSync поверх pg). Решение: считать через subquery в одном
-          // запросе — так работает корректно. logsum = Σ delivery_rub операция
-          // 'Логистика', все nm>0 за период.
-          const dbg = await new DatabaseSync("wb", {readOnly:true}).prepare(
-            `SELECT (SELECT COALESCE(SUM(delivery_rub),0) FROM finance_report
-                     WHERE supplier_oper_name='Логистика' AND nm_id IS NOT NULL AND nm_id != 0
-                       AND rr_dt >= ? AND rr_dt <= ?) AS logsum`
-          ).get(from, toEnd);
-          const fullLog = dbg.logsum || 0;
-          const logDelta = round2(fullLog - (totals.logistics || 0));
-          totals.logistics = round2(fullLog);
-          totals.profit = round2((totals.profit || 0) - logDelta);
-        } catch (e) { console.error('[products-summary] logistics пересчёт упал:', e.message); }
-      }
+      // item.profit (канон) рекламу не вычитает вовсе (ads=0 на товаре) —
+      // вычитаем ПОЛНУЮ кабинетную рекламу здесь один раз (см. коммент блока
+      // выше), чтобы totals.profit = pnl.profit (товарная часть).
+      totals.profit = round2((totals.profit || 0) - fullAd);
       if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
     }
 
@@ -281,15 +265,11 @@ async function collectWB(from, toEnd, shopName, taxMode) {
      GROUP BY oc.nm_id`
   ).all(from, toEnd, from, toEnd, from, toEnd);
 
-  // 1б) ДЕНЬГИ из finance_report — единый канон (lib/wbMetrics.js).
-  //   - salesRub = SUM(retail_price_withdisc_rub) — выручка ДО СПП
-  //   - commission = SUM(commission_percent × retail_price_withdisc_rub / 100)
-  //     (владелец: «комиссия считается от цены до СПП», не ppvz_sales_commission!)
-  //   - acquiring = SUM(acquiring_fee), logistics = SUM(delivery_rub) операция 'Логистика'
-  // ⚠️ orderRub (сумма ЗАКАЗОВ) считаем НЕ здесь, а из orders.price_with_disc —
-  // см. блок 2. Заказы из orders включают отмены → дают честную «сумму заказов».
-  // toEnd = "YYYY-MM-DD 23:59:59"; lib ждёт дату без времени (добавляет сам).
-  const fin = await wbFinancePeriodByNm(db, { from, to: toEnd.slice(0, 10) });
+  // 1б) ДЕНЬГИ — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли),
+  // вызывается НИЖЕ по каждому nm (в цикле сборки). orderRub (сумма ЗАКАЗОВ)
+  // считаем НЕ отсюда, а из orders.price_with_disc — см. блок 2. Заказы из
+  // orders включают отмены → дают честную «сумму заказов». toEnd =
+  // "YYYY-MM-DD 23:59:59"; lib ждёт дату без времени (добавляет сам).
 
   // 2) Заказано/отмен по orders + сумма ЗАКАЗОВ (orderRub = SUM(price_with_disc)
   // по всем заказам, включая отмены — это честная «сумма заказов», отличная от
@@ -376,13 +356,14 @@ async function collectWB(from, toEnd, shopName, taxMode) {
 
   // Объединяем. Товар попадает в выдачу, если у него есть order_costs (продажа/возврат)
   // ИЛИ заказы за период ИЛИ свежие продажи в sales — чтобы видеть все активные SKU.
+  // Финансовые поля-заглушки не нужны: деньги для КАЖДОЙ строки (включая
+  // добавленные здесь) считаются каноном ниже, по nm — см. цикл сборки.
   const seen = new Set(rows.map((r) => r.nm));
   const addStub = (key) => {
     if (!seen.has(key)) {
       rows.push({
         nm: key, barcode: null, cat: null, name: null, brand: null, grp: null, im_url: null, sa: null,
-        sold: 0, returns: 0, selfBuyout: 0, orderRub: 0, salesRub: 0, costRub: 0,
-        commission: 0, logistics: 0, acquiring: 0, loyalty: 0, profit: 0,
+        sold: 0, returns: 0, selfBuyout: 0,
       });
       seen.add(key);
     }
@@ -390,27 +371,22 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   for (const nmRaw of Object.keys(ord)) addStub(Number(nmRaw));
   for (const nmRaw of Object.keys(fresh)) addStub(Number(nmRaw));
 
-  return rows.map((r) => {
+  // Деньги — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли), по
+  // товару. adSpend — РЕАЛЬНЫЙ per-SKU расход (данные у WB есть физически,
+  // wbAdTotal groupByNm), остаётся информационной колонкой: canon.ads при
+  // nmId всегда 0 (решение задачи 2 — «симметрично Ozon», см. докстроку
+  // wbProfitProduct), profit его больше не вычитает — решение владельца
+  // (шлюз docs/profit-unification-delta.md).
+  const out = [];
+  for (const r of rows) {
     const nm = r.nm;
     const o = ord[nm] || { ordered: 0, cancelled: 0, orderRub: 0 };
     // СВЕЖИЕ штуки из sales (до 20.06). Если sales нет — fallback на order_costs.
     const fr = fresh[nm];
     const sold = fr ? fr.sold : (r.sold || 0);
-    // ДЕНЬГИ напрямую из finance_report (правильная формула по доке WB):
-    //   salesRub = SUM(retail_price_withdisc_rub) — выручка ДО СПП
-    //   commission = SUM(commission_percent × retail_price_withdisc_rub / 100)
-    //     (владелец: «комиссия считается от цены до СПП»).
-    const f = fin[nm] || {};
-    const salesRub = f.salesRub || 0;
-    // orderRub — сумма ЗАКАЗОВ из orders.price_with_disc (блок 2), НЕ из finance_report.
+    const f = await wbProfitProduct(db, taxMode, { from, to: toEnd.slice(0, 10) }, nm);
+    // orderRub — сумма ЗАКАЗОВ из orders.price_with_disc (блок 2), НЕ канон.
     const orderRub = o.orderRub || 0;
-    const commission = round2(f.commission || 0);
-    const acquiring  = round2(f.acquiring || 0);
-    const logistics  = round2(f.logistics || 0);
-    const loyalty    = round2(f.loyalty || 0);
-    // forPay = ppvz_for_pay («к перечислению продавцу») — ЭТАЛОН выручки для profit
-    // (урок D15). commission/acquiring/loyalty УЖЕ внутри → в profit не вычитаем.
-    const forPay = round2(f.forPay || 0);
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
     // Инварианта: ordered >= sold + cancelled. ⚠️ returns НЕ прибавляем к sold:
@@ -421,40 +397,32 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     const minOrdered = sold + cancelled;
     const ordered = Math.max(o.ordered || 0, minOrdered);
     const adSp = ad[nm] || 0;
-    const costRub = round2((unitCost[nm] ?? 0) * sold);
-    // Налог и profit — от ppvz_for_pay (ЭТАЛОН, урок D15). forPay уже включает
-    // комиссию/эквайринг/лояльность → их НЕ вычитаем из profit. Расходы для УСН Д−Р:
-    // логистика + себестоимость + реклама (хранение не привязано к SKU).
-    const itemExpenses = logistics + costRub + adSp;
-    const tax = calcTotalTax(taxMode, forPay, itemExpenses).total;
-    // ЧИСТАЯ прибыль по SKU = forPay − логистика − себест − реклама − налог.
-    // Хранение сюда НЕ входит — оно не привязано к товару (№27).
-    const profitClean = round2(forPay - logistics - costRub - adSp - tax);
-    return {
+    out.push({
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
       cat: r.cat || "", im_url: r.im_url || null, platform: "wb", shop: shopName,
       ordered, cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
-      orderRub: round2(orderRub), salesRub: round2(salesRub),
-      costRub,
-      commission, logistics, acquiring, loyalty,
-      // returnLogistics = 0 для WB: у WB возвратная логистика уже ВХОДИТ в поле
-      // logistics (операция «Логистика» в finance_report суммируется целиком,
-      // включая сторно возвратов — грабля #98). Отдельной колонки не нужно.
-      returnLogistics: 0,
+      orderRub: round2(orderRub), salesRub: f.revenue,
+      costRub: f.cogs,
+      commission: f.commission, logistics: f.logistics, acquiring: f.acquiring, loyalty: f.loyalty,
+      // returnLogistics — СПРАВОЧНАЯ строка канона (уже внутри logistics
+      // выше, не вычитается повторно — см. докстроку wbProfitProduct).
+      returnLogistics: f.returnLogistics,
       adSpend: round2(adSp),
-      tax, profit: profitClean,
+      tax: f.tax, profit: f.profit,
       stock: stockEnd[nm] ?? 0, avgStock: round2(avgStock), avgDailySales: round2(avgDailySales),
       unitCost: unitCost[nm] ?? null,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 // ---------- Ozon ----------
 async function collectOzon(from, toEnd, shopName, taxMode) {
   const db = new DatabaseSync("ozon", {readOnly:true});
-  const days = Math.max(1, Math.round((new Date(toEnd.slice(0, 10)) - new Date(from)) / 86400000) + 1);
+  const to = toEnd.slice(0, 10); // канон (ozProfitProduct) ждёт даты без времени
+  const days = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1);
   const rows = await db.prepare(
     `SELECT
        oc.product_id           AS nm,
@@ -623,74 +591,57 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
         rows.push({
           nm: r.nm, barcode: r.barcode || null, name: r.name || null,
           brand: r.brand || null, grp: r.grp || null, im_url: r.im_url || null, sa: r.sa || null,
-          // Все фин. поля = 0 (нет продаж/возвратов в периоде).
-          sold: 0, returns: 0, selfBuyout: 0, salesRub: 0, costRub: 0,
-          commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
-          rLogistics: 0, rCommission: 0, profit: 0,
+          sold: 0, returns: 0, selfBuyout: 0,
         });
         seen.add(r.nm);
       }
     }
   } catch (e) { console.error('[products-summary] Ozon products addStub:', e.message); }
 
-  return rows.map((r) => {
+  // Деньги — КАНОН (ozProfitProduct, задача 5 плана унификации прибыли), по
+  // товару (SUM(order_costs.profit) БЕЗ фильтра is_return — возвраты внутри,
+  // возвратный убыток УЖЕ в returnLogistics/logistics/commission, см.
+  // докстроку ozProfitProduct). adSpend — daily_metrics.ad_spend по SKU
+  // (сегодня у Ozon пуст, как и раньше) остаётся информационной колонкой:
+  // canon.ads при productId всегда 0 (Performance API не даёт пер-SKU расход),
+  // profit его больше не вычитает.
+  const out = [];
+  for (const r of rows) {
     const nm = r.nm;
-    // ФИКС #134: ВСЕ числа берём напрямую из order_costs (как profit в SQL-запросе),
-    // а не из sales (там нет delivered-продаж у Ozon). sold/returns/salesRub/profit
-    // уже посчитаны в SQL через COALESCE(sale_dt, return_dt) — корректный месяц.
     const sold = r.sold || 0;
     const returns = r.returns || 0;
-    const salesRub = r.salesRub || 0;
-    // Расходы берем напрямую из order_costs (уже посчитаны агрегатом за период по
-    // sale_dt), без пересчёта ставок. Это даёт точную копейку-в-копейку с эталоном
-    // P&L из efficiency.py (Σprofit = −20k за июнь, а не +4k как раньше).
-    const commission = round2(r.commission || 0);
-    const acquiring  = round2(r.acquiring || 0);
-    const logistics  = round2(r.logistics || 0);
-    const loyalty    = round2(r.loyalty || 0);
-    const costRub    = round2(r.costRub || 0);
+    const f = await ozProfitProduct(db, taxMode, { from, to }, nm);
     const adSp = ad[nm] || 0;
-    // Убыток от возвратов (фикс 2026-07-23): логистика + комиссия Ozon по
-    // возвращённым отправлениям. Себестоимость НЕ списываем (товар на складе).
-    // Раньше возвраты вообще не входили в profit → ~34к на cabinet #1 «исчезали».
-    const returnLogistics = round2((r.rLogistics || 0) + (r.rCommission || 0));
-    // Налог: для УСН Доходы−Расходы расходы = комиссия + эквайринг + логистика +
-    // лояльность + себестоимость + реклама + убыток от возвратов.
-    const ozItemExpenses = commission + acquiring + logistics + loyalty + costRub + adSp + returnLogistics;
-    const tax = calcTotalTax(taxMode, salesRub, ozItemExpenses).total;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
-    // profitClean = ОПЕРАЦИОННАЯ прибыль (правка 2026-06-26): та же формула, что в
-    // collectWB — выручка − себест − комиссия − логистика − эквайринг − лояльность −
-    // реклама − налог − убыток от возвратов. Раньше здесь было просто order_costs.profit
-    // (валовая, без рекламы/налога) → Ozon и WB считали прибыль по-разному внутри
-    // Сводки, и План продаж не сходился с Сводкой. Теперь единая операционная прибыль.
-    // Готовый order_costs.profit оставляем справочно как profitGross (валовая, до
-    // рекламы/налога) — иногда полезно видеть валовую маржу отдельно.
-    const profitGross = round2(r.profit || 0);
-    const profitClean = round2(
-      salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax - returnLogistics
+    // profitGross — справочная валовая прибыль (см. коммент у detail/route.js),
+    // канон её напрямую не отдаёт — считаем из слагаемых.
+    const profitGross = round2(
+      f.revenue - f.cogs - f.commission - f.logistics - f.acquiring - f.loyalty
     );
     // orderRub и ordered/cancelled — из таблицы orders (фикс #137). orderRub = сумма
     // ЗАКАЗОВ (симметрично WB), НЕ равен salesRub (который из order_costs = доставки).
     // Ограничение: у Ozon orders покрывают только последние ~2 недели — orderRub за
     // полный месяц будет неполным. ordered = реальные заказы из orders.
     const o = ord[nm] || { ordered: 0, cancelled: 0, orderRub: 0 };
-    return {
+    out.push({
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
       cat: "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
-      orderRub: round2(o.orderRub), salesRub: round2(salesRub),
-      costRub,
-      commission, logistics, acquiring, loyalty,
-      returnLogistics,
+      orderRub: round2(o.orderRub), salesRub: f.revenue,
+      costRub: f.cogs,
+      commission: f.commission, logistics: f.logistics, acquiring: f.acquiring, loyalty: f.loyalty,
+      // returnLogistics — СПРАВОЧНАЯ строка канона (уже внутри logistics/
+      // commission выше, не вычитается повторно — см. докстроку ozProfitProduct).
+      returnLogistics: f.returnLogistics,
       adSpend: round2(adSp),
-      tax, profit: profitClean, profitGross,
+      tax: f.tax, profit: f.profit, profitGross,
       stock: stockEnd[nm] ?? 0, avgStock: round2(avgStock), avgDailySales: round2(avgDailySales),
       stockDate: stockDate._ozon || null, // дата снимка остатков Ozon (грабля #139)
       unitCost: unitCost[nm] ?? null,
-    };
-  });
+    });
+  }
+  return out;
 }

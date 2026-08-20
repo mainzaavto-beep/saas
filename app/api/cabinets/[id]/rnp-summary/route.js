@@ -1,13 +1,9 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import {
-  wbFinancePeriodByNm, wbAdTotal, wbSold,
-} from "@/lib/wbMetrics.js";
-import {
-  ozOrderCostsByProduct, ozAdSpend,
-} from "@/lib/ozonMetrics.js";
-import { calcTotalTax, normalizeTaxMode } from "@/lib/tax.js";
+import { wbProfitProduct } from "@/lib/wbMetrics.js";
+import { ozProfitProduct } from "@/lib/ozonMetrics.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
 import { tenantQuery } from "@/lib/db.js";
 
 export const runtime = "nodejs";
@@ -29,9 +25,12 @@ export const dynamic = "force-dynamic";
 //    • Оборачиваемость, дн          — lastStock / (sold5/5) по последним 5 дням от конца периода
 //    • Рейтинг ★ + динамика ▲▼      — AVG(daily_metrics.rating) (feedbackRating, сглаженный)
 //
-//  Канон финансов = тот же, что в /products-summary (lib/wbMetrics.js,
-//  lib/ozonMetrics.js). Переиспользуем wbFinancePeriodByNm/wbAdTotal/
-//  ozOrderCostsByProduct/ozAdSpend/calcUsnTax — единый источник правды.
+//  Канон финансов = тот же, что в /products-summary и pnl (lib/wbMetrics.js
+//  ::wbProfitProduct, lib/ozonMetrics.js::ozProfitProduct — задача 5 плана
+//  унификации прибыли) — profitFact на товар = canon.profit (ads=0 на
+//  товаре, кабинетная реклама вычитается из totals единым блоком ниже).
+//  adSpend в строках — реальный per-SKU расход (daily_metrics), информационная
+//  колонка, profit больше не вычитает.
 //
 //  Динамика (CTR, рейтинг): текущий период vs предыдущий период той же длины.
 //  prevTo = from − 1 день, prevFrom = prevTo − (days−1).
@@ -105,6 +104,37 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     items.sort((a, b) => (b.salesRub || 0) - (a.salesRub || 0));
 
     const totals = aggTotals(items);
+
+    // ⚠️ КАНОН (задача 5 плана унификации прибыли, симметрично products-
+    // summary): it.profitFact = canon profitProduct(nm/pid).profit, где ads
+    // ВСЕГДА 0 на товаре — Σ(item.profitFact) рекламу не вычитает вовсе.
+    // Вычитаем ПОЛНУЮ кабинетную рекламу периода здесь единым блоком, чтобы
+    // totals.profitFact сходился с pnl.profit (товарная часть) и
+    // products-summary.Σprofit — «один период = одна цифра» (шаг 5 плана).
+    // totals.adSpend (Σ item.adSpend, реальный per-SKU расход) остаётся
+    // информационной колонкой — не трогаем.
+    if (from && to) {
+      let fullAd = 0;
+      if (platform !== "ozon") {
+        try {
+          const wbad = await new DatabaseSync("wb", { readOnly: true }).prepare(
+            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+          ).get(from, toEnd);
+          fullAd += (wbad && wbad.s) || 0;
+        } catch (e) { console.error('[rnp-summary] WB ad пересчёт:', e.message); }
+      }
+      if (platform !== "wb") {
+        try {
+          const ozad = await new DatabaseSync("ozon", { readOnly: true }).prepare(
+            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM ozon_daily_efficiency
+                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+          ).get(from, to);
+          fullAd += (ozad && ozad.s) || 0;
+        } catch (e) { console.error('[rnp-summary] Ozon ad пересчёт:', e.message); }
+      }
+      totals.profitFact = round2((totals.profitFact || 0) - fullAd);
+    }
 
     return NextResponse.json({
       count: items.length,
@@ -233,8 +263,25 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
     ordered[r.nm_id] = r.n || 0;
   }
 
-  // 2) Финансы из finance_report — единый канон (lib/wbMetrics.js).
-  const fin = await wbFinancePeriodByNm(db, { from, to });
+  // 2) Товары с активностью в order_costs периода — универсум для денег
+  // ниже (КАНОН, wbProfitProduct на каждый nm — задача 5 плана унификации
+  // прибыли; сама сумма money считается ПОЗЖЕ, в цикле сборки).
+  const finKeys = new Set();
+  for (const r of await db.prepare(
+    `SELECT DISTINCT nm_id FROM order_costs
+     WHERE nm_id IS NOT NULL AND (
+       (sale_dt IS NOT NULL AND sale_dt >= ? AND sale_dt <= ?) OR
+       (return_dt IS NOT NULL AND return_dt >= ? AND return_dt <= ?)
+     )`
+  ).all(from, toEnd, from, toEnd)) {
+    // String(...) — ключи ОБЯЗАНЫ быть той же формы, что Object.keys(ordered)/
+    // Object.keys(dm) ниже (объектные ключи в JS ВСЕГДА строки); Set смешанных
+    // типов (число 831685664 vs строка "831685664") даёт ДВА разных элемента
+    // для одного и того же товара → item дублируется в выдаче, totals вдвое-
+    // и-больше завышаются (найдено --verify задачи 5: rnp Σ разошёлся с
+    // канон на всю сумму лишних дублей).
+    finKeys.add(String(r.nm_id));
+  }
 
   // 3) Реклама + CTR + рейтинг из daily_metrics (текущий период).
   const dm = {};
@@ -315,27 +362,8 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
     }
   } catch (e) { console.error("rnp-summary: spp last-known fallback", e); }
 
-  // 6) Себестоимость единицы — tenant.cost_overrides (единый источник, как в
-  //    /products-summary). Актуальный override на сегодня.
-  const unitCost = {};
-  for (const r of await db.prepare(
-    `SELECT DISTINCT ON (nm_id) nm_id, cost FROM tenant.cost_overrides
-     WHERE platform = 'wb' AND effective_from <= current_date
-     ORDER BY nm_id, effective_from DESC`
-  ).all()) {
-    unitCost[r.nm_id] = r.cost > 0 ? r.cost : null;
-  }
-  // Продано за период (шт) — нужно для себестоимости партии × штуки.
-  const soldAll = {};
-  for (const r of await db.prepare(
-    `SELECT nm_id,
-        SUM(CASE WHEN is_realization=1 AND price_with_disc > 0 THEN 1 ELSE 0 END) AS n
-     FROM sales
-     WHERE sale_dt >= ? AND sale_dt <= ? AND nm_id IS NOT NULL
-     GROUP BY nm_id`
-  ).all(from, toEnd)) {
-    soldAll[r.nm_id] = r.n || 0;
-  }
+  // Себестоимость (costRub) — теперь берётся из канона (f.cogs, ниже в цикле
+  // сборки), поэтому отдельный unitCost×soldAll здесь больше не нужен.
 
   // 6б) Продано (шт) из sales за последние 5 дней от конца периода — для оборачиваемости.
   const last5From = addDays(to, -4);
@@ -375,33 +403,28 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
 
   // Объединение всех nm, у которых есть любой показатель.
   const keys = new Set([
-    ...Object.keys(ordered), ...Object.keys(fin), ...Object.keys(dm),
+    ...Object.keys(ordered), ...finKeys, ...Object.keys(dm),
     ...Object.keys(spp), ...Object.keys(sold5), ...Object.keys(stockEnd),
   ]);
 
-  return [...keys].map((k) => {
+  // Деньги — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли), по
+  // товару. adSp остаётся РЕАЛЬНЫМ per-SKU расходом (тот же источник, что и
+  // раньше — daily_metrics) для ДРР/ROI — profit его больше не вычитает
+  // (canon.ads при nmId всегда 0, решение задачи 2).
+  const out = [];
+  for (const k of keys) {
     const nm = Number(k);
-    const f = fin[nm] || {};
+    const f = await wbProfitProduct(db, taxMode, { from, to }, nm);
     const d = dm[nm] || {};
     const dp = dmp[nm] || {};
     const id = ident[nm] || {};
-    const salesRub = f.salesRub || 0;
-    const commission = round2(f.commission || 0);
-    const acquiring = round2(f.acquiring || 0);
-    const logistics = round2(f.logistics || 0);
-    const loyalty = round2(f.loyalty || 0);
-    const forPay = round2(f.forPay || 0); // ppvz_for_pay — ЭТАЛОН выручки для profit (урок D15)
+    const salesRub = f.revenue || 0;
     const adSp = round2(d.spend || 0);
-    // Себестоимость партии = unitCost × продано за период (тот же канон, что /products-summary).
-    const costRub = round2((unitCost[nm] ?? 0) * (soldAll[nm] || 0));
-    // Налог и profit — от forPay (комиссия/эквайринг/лояльность уже внутри, не вычитаем).
-    const tax = calcTotalTax(taxMode, forPay, logistics + costRub + adSp).total;
-    const profitClean = round2(forPay - logistics - costRub - adSp - tax);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
     const avgDaily5 = s5 / 5;
     const turnoverDays = avgDaily5 > 0 ? Math.round((stockEnd[nm] || 0) / avgDaily5) : null;
-    return {
+    out.push({
       nm, sa: id.sa || String(nm),
       name: id.name || id.sa || String(nm), brand: id.brand || "",
       grp: id.subject || "", im_url: id.im_url || null,
@@ -418,12 +441,13 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
       // разным методологиям была бы враньём.
       mpDiscountEst: spp[nm] == null && (sppFromSite[nm] != null || sppLastKnown[nm] != null) || undefined,
       mpDiscountPrev: spp[nm] != null && sppPrev[nm] != null ? round2(sppPrev[nm]) : null,
-      profitFact: profitClean,
+      profitFact: f.profit,
       turnoverDays,
       rating: d.rating, ratingPrev: dp.rating != null ? dp.rating : null,
       adSpend: adSp, adClicks: d.clicks || 0, adViews: d.views || 0,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 // ---------- Ozon ----------
@@ -443,8 +467,20 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
     ordered[r.product_id] = r.n || 0;
   }
 
-  // 2) Финансы из order_costs — единый канон (lib/ozonMetrics.js).
-  const fin = await ozOrderCostsByProduct(db, { from, to });
+  // 2) Товары с активностью в order_costs периода — универсум для денег
+  // ниже (КАНОН, ozProfitProduct на каждый product_id — задача 5 плана
+  // унификации прибыли; money считается ПОЗЖЕ, в цикле сборки).
+  const finKeys = new Set();
+  for (const r of await db.prepare(
+    `SELECT DISTINCT product_id FROM order_costs
+     WHERE product_id IS NOT NULL
+       AND substr(COALESCE(sale_dt, return_dt),1,10) >= ?
+       AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?`
+  ).all(from, to)) {
+    // String(...) — см. коммент у finKeys в collectWB выше (Set смешанных
+    // типов число/строка дублирует товар в выдаче).
+    finKeys.add(String(r.product_id));
+  }
 
   // 3) Реклама + CTR + рейтинг (текущий период).
   const dm = {};
@@ -528,30 +564,27 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
   }
 
   const keys = new Set([
-    ...Object.keys(ordered), ...Object.keys(fin), ...Object.keys(dm),
+    ...Object.keys(ordered), ...finKeys, ...Object.keys(dm),
     ...Object.keys(sold5), ...Object.keys(stockEnd),
   ]);
 
-  return [...keys].map((k) => {
+  // Деньги — КАНОН (ozProfitProduct, задача 5 плана унификации прибыли), по
+  // товару. adSp — daily_metrics.ad_spend (сегодня у Ozon пуст по SKU, как и
+  // раньше) остаётся информационной колонкой, profit её не вычитает.
+  const out = [];
+  for (const k of keys) {
     const nm = Number(k);
-    const f = fin[nm] || {};
+    const f = await ozProfitProduct(db, taxMode, { from, to }, nm);
     const d = dm[nm] || {};
     const dp = dmp[nm] || {};
     const id = ident[nm] || {};
     const salesRub = f.revenue || 0;
-    const commission = round2(f.commission || 0);
-    const acquiring = round2(f.acquiring || 0);
-    const logistics = round2(f.logistics || 0);
-    const loyalty = round2(f.loyalty || 0);
-    const costRub = round2(f.cost || 0);
     const adSp = round2(d.spend || 0);
-    const tax = calcTotalTax(taxMode, salesRub, commission + acquiring + logistics + loyalty + costRub + adSp).total;
-    const profitClean = round2(salesRub - commission - acquiring - logistics - loyalty - costRub - adSp - tax);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
     const avgDaily5 = s5 / 5;
     const turnoverDays = avgDaily5 > 0 ? Math.round((stockEnd[nm] || 0) / avgDaily5) : null;
-    return {
+    out.push({
       nm, sa: id.sa || String(nm),
       name: id.name || id.sa || String(nm), brand: id.brand || "",
       grp: id.category || "", im_url: id.im_url || null,
@@ -563,10 +596,11 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
       drrRubFact: adSp,
       mpDiscount: boost[nm] != null ? boost[nm] : null,
       mpDiscountPrev: boostPrev[nm] != null ? boostPrev[nm] : null,
-      profitFact: profitClean,
+      profitFact: f.profit,
       turnoverDays,
       rating: d.rating, ratingPrev: dp.rating != null ? dp.rating : null,
       adSpend: adSp, adClicks: d.clicks || 0, adViews: d.views || 0,
-    };
-  });
+    });
+  }
+  return out;
 }

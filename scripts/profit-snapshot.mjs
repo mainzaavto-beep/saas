@@ -252,6 +252,14 @@ const GATE_CHECKS = [
   { cabinetId: 1, mp: 'wb', period: '2026-06', route: 'pnl', expected: 102659.15 },
 ];
 
+// Строки плана с реальными данными (см. докстроку блока «plan/fact» ниже) —
+// объявлена здесь (не там, где раньше), т.к. runVerify() (задача 5) её тоже
+// использует и вызывается раньше по файлу, чем блок снапшота «было/станет».
+const PLAN_FACT_CASES = [
+  { cabinetId: 1, ownerUserId: 1, platform: 'OZON', mp: 'ozon', period: '2026-05' },
+  { cabinetId: 1, ownerUserId: 1, platform: 'WB', mp: 'wb', period: '2026-06' },
+];
+
 function assertClose(label, was, canon, tol = 0.01) {
   const d = Math.round((Number(was) - Number(canon)) * 100) / 100;
   const ok = Math.abs(d) <= tol;
@@ -259,17 +267,85 @@ function assertClose(label, was, canon, tol = 0.01) {
   return ok;
 }
 
+// ═══════════════════════ --verify: товарные роуты (задача 5, шаг 5) ═══════════════════════
+// detail/products-summary/rnp-summary/plan-fact — теперь на profitProduct
+// (задача 5 плана унификации прибыли). Автопроверка расширена: (а) каждый
+// роут = canon.profitProduct(productId) до копейки на сэмпле товаров; (б)
+// ГЛАВНАЯ приёмка плана — кросс-страничная сверка «один период = одна
+// цифра»: pnl.profit (товарная часть = profitProduct БЕЗ productId, т.е.
+// canonProduct(..., null)) = products-summary.totals.profit (Σ по товарам,
+// с вычетом ПОЛНОЙ кабинетной рекламы — см. коммент в route.js) =
+// rnp-summary.totals.profitFact (тот же приём) — допуск 0,01 ₽.
+async function runVerifyProductPages(cookie, cabinetId, mp, taxMode, period, top) {
+  let allOk = true;
+  const [from, to] = monthBounds(period);
+  console.log(`\n── товарные роуты: кабинет ${cabinetId} / ${mp} / ${period} ──`);
+
+  // «Товарная часть» pnl — profitProduct БЕЗ productId (тот же канон, что
+  // ozProfitCabinet/wbProfitCabinet используют ПЕРЕД добавлением cabinetCosts).
+  const productPart = await canonProduct(cabinetId, mp, taxMode, from, to, null);
+
+  // ── products-summary: totals + сэмпл top-3 товаров ──
+  // Допуск Σ-по-товарам-vs-агрегат = 0,05 (не 0,01) — ТА ЖЕ поправка, что
+  // PRODUCT_SUM_TOL в check-profit-canon.mjs (проверка 5): каждый item.profit
+  // округляется НЕЗАВИСИМО (revenue/cogs/commission/... round2 на каждом из
+  // ~24-45 товаров), накопленный дрейф округления в несколько копеек —
+  // ожидаемое свойство поштучного пересчёта, не баг.
+  const psJson = await apiGet(cookie, `/api/cabinets/${cabinetId}/products-summary?platform=${mp}&from=${from}&to=${to}`);
+  allOk = assertClose(`products-summary.totals.profit = pnl.profit(товарная часть)`, psJson?.totals?.profit, round2(productPart.profit), 0.05) && allOk;
+  for (const pid of top) {
+    const it = (psJson?.items || []).find((x) => x.nm === pid);
+    const c = await canonProduct(cabinetId, mp, taxMode, from, to, pid);
+    if (!it) { console.log(`  FAIL products-summary: товар ${pid} отсутствует в items`); allOk = false; continue; }
+    allOk = assertClose(`products-summary[${pid}].profit`, it.profit, round2(c.profit)) && allOk;
+    allOk = assertClose(`products-summary[${pid}].salesRub(revenue)`, it.salesRub, round2(c.revenue)) && allOk;
+    allOk = assertClose(`products-summary[${pid}].costRub(cogs)`, it.costRub, round2(c.cogs)) && allOk;
+    allOk = assertClose(`products-summary[${pid}].tax`, it.tax, round2(c.tax)) && allOk;
+    allOk = assertClose(`products-summary[${pid}].returnLogistics`, it.returnLogistics, round2(c.returnLogistics)) && allOk;
+  }
+
+  // ── rnp-summary: totals + тот же сэмпл (явные from/to — иначе дефолт 7 дней) ──
+  const rnpJson = await apiGet(cookie, `/api/cabinets/${cabinetId}/rnp-summary?platform=${mp}&from=${from}&to=${to}`);
+  allOk = assertClose(`rnp-summary.totals.profitFact = pnl.profit(товарная часть)`, rnpJson?.totals?.profitFact, round2(productPart.profit), 0.05) && allOk;
+  allOk = assertClose(`rnp-summary.Σ = products-summary.Σ`, rnpJson?.totals?.profitFact, psJson?.totals?.profit, 0.05) && allOk;
+  for (const pid of top) {
+    const it = (rnpJson?.items || []).find((x) => x.nm === pid);
+    if (!it) { console.log(`  ИНФО rnp-summary: товар ${pid} отсутствует в items (нет активности в периоде фильтра rnp) — пропуск`); continue; }
+    const c = await canonProduct(cabinetId, mp, taxMode, from, to, pid);
+    allOk = assertClose(`rnp-summary[${pid}].profitFact`, it.profitFact, round2(c.profit)) && allOk;
+    allOk = assertClose(`rnp-summary[${pid}].salesRub(revenue)`, it.salesRub, round2(c.revenue)) && allOk;
+  }
+
+  // ── detail: totals за тот же сэмпл ──
+  for (const pid of top) {
+    const detJson = await apiGet(cookie, `/api/cabinets/${cabinetId}/detail?platform=${mp}&nm=${pid}&from=${from}&to=${to}`);
+    const c = await canonProduct(cabinetId, mp, taxMode, from, to, pid);
+    allOk = assertClose(`detail[${pid}].totals.profit`, detJson?.totals?.profit, round2(c.profit)) && allOk;
+    allOk = assertClose(`detail[${pid}].totals.tax`, detJson?.totals?.tax, round2(c.tax)) && allOk;
+    allOk = assertClose(`detail[${pid}].totals.revenue`, detJson?.totals?.revenue, round2(c.revenue)) && allOk;
+  }
+
+  return allOk;
+}
+
 async function runVerify() {
-  console.log('════ --verify: живой роут = канон до копейки (задача 4, шаг 3) ════');
+  console.log('════ --verify: живой роут = канон до копейки (задачи 4-5) ════');
   let allOk = true;
 
   for (const { cabinetId, ownerUserId, platforms } of CABINETS) {
     const cookie = await mintCookie(ownerUserId);
+
+    // /unit — мёртвый роут задачи 5, должен быть удалён (404).
+    const unitRes = await fetch(`${BASE}/api/cabinets/${cabinetId}/unit`, { headers: { cookie } });
+    if (unitRes.status !== 404) { console.log(`  FAIL /unit кабинета ${cabinetId}: ожидался 404, получен ${unitRes.status} — роут не удалён?`); allOk = false; }
+    else console.log(`  PASS /unit кабинета ${cabinetId}: 404 (удалён)`);
+
     for (const mp of platforms) {
       const taxMode = await taxModeOf(cabinetId, mp);
       // Июль — обязательный разрез брифа; июнь добавлен только для WB кабинета 1,
       // чтобы покрыть вторую контрольную точку шлюза (GATE_CHECKS).
       const periods = mp === 'wb' && cabinetId === 1 ? ['2026-06', '2026-07'] : ['2026-07'];
+      const top = await topProducts(cabinetId, mp, 3);
       for (const period of periods) {
         const [from, to] = monthBounds(period);
         console.log(`\n── кабинет ${cabinetId} / ${mp} / ${period} ──`);
@@ -304,7 +380,28 @@ async function runVerify() {
             allOk = assertClose(`ШЛЮЗ pnl.${mp}.profit (${period})`, pnlWas?.profit, g.expected) && allOk;
           }
         }
+
+        // Товарные роуты (задача 5) — detail/products-summary/rnp-summary +
+        // кросс-страничная сверка «один период = одна цифра».
+        allOk = await runVerifyProductPages(cookie, cabinetId, mp, taxMode, period, top) && allOk;
       }
+    }
+  }
+
+  // ── plan/fact (задача 5): факт-колонки на каноне, теми же строками, что
+  // реально есть в sales_plan (см. PLAN_FACT_CASES ниже — живых данных мало).
+  console.log(`\n── plan/fact (факт-колонки = канон) ──`);
+  for (const c of PLAN_FACT_CASES) {
+    const cookie = await mintCookie(c.ownerUserId);
+    const [from, to] = monthBounds(c.period);
+    const taxMode = await taxModeOf(c.cabinetId, c.mp);
+    const json = await apiGet(cookie, `/api/cabinets/${c.cabinetId}/plan/fact?period=${c.period}&platform=${c.platform}`);
+    for (const it of json?.items || []) {
+      const pid = c.mp === 'ozon' ? it.product_id : it.nm_id;
+      if (pid == null || it.margin_fact_rub == null) continue;
+      const canonP = await canonProduct(c.cabinetId, c.mp, taxMode, from, to, pid);
+      allOk = assertClose(`plan/fact[${c.platform}/${c.period}/${pid}].margin_fact_rub`, it.margin_fact_rub, round2(canonP.profit)) && allOk;
+      allOk = assertClose(`plan/fact[${c.platform}/${c.period}/${pid}].revenue_fact`, it.revenue_fact, round2(canonP.revenue)) && allOk;
     }
   }
 
@@ -413,10 +510,7 @@ for (const { cabinetId, ownerUserId, platforms } of CABINETS) {
 // Живых данных мало (см. task-3 разведку): cabinet 1 / OZON / 2026-05 (1 SKU),
 // cabinet 1 / WB / 2026-06 (1 SKU). Кабинет 1008 — без строк плана вовсе.
 // Снапшотим то, что реально есть, честно фиксируем пустоту остального.
-const PLAN_FACT_CASES = [
-  { cabinetId: 1, ownerUserId: 1, platform: 'OZON', mp: 'ozon', period: '2026-05' },
-  { cabinetId: 1, ownerUserId: 1, platform: 'WB', mp: 'wb', period: '2026-06' },
-];
+// (PLAN_FACT_CASES объявлена выше — переиспользуется runVerify(), задача 5.)
 result.planFact = [];
 for (const c of PLAN_FACT_CASES) {
   const cookie = await mintCookie(c.ownerUserId);

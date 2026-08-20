@@ -234,6 +234,23 @@ function wbStatusLabel(r) {
 
 // ---------- Ozon ----------
 // Ozon: order_costs тоже основа. JOIN orders (статус/склад/регион) + products (фото/бренд/имя).
+//
+// ⚠️ Подстановка cost (COALESCE(co.cost, oc.cost) + компенсация profit ниже) —
+// ПРОВЕРЕНО СОГЛАСОВАННОЙ с каноном (задача 5 плана унификации прибыли,
+// ozProfitProduct/lib/ozonMetrics.js): канон читает order_costs.cost как есть
+// (без live-подстановки), а order_costs.cost для Ozon УЖЕ пишется сборщиком
+// (worker/collectors/ozon_order_costs.py) из tenant.cost_overrides «на
+// момент последнего прогона» (не по дате продажи). Дата-осознанная LATERAL
+// здесь (effective_from <= sale_dt/order_dt) даёт ФРЕШЕЕ значение, чем то,
+// что уже записано в oc.cost, НО эмпирически (июль-2026, оба кабинета) ни у
+// одного product_id нет больше одной исторической строки cost_overrides —
+// COALESCE(co.cost, oc.cost) СОВПАДАЕТ с oc.cost построчно (0 расхождений),
+// то есть /orders и канон сегодня показывают ОДНУ И ТУ ЖЕ себестоимость.
+// Расхождение возможно только если владелец задним числом заведёт ВТОРОЙ
+// cost_overrides на тот же товар — тогда /orders (эта LATERAL) окажется
+// точнее (реальная себестоимость на дату продажи), а order_costs.cost —
+// устаревшим до следующего прогона сборщика; сохраняем LATERAL как есть
+// (не отключаем, это осознанное улучшение витрины, а не расхождение).
 async function collectOzon(limit, shopName) {
   const db = new DatabaseSync("ozon", {readOnly:true});
   const rows = await db.prepare(
@@ -332,6 +349,27 @@ async function collectOzon(limit, shopName) {
      WHERE NOT EXISTS (SELECT 1 FROM order_costs oc
                        WHERE oc.posting_number = o.posting_number
                          AND oc.product_id IS NOT DISTINCT FROM o.product_id)
+     -- Честный NULL-guard (бонус задачи 5 плана унификации прибыли, из
+     -- хвоста витрины заказов): order_costs.pkey = (cabinet_id,
+     -- posting_number) — РОВНО ОДНА строка на посылку, а orders.pkey =
+     -- (cabinet_id, posting_number, product_id) — по строке на КАЖДЫЙ товар
+     -- внутри многотоварной посылки. Если Ozon не смог разрешить товар для
+     -- этой posting_number (order_costs.product_id = NULL — мульти-item
+     -- юнит), guard ВЫШЕ сравнивает NULL с product_id КАЖДОЙ orders-строки
+     -- этой посылки — ни одна не совпадает, и ВСЕ товарные строки посылки
+     -- ложно показались бы "pending" (дублируя уже учтённую финансово
+     -- посылку). Второй guard — ТОЛЬКО на nullable product_id (IS NULL, без
+     -- сравнения с o.product_id) — ловит именно этот случай: если у посылки
+     -- ЕСТЬ order_costs-строка (пусть и с NULL product_id), посылка уже
+     -- учтена, pending-заглушку не показываем. Сегодня 0 таких строк
+     -- пересекается с orders (все NULL-product_id строки — вне окна orders,
+     -- ~2 недели) — регресс-щит на будущее, симметрично guard'у выше.
+     -- posting_number — снова '=' (не IS NOT DISTINCT FROM), NOT NULL с
+     -- обеих сторон: EXPLAIN ANALYZE подтверждает Hash Anti Join на обоих
+     -- guard'ах (не Nested Loop, перф-урок выше).
+     AND NOT EXISTS (SELECT 1 FROM order_costs oc2
+                     WHERE oc2.posting_number = o.posting_number
+                       AND oc2.product_id IS NULL)
      ORDER BY o.order_dt DESC`
   ).all();
 
