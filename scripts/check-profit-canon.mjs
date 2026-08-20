@@ -34,10 +34,18 @@
 //      profit) — «знаковая формула сборщика» (worker/collectors/
 //      ozon_order_costs.py: comps ≡ SUM(accrued) ≡ profit+cost), допуск
 //      0,01 ₽.
-//   3. ozProfitCabinet(period).profit = ozProfitProduct(period).profit минус
-//      Σ|cabinetCosts[].amount| — сверка внутренней арифметики канона
-//      (буквальное прочтение плана: «− Σ|cabinetCosts|», см. коммент в
-//      lib/ozonMetrics.js у ozProfitCabinet), допуск 0,01 ₽.
+//   3. ozProfitCabinet(period).profit = ozProfitProduct(period).profit ПЛЮС
+//      ЗНАКОВАЯ Σ cabinetCosts[].amount — сверка внутренней арифметики
+//      канона (ИСПРАВЛЕНО ревью задачи 1, fix-раунд: первая версия плана и
+//      кода брала МОДУЛЬ каждой статьи — контролёр признал формулировку
+//      плана своей ошибкой, положительная статья должна ПРИБАВЛЯТЬСЯ, не
+//      вычитаться модулем, см. коммент в lib/ozonMetrics.js у
+//      ozProfitCabinet), допуск 0,01 ₽. Проверка намеренно берёт период с
+//      живой положительной статьёй (accrual_62 у кабинета 1, +8 955 ₽) —
+//      знаковая и модульная формулы дают РАЗНЫЕ числа именно на ней
+//      (2×8 955=17 910 ₽ расхождение), так проверка ловит регресс к старой
+//      (модульной) формуле, а не только совпадает случайно на чисто
+//      отрицательном наборе статей.
 //   4. cabinetCosts[].label — ни один не содержит подстроку «accrual_»
 //      сырым текстом (задача 1 плана: «accrual_93 больше нигде не
 //      показывается сырым»).
@@ -206,14 +214,28 @@ try {
   const indExpenses = indCogs + indCommission + indLogistics + indAcquiring + indLoyalty + indAdSpend;
   const indTax = calcTotalTax(taxMode, indRevenue, indExpenses).total;
   const indProfit = Math.round((indRawProfit - indAdSpend - indTax) * 100) / 100;
-  const indCabinetDeduction = cabinetCostRows.reduce((acc, r) => acc + Math.abs(num(r.s)), 0);
+  // Знаковая сумма (правильная, после fix-раунда ревью задачи 1) и модульная
+  // (старая, ошибочная формула — считаем ОБЕ, чтобы явно показать до/после
+  // на живой положительной статье, не только использовать одну из них).
+  const indCabinetSignedSum = cabinetCostRows.reduce((acc, r) => acc + num(r.s), 0);
+  const indCabinetAbsSum = cabinetCostRows.reduce((acc, r) => acc + Math.abs(num(r.s)), 0);
+  const positiveRows = cabinetCostRows.filter((r) => num(r.s) > 0);
 
   console.log('Независимый SQL (saas_ro):');
   console.log(`  revenue=${fmtRub(indRevenue)} cogs=${fmtRub(indCogs)} commission=${fmtRub(indCommission)} logistics=${fmtRub(indLogistics)} acquiring=${fmtRub(indAcquiring)} loyalty=${fmtRub(indLoyalty)}`);
   console.log(`  SUM(profit) сырой (все строки, без фильтра is_return) = ${fmtRub(indRawProfit)}`);
   console.log(`  ad_spend = ${fmtRub(indAdSpend)}, налог (calcTotalTax) = ${fmtRub(indTax)}`);
   console.log(`  profit независимый = SUM(profit) − ad_spend − налог = ${fmtRub(indProfit)}`);
-  console.log(`  Σ|cabinetCosts.amount| = ${fmtRub(indCabinetDeduction)}`);
+  console.log(`  Σ cabinetCosts.amount (знаковая, используется в проверке 3) = ${fmtRub(indCabinetSignedSum)}`);
+  if (positiveRows.length) {
+    console.log(
+      `  ⚠️ ${positiveRows.length} статья(и) с положительным знаком (доход, не расход): `
+      + positiveRows.map((r) => `${r.cost_type}=${fmtRub(num(r.s))} ₽`).join(', ')
+      + ` — ДО fix-раунда (ошибочная формула «− Σ|amount|») cabinetCosts.profit занижался бы ровно на 2×эту сумму`
+      + ` (${fmtRub(2 * positiveRows.reduce((a, r) => a + num(r.s), 0))} ₽ на этих статьях).`
+    );
+  }
+  console.log(`  СПРАВОЧНО, старая (ошибочная) формула Σ|cabinetCosts.amount| = ${fmtRub(indCabinetAbsSum)} (только для сравнения до/после, в проверке НЕ используется)`);
   console.log('');
 
   // ── Проверка 1 ──
@@ -233,12 +255,14 @@ try {
     `по слагаемым=${fmtRub(compsProfit)}, независимый SUM(profit)=${fmtRub(indRawProfit)}, разница=${fmtRub(compsProfit - indRawProfit)}`
   );
 
-  // ── Проверка 3: ozProfitCabinet.profit = ozProfitProduct.profit − Σ|cabinetCosts| ──
-  const expectedCabinetProfit = Math.round((canon.profitProduct.profit - indCabinetDeduction) * 100) / 100;
+  // ── Проверка 3: ozProfitCabinet.profit = ozProfitProduct.profit + Σ cabinetCosts (знаковая) ──
+  const expectedCabinetProfitSigned = Math.round((canon.profitProduct.profit + indCabinetSignedSum) * 100) / 100;
+  const expectedCabinetProfitAbsOld = Math.round((canon.profitProduct.profit - indCabinetAbsSum) * 100) / 100;
   verdict(
-    'ozProfitCabinet.profit = ozProfitProduct.profit − Σ|cabinetCosts[].amount|',
-    Math.abs(canon.profitCabinet.profit - expectedCabinetProfit) <= TOL,
-    `канон=${fmtRub(canon.profitCabinet.profit)}, ожидание=${fmtRub(expectedCabinetProfit)}`
+    'ozProfitCabinet.profit = ozProfitProduct.profit + Σ cabinetCosts[].amount (знаковая сумма)',
+    Math.abs(canon.profitCabinet.profit - expectedCabinetProfitSigned) <= TOL,
+    `канон=${fmtRub(canon.profitCabinet.profit)}, ожидание(знаковая)=${fmtRub(expectedCabinetProfitSigned)}`
+    + ` [ДО fix-раунда, модульная формула, дала бы ${fmtRub(expectedCabinetProfitAbsOld)} — разница ${fmtRub(expectedCabinetProfitSigned - expectedCabinetProfitAbsOld)} ₽]`
   );
 
   // ── Проверка 4: labels без сырого accrual_ ──

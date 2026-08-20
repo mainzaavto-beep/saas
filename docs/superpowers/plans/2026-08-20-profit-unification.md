@@ -38,21 +38,54 @@
 
 ## Канонические сигнатуры (фиксированы для всех задач)
 
+Зафиксировано по факту реализации задачи 1 (ревью 2026-08-20 — Important #2:
+исходная запись ниже была написана ДО реализации и не учитывала, что `db`
+(подключение) и `taxMode` — обязательные явные входы; правка плана
+санкционирована контролёром как фиксация решения, не самоволие).
+
 ```js
-// Обе функции каждой площадки. period = {cabinetId, from, to} (даты YYYY-MM-DD, включительно).
-ozProfitProduct(period, productId = null) → {
+// Обе функции каждой площадки. db — DatabaseSync (штатное подключение
+// панели, ozonMetrics.js уже открыт внутри withTenant/withCabinet — все
+// остальные функции файла тоже берут db первым параметром, канон не
+// исключение). taxMode — нормализованный режим (normalizeTaxMode из
+// lib/tax.js) — существующий вход calcTotalTax, не выводится из tenant-БД,
+// поэтому явный параметр, а не поиск внутри функции. period = {cabinetId,
+// from, to} (даты YYYY-MM-DD, включительно; cabinetId в SQL не участвует —
+// RLS уже скопировала подключение на нужный кабинет, поле в контракте для
+// внешних потребителей вроде check-скриптов).
+ozProfitProduct(db, taxMode, period, productId = null) → {
   revenue, cogs, commission, logistics, acquiring, loyalty,
-  returnLogistics,          // справочно: уже внутри profit заказов
-  ads, tax,
-  profit,                   // товарная прибыль: SUM(order_costs.profit) − ads − tax
+  returnLogistics,          // справочно: уже внутри logistics/commission выше
+  ads,                       // при productId — 0 (Ozon не даёт пер-SKU расход рекламы, честно, не размазано)
+  tax,                       // при productId — считается на выручке/расходах ЭТОГО товара (аддитивно под usn_income)
+  profit,                   // товарная прибыль: SUM(order_costs.profit, БЕЗ фильтра is_return!) − ads − tax
 }
-ozProfitCabinet(period) → { ...то же по кабинету,
-  cabinetCosts: [{ costType, label, amount }],  // label — по-русски, amount < 0 = расход
-  profit,                   // полная: товарная − Σ|cabinetCosts|
+ozProfitCabinet(db, taxMode, period) → { ...то же по кабинету,
+  cabinetCosts: [{ costType, label, amount }],  // label — по-русски; amount — ЗНАКОВЫЙ, как в БД (< 0 = расход, > 0 = доход/возмещение)
+  unknownCostTypes,          // счётчик статей, чей cost_type не резолвился в справочник (не молча)
+  profit,                   // полная: profitProduct.profit + Σ cabinetCosts[].amount (ЗНАКОВАЯ сумма — см. ниже)
 }
-ozCabinetCostLabel(costType) → string  // accrual_<id> → имя из shared.ozon_accrual_types (рус.), прочие — как у WB принято; незнакомый → «Прочее (<ключ>)» + не сырым
-// WB: wbProfitProduct / wbProfitCabinet / wbCabinetCostLabel — та же форма.
+ozCabinetCostLabel(db, costType) → string  // accrual_<id> → имя из shared.ozon_accrual_types (рус., кэш словаря на процесс); незнакомый формат/id → «Прочее (<ключ>)», не сырым
+// WB: wbProfitProduct / wbProfitCabinet / wbCabinetCostLabel — та же форма
+// (задача 2 решает сама, нужен ли WB-аналогу db в wbCabinetCostLabel — если
+// словарь статичный, без БД, сигнатура вправе быть короче).
 ```
+
+**Правило знаковой суммы (ИСПРАВЛЕНО ревью задачи 1, fix-раунд, Important #1
+— формулировка ниже была ошибкой контролёра в первой версии плана, не
+implementer'а):** `ozProfitCabinet.profit = ozProfitProduct.profit +
+Σ cabinetCosts[].amount` — сумма БЕРЁТСЯ СО ЗНАКОМ, как `amount` хранится в
+`tenant.ozon_cabinet_costs`/`tenant.wb_cabinet_costs` (отрицательный =
+расход, уменьшает прибыль; положительный = доход/возмещение, УВЕЛИЧИВАЕТ
+прибыль). ~~Первая версия («− Σ|cabinetCosts|», модуль каждой статьи)~~ —
+неверна: живая статья `accrual_62` (RfbsClientDeliveryCharge, «Перечисление
+за доставку от покупателя», транзитный доход RFBS, кабинет 1 июль-2026:
++8 955 ₽) по модульной формуле ТОЖЕ вычиталась бы, занижая
+`ozProfitCabinet.profit` на 2×её величину. Проверено на живых данных: у
+кабинета 1008 та же ошибка дала бы занижение на 34 917,96 ₽ (две
+положительные статьи, accrual_57 + accrual_62). `cabinetCosts[].amount` в
+ответе остаётся ЗНАКОВЫМ (как в БД) — для отображения; знак используется И
+для суммы, И для показа.
 
 ---
 
