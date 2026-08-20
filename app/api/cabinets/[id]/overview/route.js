@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
-  wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet,
+  wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet, wbRevenueGross,
   wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay,
 } from "@/lib/wbMetrics.js";
 import { ozOrdersByDay, ozProfitCabinet } from "@/lib/ozonMetrics.js";
@@ -13,8 +13,14 @@ import { calcTotalTax, normalizeTaxMode, describeCombinedTaxMode } from "@/lib/t
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// revenueGross — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB (задача «WB
+// валовая выручка справочной строкой», 2026-08-20, решение владельца):
+// Σ cost_value_retail (lib/wbMetrics.js:wbRevenueGross), для сверки с
+// отчётами МП. Канон (revenue/profit = ppvz-нетто) не трогаем — отдельное
+// число рядом. У Ozon collectOzon его не заполняет (остаётся 0 из zeroKpi;
+// revenue Ozon уже валовая, см. докстроку lib/ozonMetrics.js).
 const zeroKpi = () => ({
-  revenue: 0, sold: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
+  revenue: 0, revenueGross: 0, sold: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
   costRub: 0, adSp: 0, tax: 0, profit: 0, orders: 0, cancelCnt: 0, orderRub: 0,
   netPay: 0, storage: 0,
 });
@@ -27,6 +33,9 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
   const c = await wbProfitCabinet(db, taxMode, { from, to });
   k.revenue = c.revenue;
+  // Последовательно (не Promise.all) — тот же db делит соединение из
+  // AsyncLocalStorage (lib/db.js), конкурентные запросы на нём не гарантия.
+  k.revenueGross = await wbRevenueGross(db, { from, to });
   k.commission = c.commission;
   k.acquiring = c.acquiring;
   k.logistics = c.logistics;
@@ -319,6 +328,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     mp,
     kpi: {
       revenue: Math.round(k.revenue * 100) / 100,
+      // revenueGross — справочно (только WB-часть, см. докстроку zeroKpi выше).
+      revenueGross: Math.round(k.revenueGross * 100) / 100,
       netPay: Math.round(k.netPay * 100) / 100,
       grossProfit: k.profit,
       margin,

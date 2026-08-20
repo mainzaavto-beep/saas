@@ -29,8 +29,16 @@ const moneyShort = (n) => {
 // типизированными полями (их больше нет в ответе роута), а суммой
 // cabinetCostsTotal здесь + расшифровкой по статьям отдельным блоком ниже
 // (см. cabinetCosts[] в рендере).
-const buildRows = (taxLabel) => [
+// hasRevenueGross — показывать ли справочную строку «Выручка (валовая)».
+// Поле revenueGross аддитивно и приходит ТОЛЬКО от WB-блока роута (задача
+// «WB валовая выручка справочной строкой», 2026-08-20) — у Ozon revenue уже
+// валовая, отдельного поля нет. Строку скрываем, если в кабинете нет WB
+// (иначе была бы «Выручка (валовая) 0 ₽» — вводит в заблуждение).
+const buildRows = (taxLabel, hasRevenueGross) => [
   { label: "Выручка", field: "revenue", color: C.pos, kind: "plain", showPct: true },
+  ...(hasRevenueGross ? [{
+    label: "Выручка (валовая, WB)", field: "revenueGross", color: C.muted, kind: "plain", showPct: false,
+  }] : []),
   { label: "Себестоимость", field: "cogs", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Комиссия МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
@@ -141,7 +149,7 @@ export default function PnlPage({ cabinetId }) {
                 </tr>
               </thead>
               <tbody>
-                {buildRows(data.taxLabel).map((row, ri) => {
+                {buildRows(data.taxLabel, Boolean(data.wb)).map((row, ri) => {
                   const v = valOf(row, data.total);
                   const isTotal = row.kind === "h0" || row.kind === "h1";
                   const big = row.kind === "h0";
@@ -209,6 +217,7 @@ export default function PnlPage({ cabinetId }) {
             Кабинетные расходы (хранение/продвижение/подписки/штрафы/Premium/RFBS и др.) не привязаны к SKU —
             показаны одной строкой знаковой суммой (расход уменьшает прибыль, возмещение/доход — увеличивает);
             расшифровка по статьям — в блоке «Кабинетные расходы по статьям» ниже.
+            {data.wb && " «Выручка (валовая, WB)» — справочная сумма ДО вычета комиссии/логистики/эквайринга WB (retail_amount), для сверки с отчётами маркетплейса; в расчёт прибыли не входит — используется «Выручка» (к перечислению)."}
             {data.total.unknownCostTypes > 0 && ` Не удалось сопоставить название для ${data.total.unknownCostTypes} стат. (показаны как «Прочее»).`}
           </div>
 

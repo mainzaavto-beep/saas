@@ -7,7 +7,7 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 import { ozProfitCabinet } from "@/lib/ozonMetrics.js";
-import { wbProfitCabinet } from "@/lib/wbMetrics.js";
+import { wbProfitCabinet, wbRevenueGross } from "@/lib/wbMetrics.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,9 +22,17 @@ const round2 = (v) => Math.round(((v || 0) + Number.EPSILON) * 100) / 100;
 // у WB (canon.revenue = cost_value_pay, УЖЕ равен ppvz_for_pay «к перечислению»,
 // см. worker/collectors/wb_order_costs.py:57); у Ozon такого понятия на этой
 // странице исторически не было — 0, как и раньше.
-function mpBlock(c, isWb) {
+// revenueGross (задача «WB валовая выручка справочной строкой», 2026-08-20,
+// решение владельца) — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB: валовая
+// выручка (Σ cost_value_retail, lib/wbMetrics.js:wbRevenueGross) для сверки
+// с отчётами МП. Канон (revenue/profit = ppvz-нетто) не трогаем — это
+// отдельное число рядом, не замена. У Ozon revenue уже валовая
+// (см. докстроку lib/ozonMetrics.js) — поле не добавляется (undefined,
+// TOTAL_NUM_KEYS суммирует как 0).
+function mpBlock(c, isWb, revenueGross) {
   return {
     revenue: c.revenue,
+    ...(isWb ? { revenueGross } : {}),
     cogs: c.cogs,
     commission: c.commission,
     logistics: c.logistics,
@@ -49,6 +57,9 @@ const TOTAL_NUM_KEYS = [
   "revenue", "cogs", "commission", "logistics", "acquiring", "loyalty",
   "returnLogistics", "ads", "tax", "unknownCostTypes", "profit",
   "grossProfit", "forPay", "cabinetCostsTotal",
+  // revenueGross — только у WB-блока (mpBlock, isWb=true); Ozon-блок его не
+  // отдаёт (undefined → 0 в сумме ниже), total.revenueGross = WB-часть.
+  "revenueGross",
 ];
 
 // Расчёт P&L за произвольный диапазон [from, to] (YYYY-MM-DD) — канон.
@@ -58,7 +69,11 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
 
   if (mps.includes("wb")) {
     const db = new DatabaseSync("wb", { readOnly: true });
-    wb = mpBlock(await wbProfitCabinet(db, wbTax, { from, to }), true);
+    // Последовательно (не Promise.all) — один db делит соединение из
+    // AsyncLocalStorage (lib/db.js), конкурентные запросы на нём не гарантия.
+    const c = await wbProfitCabinet(db, wbTax, { from, to });
+    const revenueGross = await wbRevenueGross(db, { from, to });
+    wb = mpBlock(c, true, revenueGross);
   }
   if (mps.includes("ozon")) {
     const db = new DatabaseSync("ozon", { readOnly: true });

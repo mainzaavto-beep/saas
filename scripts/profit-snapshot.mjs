@@ -38,6 +38,8 @@
 //     Ненулевой exit при любом расхождении.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { sealData } from 'iron-session';
+import pg from 'pg';
+import { readonlyPgConfig } from './lib/pgpass.mjs';
 
 for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')) {
   const m = line.match(/^([A-Z_0-9]+)=(.*)$/);
@@ -48,6 +50,24 @@ const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
 const { ozProfitProduct, ozProfitCabinet } = await import('../lib/ozonMetrics.js');
 const { wbProfitProduct, wbProfitCabinet } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
+
+// Независимая проверочная сумма для revenueGross (задача «WB валовая
+// выручка справочной строкой», 2026-08-20) — ТОЛЬКО saas_ro (bypass RLS,
+// явный cabinet_id в каждом запросе), тот же паттерн, что
+// scripts/check-profit-canon.mjs (docstring там же, «два разных
+// подключения»). НЕ вызывает lib/wbMetrics.js::wbRevenueGross — своя SQL с
+// нуля, иначе проверка была бы сверкой функции сама с собой.
+const roPool = new pg.Pool(readonlyPgConfig());
+async function independentWbRevenueGross(cabinetId, from, to) {
+  const { rows: [row] } = await roPool.query(
+    `SELECT COALESCE(SUM(cost_value_retail),0) AS v
+     FROM tenant.wb_order_costs
+     WHERE cabinet_id = $1
+       AND substr(COALESCE(sale_dt, return_dt),1,10) BETWEEN $2 AND $3`,
+    [cabinetId, from, to]
+  );
+  return round2(row?.v || 0);
+}
 
 const BASE = 'http://127.0.0.1:3200'; // прод-порт (см. saas-verification-protocol), НЕ 3210
 const MONTHS = ['2026-04', '2026-05', '2026-06', '2026-07'];
@@ -366,6 +386,15 @@ async function runVerify() {
           round2(pnlCanon.cabinetCosts.reduce((a, x) => a + x.amount, 0))
         ) && allOk;
 
+        // revenueGross (задача «WB валовая выручка справочной строкой»,
+        // 2026-08-20) — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB. Сверка НЕ
+        // с каноном (wbRevenueGross бы проверял сам себя), а с независимой
+        // SQL-суммой на saas_ro (см. independentWbRevenueGross выше).
+        if (mp === 'wb') {
+          const indRevenueGross = await independentWbRevenueGross(cabinetId, from, to);
+          allOk = assertClose(`pnl.wb.revenueGross = независимый SQL(saas_ro)`, pnlWas?.revenueGross, indRevenueGross) && allOk;
+        }
+
         // overview
         const ovText = await apiGetText(cookie, `/api/cabinets/${cabinetId}/overview?mp=${mp}&from=${from}&to=${to}`);
         if (/accrual_/.test(ovText)) { console.log(`  FAIL overview: сырой accrual_ в ответе`); allOk = false; }
@@ -373,6 +402,10 @@ async function runVerify() {
         allOk = assertClose(`overview.kpi.grossProfit(=profit)`, ovJson.kpi?.grossProfit, round2(pnlCanon.profit)) && allOk;
         allOk = assertClose(`overview.kpi.tax`, ovJson.kpi?.tax, round2(pnlCanon.tax)) && allOk;
         allOk = assertClose(`overview.kpi.adSpend`, ovJson.kpi?.adSpend, round2(pnlCanon.ads)) && allOk;
+        if (mp === 'wb') {
+          const indRevenueGross = await independentWbRevenueGross(cabinetId, from, to);
+          allOk = assertClose(`overview.kpi.revenueGross = независимый SQL(saas_ro)`, ovJson.kpi?.revenueGross, indRevenueGross) && allOk;
+        }
 
         // Контрольные точки шлюза.
         for (const g of GATE_CHECKS) {
@@ -406,12 +439,20 @@ async function runVerify() {
   }
 
   console.log(`\n${allOk ? 'ВСЕ ПРОВЕРКИ ПРОШЛИ (ALL PASS)' : 'ЕСТЬ РАСХОЖДЕНИЯ (FAIL)'}`);
+  // roPool (независимая сверка revenueGross, saas_ro) — закрыть явно, иначе
+  // процесс висит на открытом соединении пула после process.exit не дойдя
+  // (тот же приём, что check-profit-canon.mjs, roPool.end()).
+  await roPool.end().catch(() => {});
   if (!allOk) process.exit(1);
 }
 
 if (process.argv.includes('--verify')) {
   await runVerify();
   process.exit(0);
+} else {
+  // Основной прогон снапшота roPool не использует — закрыть, чтобы node
+  // не завис на открытом соединении пула.
+  await roPool.end().catch(() => {});
 }
 
 // ═══════════════════════ Основной прогон (снапшоты «было/станет», задача 3) ═══════════════════════
