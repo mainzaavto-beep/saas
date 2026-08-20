@@ -4,10 +4,10 @@ import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
-  wbFinancePeriod, wbOrdersCount, wbCancelCount, wbAdTotal, wbSold,
+  wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet,
   wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay,
 } from "@/lib/wbMetrics.js";
-import { ozOrderCostsAggregate, ozAdSpend, ozOrdersByDay } from "@/lib/ozonMetrics.js";
+import { ozOrdersByDay, ozProfitCabinet } from "@/lib/ozonMetrics.js";
 import { calcTotalTax, normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
@@ -19,30 +19,24 @@ const zeroKpi = () => ({
   netPay: 0, storage: 0,
 });
 
+// Профиль KPI (revenue/commission/.../tax/profit) — канон (wbProfitCabinet,
+// задача 4 плана унификации прибыли), вместо прежнего компонентного
+// пересчёта. Остальные поля (sold, orders, cancelCnt, orderRub, netPay,
+// storage) — витринные метрики вне периметра канона, считаются как раньше.
 async function collectWb(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
-  const fin = await wbFinancePeriod(db, { from, to });
-  k.revenue = fin.salesRub;
-  k.commission = fin.commission;
-  k.acquiring = fin.acquiring;
-  k.logistics = fin.logistics;
+  const c = await wbProfitCabinet(db, taxMode, { from, to });
+  k.revenue = c.revenue;
+  k.commission = c.commission;
+  k.acquiring = c.acquiring;
+  k.logistics = c.logistics;
+  k.loyalty = c.loyalty;
+  k.costRub = c.cogs;
+  k.adSp = c.ads;
+  k.tax = c.tax;
+  k.profit = c.profit;
 
   k.sold = Object.values(await wbSold(db, { from, to })).reduce((a, b) => a + b, 0);
-
-  k.costRub = (await db.prepare(
-    `SELECT COALESCE(SUM(s.quantity * co.cost),0) AS v
-     FROM finance_report s
-     LEFT JOIN LATERAL (
-       SELECT cost FROM tenant.cost_overrides
-       WHERE nm_id = s.nm_id AND platform = 'wb'
-         AND effective_from <= substr(s.rr_dt,1,10)::date
-       ORDER BY effective_from DESC LIMIT 1
-     ) co ON true
-     WHERE s.supplier_oper_name = 'Продажа' AND s.nm_id > 0
-       AND s.rr_dt >= ? AND s.rr_dt <= ?`
-  ).get(from, toEnd)).v || 0;
-
-  k.adSp = await wbAdTotal(db, { from, to });
 
   const forPaySales = (await db.prepare(
     `SELECT COALESCE(SUM(ppvz_for_pay),0) AS v FROM finance_report
@@ -63,35 +57,28 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   k.cancelCnt = await wbCancelCount(db, { from, to });
   // Сумма заказов в рублях (price_with_disc по не отменённым) — цена со скидкой
   // продавца, БЕЗ СПП. Это стандартная «сумма заказов» в отчётах МП. Отличается
-  // от salesRub (фактические продажи по finance_report): часть заказов
-  // отменяется/не выкупается, поэтому orderRub >= salesRub обычно.
+  // от revenue (canon, cost_value_pay / «к перечислению»): часть заказов
+  // отменяется/не выкупается, поэтому orderRub обычно не равен revenue.
   k.orderRub = (await db.prepare(
     `SELECT COALESCE(SUM(price_with_disc),0) AS v FROM orders
      WHERE is_cancel = 0 AND order_dt >= ? AND order_dt <= ?`
   ).get(from, toEnd)).v || 0;
 
-  // Налог: УСН (база = выручка без НДС) + НДС (выделение из цены). profit вычитает total.
-  // База налога = ppvz_for_pay (fin.forPay, «к перечислению продавцу») — реальная выручка
-  // продавца, уже за вычетом комиссии/эквайринга/лояльности площадкой (урок D15, фикс 2026-07-31).
-  // profit = forPay − logistics − cost − ad − storage − tax. commission/acquiring УЖЕ внутри forPay.
-  const expenses = k.logistics + k.costRub + k.adSp + k.storage;
-  const tot = calcTotalTax(taxMode, fin.forPay, expenses);
-  k.tax = tot.total;
-  k.profit = Math.round(
-    (fin.forPay - k.logistics - k.costRub - k.adSp - k.storage - k.tax) * 100
-  ) / 100;
   return k;
 }
 
 async function collectOzon(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
-  const f = await ozOrderCostsAggregate(db, { from, to });
-  k.revenue = f.revenue;
-  k.costRub = f.cost;
-  k.commission = f.commission;
-  k.logistics = f.logistics;
-  k.acquiring = f.acquiring;
-  k.loyalty = f.loyalty;
+  const c = await ozProfitCabinet(db, taxMode, { from, to });
+  k.revenue = c.revenue;
+  k.costRub = c.cogs;
+  k.commission = c.commission;
+  k.logistics = c.logistics;
+  k.acquiring = c.acquiring;
+  k.loyalty = c.loyalty;
+  k.adSp = c.ads;
+  k.tax = c.tax;
+  k.profit = c.profit;
 
   k.sold = (await db.prepare(
     `SELECT COUNT(*) AS c FROM order_costs
@@ -100,8 +87,6 @@ async function collectOzon(db, from, to, toEnd, taxMode) {
        AND substr(COALESCE(sale_dt, return_dt),1,10) >= ?
        AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?`
   ).get(from, to)).c || 0;
-
-  k.adSp = await ozAdSpend(db, { from, to });
 
   k.orders = (await db.prepare(
     `SELECT COUNT(*) AS c FROM orders
@@ -117,13 +102,6 @@ async function collectOzon(db, from, to, toEnd, taxMode) {
      WHERE is_cancel = 0 AND substr(order_dt,1,10) >= ? AND substr(order_dt,1,10) <= ?`
   ).get(from, to)).v || 0;
 
-  // Налог: УСН (база = выручка без НДС) + НДС (выделение из цены). profit вычитает total.
-  const expenses = k.commission + k.acquiring + k.logistics + k.loyalty + k.costRub + k.adSp;
-  k.tax = calcTotalTax(taxMode, k.revenue, expenses).total;
-  k.profit = Math.round(
-    (k.revenue - k.commission - k.acquiring - k.logistics - k.loyalty
-      - k.costRub - k.adSp - k.tax) * 100
-  ) / 100;
   return k;
 }
 

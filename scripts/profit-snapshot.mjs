@@ -30,7 +30,12 @@
 // (WB+Ozon), 1008 (Ozon-only, у кабинета нет магазина WB) × площадки.
 //
 // Использование:
-//   node scripts/profit-snapshot.mjs
+//   node scripts/profit-snapshot.mjs            — снапшоты «было/станет» (задача 3)
+//   node scripts/profit-snapshot.mjs --verify    — автопроверка после переключения
+//     роутов на канон (задача 4, шаг 3): живой HTTP-ответ pnl/overview за июль-2026
+//     (+ июнь-2026 WB — контрольная точка шлюза) должен совпасть с прямым вызовом
+//     канона ДО КОПЕЙКИ, и ни в одном JSON-ответе не должно быть сырого "accrual_".
+//     Ненулевой exit при любом расхождении.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { sealData } from 'iron-session';
 
@@ -82,14 +87,19 @@ async function mintCookie(userId) {
   return `${SESSION_COOKIE}=${encodeURIComponent(seal)}`;
 }
 
-async function apiGet(cookie, path) {
+async function apiGetText(cookie, path) {
   const res = await fetch(BASE + path, { headers: { cookie } });
   const text = await res.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch { /* не JSON — оставим null */ }
   if (res.status !== 200) {
     throw new Error(`GET ${path} → ${res.status}: ${text.slice(0, 300)}`);
   }
+  return text;
+}
+
+async function apiGet(cookie, path) {
+  const text = await apiGetText(cookie, path);
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* не JSON — оставим null */ }
   return json;
 }
 
@@ -231,7 +241,83 @@ function extractDetailWas(json) {
   };
 }
 
-// ═══════════════════════ Основной прогон ═══════════════════════
+// ═══════════════════════ --verify (задача 4, шаг 3) ═══════════════════════
+// Контрольные точки шлюза (docs/profit-unification-delta.md, колонка
+// «станет») — если канон/роут когда-нибудь разойдутся именно на этих цифрах,
+// это первый сигнал, что что-то в подмене сломалось не только «до копейки
+// относительно самого канона», но и относительно того, что владелец видел
+// и одобрил.
+const GATE_CHECKS = [
+  { cabinetId: 1, mp: 'ozon', period: '2026-07', route: 'pnl', expected: -179413.96 },
+  { cabinetId: 1, mp: 'wb', period: '2026-06', route: 'pnl', expected: 102659.15 },
+];
+
+function assertClose(label, was, canon, tol = 0.01) {
+  const d = Math.round((Number(was) - Number(canon)) * 100) / 100;
+  const ok = Math.abs(d) <= tol;
+  console.log(`  ${ok ? 'PASS' : 'FAIL'} ${label}: было=${was} канон=${canon} Δ=${d}`);
+  return ok;
+}
+
+async function runVerify() {
+  console.log('════ --verify: живой роут = канон до копейки (задача 4, шаг 3) ════');
+  let allOk = true;
+
+  for (const { cabinetId, ownerUserId, platforms } of CABINETS) {
+    const cookie = await mintCookie(ownerUserId);
+    for (const mp of platforms) {
+      const taxMode = await taxModeOf(cabinetId, mp);
+      // Июль — обязательный разрез брифа; июнь добавлен только для WB кабинета 1,
+      // чтобы покрыть вторую контрольную точку шлюза (GATE_CHECKS).
+      const periods = mp === 'wb' && cabinetId === 1 ? ['2026-06', '2026-07'] : ['2026-07'];
+      for (const period of periods) {
+        const [from, to] = monthBounds(period);
+        console.log(`\n── кабинет ${cabinetId} / ${mp} / ${period} ──`);
+
+        // pnl
+        const pnlText = await apiGetText(cookie, `/api/cabinets/${cabinetId}/pnl?period=${period}`);
+        if (/accrual_/.test(pnlText)) { console.log(`  FAIL pnl: сырой accrual_ в ответе`); allOk = false; }
+        const pnlJson = JSON.parse(pnlText);
+        const pnlWas = pnlJson[mp];
+        const pnlCanon = await canonCabinet(cabinetId, mp, taxMode, from, to);
+        allOk = assertClose(`pnl.${mp}.profit`, pnlWas?.profit, round2(pnlCanon.profit)) && allOk;
+        allOk = assertClose(`pnl.${mp}.revenue`, pnlWas?.revenue, round2(pnlCanon.revenue)) && allOk;
+        allOk = assertClose(`pnl.${mp}.tax`, pnlWas?.tax, round2(pnlCanon.tax)) && allOk;
+        allOk = assertClose(`pnl.${mp}.ads`, pnlWas?.ads, round2(pnlCanon.ads)) && allOk;
+        allOk = assertClose(
+          `pnl.${mp}.cabinetCostsTotal`,
+          pnlWas?.cabinetCostsTotal,
+          round2(pnlCanon.cabinetCosts.reduce((a, x) => a + x.amount, 0))
+        ) && allOk;
+
+        // overview
+        const ovText = await apiGetText(cookie, `/api/cabinets/${cabinetId}/overview?mp=${mp}&from=${from}&to=${to}`);
+        if (/accrual_/.test(ovText)) { console.log(`  FAIL overview: сырой accrual_ в ответе`); allOk = false; }
+        const ovJson = JSON.parse(ovText);
+        allOk = assertClose(`overview.kpi.grossProfit(=profit)`, ovJson.kpi?.grossProfit, round2(pnlCanon.profit)) && allOk;
+        allOk = assertClose(`overview.kpi.tax`, ovJson.kpi?.tax, round2(pnlCanon.tax)) && allOk;
+        allOk = assertClose(`overview.kpi.adSpend`, ovJson.kpi?.adSpend, round2(pnlCanon.ads)) && allOk;
+
+        // Контрольные точки шлюза.
+        for (const g of GATE_CHECKS) {
+          if (g.cabinetId === cabinetId && g.mp === mp && g.period === period && g.route === 'pnl') {
+            allOk = assertClose(`ШЛЮЗ pnl.${mp}.profit (${period})`, pnlWas?.profit, g.expected) && allOk;
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`\n${allOk ? 'ВСЕ ПРОВЕРКИ ПРОШЛИ (ALL PASS)' : 'ЕСТЬ РАСХОЖДЕНИЯ (FAIL)'}`);
+  if (!allOk) process.exit(1);
+}
+
+if (process.argv.includes('--verify')) {
+  await runVerify();
+  process.exit(0);
+}
+
+// ═══════════════════════ Основной прогон (снапшоты «было/станет», задача 3) ═══════════════════════
 const result = { generatedAt: new Date().toISOString(), cabinets: {} };
 
 for (const { cabinetId, ownerUserId, platforms } of CABINETS) {

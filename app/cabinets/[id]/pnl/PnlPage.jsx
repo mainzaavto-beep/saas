@@ -22,29 +22,27 @@ const moneyShort = (n) => {
 };
 
 // Строки P&L: kind → h0=главный итог, h1=подытог, sub=расход, plain=прочее.
-// field — ключ в total для подстановки значения.
+// field — ключ в total для подстановки значения. Источник — канон
+// (ozProfitCabinet/wbProfitCabinet, задача 4 плана унификации прибыли):
+// одна формула на обе площадки, реклама/лояльность/кабинетные расходы —
+// впервые в P&L. Кабинетные статьи (accrual_*, WB-типы) — не отдельными
+// типизированными полями (их больше нет в ответе роута), а суммой
+// cabinetCostsTotal здесь + расшифровкой по статьям отдельным блоком ниже
+// (см. cabinetCosts[] в рендере).
 const buildRows = (taxLabel) => [
-  { label: "Выручка (брутто)", field: "sales", color: C.pos, kind: "plain", showPct: true },
-  { label: "Возвраты", field: "returns", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Выручка (нетто)", field: "netSales", color: C.pos, kind: "h1", showPct: false },
-  { label: "Себестоимость", field: "cost", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Валовая прибыль", field: "grossProfit", kind: "h1", showPct: false },
+  { label: "Выручка", field: "revenue", color: C.pos, kind: "plain", showPct: true },
+  { label: "Себестоимость", field: "cogs", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Комиссия МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Эквайринг", field: "acquiring", negate: true, color: C.neg, kind: "sub", showPct: true },
-  // Кабинетные расходы (№27/№28) — WB не привязывает их к SKU; вычитаются из чистой.
-  { label: "Хранение", field: "storage", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Продвижение WB", field: "promotion", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Подписки", field: "subscription", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Штрафы", field: "penalty", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Удержания прочие", field: "deductionOther", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Лояльность", field: "loyalty", negate: true, color: C.neg, kind: "sub", showPct: true },
+  { label: "Валовая прибыль", field: "grossProfit", kind: "h1", showPct: false },
+  { label: "Реклама", field: "ads", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: taxLabel || "Налог", field: "tax", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "ЧИСТАЯ ПРИБЫЛЬ", field: "netProfit", kind: "h0", showPct: false },
-  // Прочие доходы WB (возмещения ПВЗ/перевозки + сторно «Баллы за отзывы» + разовые
-  // выплаты продавцу, приходящие отрицательными «Удержаниями», — например компенсация
-  // за пострадавший товар) — приток, не входит в P&L-каскад, показываем справочно
-  // под чистой прибылью.
-  { label: "в т.ч. прочие доходы WB", field: "otherIncome", color: C.pos, kind: "plain", showPct: false },
+  // Кабинетные расходы — знаковая сумма статей (расход отрицателен, возмещение/
+  // доход положителен), см. cabinetCosts[] ниже для расшифровки по статьям.
+  { label: "Кабинетные расходы", field: "cabinetCostsTotal", kind: "sub", showPct: true },
+  { label: "ЧИСТАЯ ПРИБЫЛЬ", field: "profit", kind: "h0", showPct: false },
 ];
 
 const valOf = (row, total) => {
@@ -114,9 +112,9 @@ export default function PnlPage({ cabinetId }) {
         <>
           {/* KPI-плашки по всему диапазону */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 18 }}>
-            <Card label="Выручка (нетто)" value={moneyShort(data.total.netSales)} />
-            <Card label="Чистая прибыль" value={moneyShort(data.total.netProfit)} tone={data.total.netProfit >= 0 ? C.pos : C.neg}
-              sub={data.total.netSales ? `рентабельность ${((data.total.netProfit / data.total.netSales) * 100).toFixed(1)}%` : null} />
+            <Card label="Выручка" value={moneyShort(data.total.revenue)} />
+            <Card label="Чистая прибыль" value={moneyShort(data.total.profit)} tone={data.total.profit >= 0 ? C.pos : C.neg}
+              sub={data.total.revenue ? `рентабельность ${((data.total.profit / data.total.revenue) * 100).toFixed(1)}%` : null} />
             <Card label="Валовая прибыль" value={moneyShort(data.total.grossProfit)} tone={data.total.grossProfit >= 0 ? C.pos : C.neg} />
             <Card label="К перечислению" value={moneyShort(data.total.forPay)} />
           </div>
@@ -149,7 +147,7 @@ export default function PnlPage({ cabinetId }) {
                   const big = row.kind === "h0";
                   const weight = row.kind === "h0" ? 800 : row.kind === "h1" ? 700 : 400;
                   const bg = row.kind === "h0" ? C.surfaceAlt : "transparent";
-                  const revenue = data.total.netSales || 0;
+                  const revenue = data.total.revenue || 0;
                   return (
                     <tr key={ri} style={{ borderTop: isTotal ? `2px solid ${C.line}` : `1px solid ${soft("line", 33)}`, background: bg }}>
                       <td style={{
@@ -207,11 +205,43 @@ export default function PnlPage({ cabinetId }) {
 
           <div style={{ marginTop: 14, fontSize: 12, color: C.faint, lineHeight: 1.6 }}>
             Диапазон: {data.from} — {data.to}.
-            Налоги: {data.taxLabel || "УСН по режиму магазина"} — УСН от выручки без НДС, НДС выделяется из цены. «% выр.» — доля строки от выручки (нетто), только без разбивки.
-            Кабинетные расходы (хранение/продвижение/подписки/штрафы) не привязаны к SKU
-            (контракт №27) — показаны отдельными строками и вычитаются из чистой прибыли.
-            «Прочие доходы WB» (возмещения + сторно «Баллы за отзывы») — приток, не входит в P&L-каскад.
+            Налоги: {data.taxLabel || "УСН по режиму магазина"} — УСН от выручки без НДС, НДС выделяется из цены. «% выр.» — доля строки от выручки, только без разбивки.
+            Кабинетные расходы (хранение/продвижение/подписки/штрафы/Premium/RFBS и др.) не привязаны к SKU —
+            показаны одной строкой знаковой суммой (расход уменьшает прибыль, возмещение/доход — увеличивает);
+            расшифровка по статьям — в блоке «Кабинетные расходы по статьям» ниже.
+            {data.total.unknownCostTypes > 0 && ` Не удалось сопоставить название для ${data.total.unknownCostTypes} стат. (показаны как «Прочее»).`}
           </div>
+
+          {/* Кабинетные расходы по статьям — расшифровка cabinetCosts[] из канона
+              (ozProfitCabinet/wbProfitCabinet). Суммы знаковые: расход — красным
+              со знаком «−», доход/возмещение — обычным цветом без знака. Технические
+              ключи (accrual_N) сюда не попадают — label уже резолвлен на сервере. */}
+          {!hasSegments && data.total.cabinetCosts && data.total.cabinetCosts.length > 0 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18, marginTop: 18 }}>
+              <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 700 }}>Кабинетные расходы по статьям</h3>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <th style={thLeft}>Статья</th>
+                    <th style={thRight}>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.total.cabinetCosts.map((c, i) => (
+                    <tr key={`${c.label}-${i}`} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
+                      <td style={{ padding: "8px 6px", color: C.ink }}>{c.label}</td>
+                      <td style={{
+                        padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                        whiteSpace: "nowrap", color: c.amount < 0 ? C.neg : C.pos,
+                      }}>
+                        {c.amount < 0 ? "−" : "+"}{money(Math.abs(c.amount))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* По маркетплейсам — только без разбивки (при разбивке per-segment WB/Ozon не считаем) */}
           {!hasSegments && data.wb && data.ozon && (
@@ -227,15 +257,15 @@ export default function PnlPage({ cabinetId }) {
                 </thead>
                 <tbody>
                   {[
-                    ["Выручка (нетто)", "netSales"],
-                    ["Себестоимость", "cost"],
+                    ["Выручка", "revenue"],
+                    ["Себестоимость", "cogs"],
                     ["Комиссия", "commission"],
                     ["Логистика", "logistics"],
-                    ["Прибыль", "netProfit"],
+                    ["Прибыль", "profit"],
                   ].map(([label, key]) => {
                     const wbVal = data.wb?.[key];
                     const ozVal = data.ozon?.[key];
-                    const profitCol = key === "netProfit";
+                    const profitCol = key === "profit";
                     return (
                       <tr key={key} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
                         <td style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}>{label}</td>
