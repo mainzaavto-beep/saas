@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // scripts/check-profit-canon.mjs — сторож канонического слоя прибыли
 // (план «унификация формул прибыли», docs/superpowers/plans/
-// 2026-08-20-profit-unification.md, задача 1 — Ozon-секция; задача 2
-// добавит WB-секцию тем же файлом).
+// 2026-08-20-profit-unification.md, задача 1 — Ozon-секция, задача 2 —
+// WB-секция, тот же файл, симметричные проверки).
 //
-// Проверяет РЕАЛЬНЫЕ функции lib/ozonMetrics.js::ozProfitProduct/
-// ozProfitCabinet/ozCabinetCostLabel (не переизобретает их формулу) против
-// НЕЗАВИСИМОГО SQL, посчитанного этим скриптом с нуля. Расхождение = баг
-// канона (finance-discrepancy-rule), не повод подгонять эталон.
+// Проверяет РЕАЛЬНЫЕ функции lib/ozonMetrics.js (ozProfitProduct/
+// ozProfitCabinet/ozCabinetCostLabel) и lib/wbMetrics.js (wbProfitProduct/
+// wbProfitCabinet/wbCabinetCostLabel) — не переизобретает их формулу —
+// против НЕЗАВИСИМОГО SQL, посчитанного этим скриптом с нуля. Расхождение
+// = баг канона (finance-discrepancy-rule), не повод подгонять эталон.
 //
 // Два разных подключения — оба обязательны (Global Constraints задачи 1):
 //   1) канон читает БД штатным способом панели — DatabaseSync поверх
@@ -22,8 +23,10 @@
 //
 // Период по умолчанию — июль 2026, кабинет 1 (см. бриф задачи 1: «для
 // июля-2026 каб.1»; те же данные, что использует docs/ozon-external-
-// reconciliation-*). --cabinet/--from/--to меняют период вручную.
+// reconciliation-*). --cabinet/--from/--to меняют период вручную (общий
+// для обеих секций — Ozon и WB).
 //
+// ═══════════════════════ OZON-СЕКЦИЯ (задача 1) ═══════════════════════
 // Проверки (все обязаны выполниться зелёными; ненулевой exit при любом
 // расхождении):
 //   1. ozProfitProduct(period).profit (без productId) = независимому SQL
@@ -69,6 +72,44 @@
 //      каждый товар, см. коммент в lib/ozonMetrics.js) — поправка нужна
 //      только для ads.
 //
+// ═══════════════════════ WB-СЕКЦИЯ (задача 2) ═══════════════════════
+// Симметричные проверки против lib/wbMetrics.js::wbProfitProduct/
+// wbProfitCabinet/wbCabinetCostLabel. Отличия от Ozon (та же ФОРМА, другая
+// СЕМАНТИКА — ppvz-модель, урок D15):
+//   1. wbProfitProduct(period).profit (без nmId) = независимому SQL
+//      SUM(wb_order_costs.profit) − SUM(ad_spend) − calcTotalTax(...).total,
+//      допуск 0,01 ₽. wb_order_costs.profit = cost_value_pay − cost −
+//      logistics (commission/acquiring/loyalty УЖЕ внутри cost_value_pay,
+//      не вычитаются повторно — см. докстроку wbProfitProduct).
+//   2. Слагаемые аддитивны: revenue(cost_value_pay)−cogs−logistics =
+//      независимому SUM(profit) (БЕЗ commission/acquiring/loyalty — они не
+//      участвуют в формуле WB, в отличие от Ozon), допуск 0,01 ₽.
+//   3. wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts[].
+//      amount (ЗНАК УЖЕ НОРМАЛИЗОВАН каноном — см. докстроку
+//      wbProfitCabinet в lib/wbMetrics.js: сырой знак в tenant.
+//      wb_cabinet_costs у WB ПРОТИВОПОЛОЖЕН Ozon — расходы положительны,
+//      возмещения/выплаты отрицательны — канон инвертирует, чтобы внешний
+//      контракт (amount<0=расход, amount>0=доход) был одинаков для обеих
+//      площадок). Независимая проверка считает Σ(−amount_raw) и сверяет.
+//      Проверка берёт период с живой отрицательной (= доходной по сырому
+//      знаку) статьёй payout_other (кабинет 1, июль-2026, −68 774,48 ₽,
+//      «Выплаты WB (компенсации)» — см. память wb-cabinet-costs-fixed.md).
+//   4. cabinetCosts[].label — ни один НЕ равен сырому costType (весь набор
+//      cost_type у WB резолвится статичным словарём WB_COST_LABELS,
+//      unknownCostTypes должен быть 0 на живых данных).
+//   5. nmId-фильтр аддитивен: Σ wbProfitProduct(period, nmId).profit по
+//      всем nm периода, МИНУС ads(кабинета) (та же причина, что у Ozon —
+//      см. докстроку wbProfitProduct в lib/wbMetrics.js: реклама по nm_id У
+//      WB ЕСТЬ, но часть ad_spend «осиротела» на nm без строк order_costs
+//      в периоде — 7 077,17 ₽ на кабинете 1 за июль-2026 — поэтому канон
+//      тоже даёт ads=0 при nmId), допуск 0,05 ₽.
+//   6. ⚠️ is_return НЕ фильтруется — независимая проверка №1 явно НЕ
+//      добавляет "AND is_return=0"; отдельно выводится информационная
+//      строка «что было бы, если» (см. WB_IS_RETURN_FILTER_LOSS ниже) —
+//      это находка задачи 2 (брифинг явно просил её зафиксировать), не
+//      обязательная проверка (нечего регрессировать — фильтра никогда не
+//      было в этом каноне).
+//
 // Использование:
 //   node scripts/check-profit-canon.mjs
 //   node scripts/check-profit-canon.mjs --cabinet 1 --from 2026-07-01 --to 2026-07-31
@@ -83,6 +124,7 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 
 const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
 const { ozProfitProduct, ozProfitCabinet } = await import('../lib/ozonMetrics.js');
+const { wbProfitProduct, wbProfitCabinet } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
 function parseArgs(argv) {
@@ -101,6 +143,7 @@ const CABINET_ID = args.cabinet;
 const FROM = args.from;
 const TO = args.to;
 const TOL = 0.01; // ₽ — тот же допуск, что и «инвариант периода» check-ozon-profit-invariant.mjs
+const PRODUCT_SUM_TOL = 0.05; // ₽ — допуск для Σ по товарам/nm (много round2 подряд)
 
 const fmtRub = (n) => Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (v) => (v === null || v === undefined ? 0 : Number(v));
@@ -111,12 +154,13 @@ function verdict(name, ok, detail) {
   if (!ok) failures++;
 }
 
-console.log(`Сторож канонического слоя прибыли Ozon — кабинет ${CABINET_ID}, период ${FROM}..${TO}`);
-console.log('');
-
 const roPool = new pg.Pool(readonlyPgConfig());
 
-try {
+// ═════════════════════════════ OZON ═════════════════════════════
+async function runOzonChecks() {
+  console.log(`Сторож канонического слоя прибыли Ozon — кабинет ${CABINET_ID}, период ${FROM}..${TO}`);
+  console.log('');
+
   // ── Налоговый режим кабинета (auth.shops, вне RLS — та же таблица, что
   // читает withCabinet.js для cabinet.shopTax.ozon). ──
   const shopRows = await query(
@@ -278,7 +322,6 @@ try {
   // round2(tax) — независимые округления могут накопить пару копеек, что не
   // является расхождением канона (в отличие от проверок 1-3, где сравнение
   // идёт «один канон-вызов vs один независимый SQL» без per-item округлений).
-  const PRODUCT_SUM_TOL = 0.05;
   const sumByProductMinusAds = Math.round((canon.sumByProduct - canon.profitProduct.ads) * 100) / 100;
   verdict(
     'productId-фильтр аддитивен: Σ ozProfitProduct(товар).profit − ads(кабинета) = ozProfitProduct(без фильтра).profit',
@@ -288,6 +331,205 @@ try {
   if (canon.nullProductRows > 0) {
     console.log(`  ⚠️ product_id IS NULL строк в периоде: ${canon.nullProductRows} — их деньги в Σ по товарам не попадают (ожидаемо, не баг проверки).`);
   }
+  console.log('');
+}
+
+// ═════════════════════════════ WB ═════════════════════════════
+async function runWbChecks() {
+  console.log(`Сторож канонического слоя прибыли WB — кабинет ${CABINET_ID}, период ${FROM}..${TO}`);
+  console.log('');
+
+  const shopRows = await query(
+    `SELECT tax_mode FROM auth.shops WHERE cabinet_id = $1 AND mp_code = 'wb' AND is_active = true LIMIT 1`,
+    [CABINET_ID]
+  );
+  const taxMode = normalizeTaxMode(shopRows[0]?.tax_mode || null);
+  console.log(`Налоговый режим (auth.shops): ${JSON.stringify(taxMode)}`);
+  console.log('');
+
+  const canon = await withTenant(CABINET_ID, async () => {
+    const db = new DatabaseSync('wb', { readOnly: true });
+    const profitProduct = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, null);
+    const profitCabinet = await wbProfitCabinet(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO });
+
+    // Список nm периода — для проверки 5 (nmId-фильтр).
+    const nmRows = await db
+      .prepare(
+        `SELECT DISTINCT nm_id FROM order_costs
+         WHERE substr(COALESCE(sale_dt, return_dt),1,10) >= ?
+           AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?
+           AND nm_id IS NOT NULL
+         ORDER BY nm_id`
+      )
+      .all(FROM, TO);
+    const nullNmRow = await db
+      .prepare(
+        `SELECT count(*) AS n FROM order_costs
+         WHERE substr(COALESCE(sale_dt, return_dt),1,10) >= ?
+           AND substr(COALESCE(sale_dt, return_dt),1,10) <= ?
+           AND nm_id IS NULL`
+      )
+      .get(FROM, TO);
+
+    let sumByNm = 0;
+    for (const row of nmRows) {
+      const pp = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, row.nm_id);
+      sumByNm += pp.profit;
+    }
+
+    return {
+      profitProduct, profitCabinet,
+      nmCount: nmRows.length,
+      nullNmRows: Number(nullNmRow?.n) || 0,
+      sumByNm: Math.round(sumByNm * 100) / 100,
+    };
+  });
+
+  console.log('wbProfitProduct (без nmId):', JSON.stringify(canon.profitProduct));
+  console.log('wbProfitCabinet.cabinetCosts:', JSON.stringify(canon.profitCabinet.cabinetCosts));
+  console.log(`wbProfitCabinet.unknownCostTypes: ${canon.profitCabinet.unknownCostTypes}`);
+  console.log(`nm_id в периоде (nm_id NOT NULL): ${canon.nmCount}, строк с nm_id IS NULL: ${canon.nullNmRows}`);
+  console.log('');
+
+  // ── Независимая сверка (saas_ro, явный cabinet_id, БЕЗ обращения к
+  // канону — своя SQL с нуля). is_return НЕ фильтруется (см. докстроку
+  // файла п.6 WB-секции). ──
+  const { rows: [rawRow] } = await roPool.query(
+    `SELECT
+       COALESCE(SUM(cost_value_pay),0) AS revenue,
+       COALESCE(SUM(cost),0) AS cogs,
+       COALESCE(SUM(commission),0) AS commission,
+       COALESCE(SUM(acquiring),0) AS acquiring,
+       COALESCE(SUM(logistics),0) AS logistics,
+       COALESCE(SUM(loyalty),0) AS loyalty,
+       COALESCE(SUM(profit),0) AS profit
+     FROM tenant.wb_order_costs
+     WHERE cabinet_id = $1
+       AND substr(COALESCE(sale_dt, return_dt),1,10) BETWEEN $2 AND $3`,
+    [CABINET_ID, FROM, TO]
+  );
+  // Контрольная сумма С фильтром is_return=0 — ТОЛЬКО для информационной
+  // строки «что было бы, если» (находка задачи 2, брифинг требовал
+  // зафиксировать сумму). В самой проверке 1 НЕ участвует.
+  //
+  // ⚠️ substr(...,1,10) — sale_dt/return_dt в wb_order_costs хранятся как
+  // TEXT ПОЛНЫМ ISO-таймстампом ('2026-07-31T14:40:29Z'), а не голой датой
+  // (в отличие от Ozon, где sale_dt/return_dt — DATE). Голый BETWEEN с
+  // датой-строкой без substr систематически теряет последний день периода
+  // (лексикографически '2026-07-31T...' > '2026-07-31' → верхняя граница
+  // не проходит) — классический «T vs пробел» гоча проекта (коммит
+  // 92a072a), пойманный здесь заново при первом прогоне: без substr WB
+  // canon PROFIT расходился с «независимым» SQL на 6 501,77 ₽ (потерянный
+  // весь день 31.07). canon (lib/wbMetrics.js) сам всегда использует
+  // substr — независимая сверка обязана делать так же.
+  const { rows: [filteredRow] } = await roPool.query(
+    `SELECT COALESCE(SUM(profit),0) AS profit
+     FROM tenant.wb_order_costs
+     WHERE cabinet_id = $1 AND is_return = 0
+       AND substr(COALESCE(sale_dt, return_dt),1,10) BETWEEN $2 AND $3`,
+    [CABINET_ID, FROM, TO]
+  );
+  const { rows: [adRow] } = await roPool.query(
+    `SELECT COALESCE(SUM(ad_spend),0) AS s
+     FROM tenant.wb_daily_metrics
+     WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date AND ad_spend IS NOT NULL`,
+    [CABINET_ID, FROM, TO]
+  );
+  const { rows: cabinetCostRows } = await roPool.query(
+    `SELECT cost_type, COALESCE(SUM(amount),0) AS s
+     FROM tenant.wb_cabinet_costs
+     WHERE cabinet_id = $1 AND period_from <= $3::date AND period_to >= $2::date
+     GROUP BY cost_type`,
+    [CABINET_ID, FROM, TO]
+  );
+
+  const indRevenue = num(rawRow.revenue);
+  const indCogs = num(rawRow.cogs);
+  const indLogistics = num(rawRow.logistics);
+  const indRawProfit = num(rawRow.profit);
+  const indAdSpend = num(adRow.s);
+  // Налоговая база — та же, что в wbProfitProduct: cogs + logistics + ads
+  // (commission/acquiring/loyalty уже внутри revenue=cost_value_pay).
+  const indExpenses = indCogs + indLogistics + indAdSpend;
+  const indTax = calcTotalTax(taxMode, indRevenue, indExpenses).total;
+  const indProfit = Math.round((indRawProfit - indAdSpend - indTax) * 100) / 100;
+
+  // cabinetCosts: сырой знак у WB инвертирован относительно Ozon (см.
+  // докстроку wbProfitCabinet) — независимая сумма считает −amount_raw,
+  // тот же контракт, что отдаёт канон.
+  const indCabinetSignedSum = cabinetCostRows.reduce((acc, r) => acc - num(r.s), 0);
+  const negativeRawRows = cabinetCostRows.filter((r) => num(r.s) < 0);
+
+  console.log('Независимый SQL (saas_ro):');
+  console.log(`  revenue(cost_value_pay)=${fmtRub(indRevenue)} cogs=${fmtRub(indCogs)} logistics=${fmtRub(indLogistics)}`);
+  console.log(`  SUM(profit) сырой (все строки, без фильтра is_return) = ${fmtRub(indRawProfit)}`);
+  console.log(`  ad_spend(кабинет) = ${fmtRub(indAdSpend)}, налог (calcTotalTax, база=revenue) = ${fmtRub(indTax)}`);
+  console.log(`  profit независимый = SUM(profit) − ad_spend − налог = ${fmtRub(indProfit)}`);
+  console.log(`  Σ cabinetCosts.amount (нормализованный знак, канон-контракт) = ${fmtRub(indCabinetSignedSum)}`);
+  if (negativeRawRows.length) {
+    console.log(
+      `  ⚠️ ${negativeRawRows.length} статья(и) с ОТРИЦАТЕЛЬНЫМ сырым знаком в БД (= доход/возмещение продавцу по докстроке wb_cabinet_costs.py, канон покажет их ПОЛОЖИТЕЛЬНЫМИ): `
+      + negativeRawRows.map((r) => `${r.cost_type}=${fmtRub(num(r.s))} ₽(сырой)`).join(', ')
+    );
+  }
+  // ── Находка задачи 2 (брифинг): what-if is_return=0 фильтр (как старый
+  // Ozon-баг задачи 1) — не применяется в каноне, только измеряется. ──
+  const isReturnFilterLoss = Math.round((indRawProfit - num(filteredRow.profit)) * 100) / 100;
+  console.log('');
+  console.log(`ℹ️  Проверка is_return (находка задачи 2, брифинг): SUM(profit) БЕЗ фильтра = ${fmtRub(indRawProfit)}; С фильтром is_return=0 (гипотетическая калька Ozon-бага задачи 1) = ${fmtRub(num(filteredRow.profit))}; разница (убыток возвратов, который фильтр бы СКРЫЛ) = ${fmtRub(isReturnFilterLoss)} ₽.`);
+  console.log(`   Канон is_return НЕ фильтрует (проверка 1 ниже сверяется с БЕЗ-фильтра суммой) — находка зафиксирована, регресса нет.`);
+  console.log('');
+
+  // ── Проверка 1 ──
+  verdict(
+    'wbProfitProduct.profit = независимый SQL (SUM(order_costs.profit, БЕЗ is_return-фильтра) − ad_spend − налог)',
+    Math.abs(canon.profitProduct.profit - indProfit) <= TOL,
+    `канон=${fmtRub(canon.profitProduct.profit)}, независимо=${fmtRub(indProfit)}, разница=${fmtRub(canon.profitProduct.profit - indProfit)}`
+  );
+
+  // ── Проверка 2: слагаемые аддитивны (revenue−cogs−logistics = сырой
+  // SUM(profit) — ppvz-модель, commission/acquiring/loyalty НЕ участвуют). ──
+  const compsProfit = canon.profitProduct.revenue - canon.profitProduct.cogs - canon.profitProduct.logistics;
+  verdict(
+    'слагаемые аддитивны (ppvz-модель): revenue−cogs−logistics = SUM(wb_order_costs.profit)',
+    Math.abs(compsProfit - indRawProfit) <= TOL,
+    `по слагаемым=${fmtRub(compsProfit)}, независимый SUM(profit)=${fmtRub(indRawProfit)}, разница=${fmtRub(compsProfit - indRawProfit)}`
+  );
+
+  // ── Проверка 3: wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts (нормализованный знак) ──
+  const expectedCabinetProfit = Math.round((canon.profitProduct.profit + indCabinetSignedSum) * 100) / 100;
+  verdict(
+    'wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts[].amount (знак нормализован каноном)',
+    Math.abs(canon.profitCabinet.profit - expectedCabinetProfit) <= TOL,
+    `канон=${fmtRub(canon.profitCabinet.profit)}, ожидание=${fmtRub(expectedCabinetProfit)}`
+  );
+
+  // ── Проверка 4: labels резолвлены (ни один не равен сырому cost_type, unknownCostTypes=0) ──
+  const unresolvedLabels = canon.profitCabinet.cabinetCosts.filter((c) => c.label === c.costType);
+  verdict(
+    'cabinetCosts[].label не равен сырому cost_type ни в одной статье (весь набор резолвлен словарём)',
+    unresolvedLabels.length === 0 && canon.profitCabinet.unknownCostTypes === 0,
+    unresolvedLabels.length
+      ? `нерезолвленных: ${unresolvedLabels.length} (${unresolvedLabels.map((c) => c.costType).join(', ')}), unknownCostTypes=${canon.profitCabinet.unknownCostTypes}`
+      : `${canon.profitCabinet.cabinetCosts.length} статей, все с русскими именами, unknownCostTypes=${canon.profitCabinet.unknownCostTypes}`
+  );
+
+  // ── Проверка 5: nmId-фильтр аддитивен (см. докстроку файла, WB п.5) ──
+  const sumByNmMinusAds = Math.round((canon.sumByNm - canon.profitProduct.ads) * 100) / 100;
+  verdict(
+    'nmId-фильтр аддитивен: Σ wbProfitProduct(nm).profit − ads(кабинета) = wbProfitProduct(без фильтра).profit',
+    Math.abs(sumByNmMinusAds - canon.profitProduct.profit) <= PRODUCT_SUM_TOL,
+    `Σ по nm=${fmtRub(canon.sumByNm)} (${canon.nmCount} nm), −ads=${fmtRub(canon.profitProduct.ads)} ⇒ ${fmtRub(sumByNmMinusAds)}, без фильтра=${fmtRub(canon.profitProduct.profit)}`
+  );
+  if (canon.nullNmRows > 0) {
+    console.log(`  ⚠️ nm_id IS NULL строк в периоде: ${canon.nullNmRows} — их деньги в Σ по nm не попадают (ожидаемо, не баг проверки).`);
+  }
+  console.log('');
+}
+
+try {
+  await runOzonChecks();
+  await runWbChecks();
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.stack || e.message}`);
   await roPool.end().catch(() => {});
@@ -296,9 +538,8 @@ try {
   await roPool.end().catch(() => {});
 }
 
-console.log('');
 if (failures === 0) {
-  console.log('ALL PASS — канонический слой прибыли Ozon сходится с независимым SQL до копейки.');
+  console.log('ALL PASS — канонический слой прибыли Ozon и WB сходится с независимым SQL до копейки.');
   process.exit(0);
 } else {
   console.log(`ИТОГО ${failures} РАСХОЖДЕНИЕ(Й) — см. блоки выше.`);
