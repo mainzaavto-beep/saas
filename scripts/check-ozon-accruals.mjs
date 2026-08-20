@@ -52,13 +52,27 @@
 // в старой таблице) не получают блок commission в новом источнике вовсе — эвристика
 // «есть блок commission → продажа» не может отличить такой постинг от чистого
 // возврата (у него тоже нет блока commission), поэтому его логистика (type_id
-// 32/98) попадает в «логистика возврата» вместо «продажа». На июле 2026 кабинет 1
-// это ровно 4 постинга (0164952163-0080-2, 0164952163-0080-5, 0165040053-0033-1,
-// 43725192-0180-1, все — «Доставка покупателю» в старой таблице с нулевым товаром)
-// на сумму 835,00 ₽: продажа занижена, логистика возврата настолько же завышена
-// (по модулю), сумма обеих ролей вместе — и итог — не меняется. Это единственное
-// известное объяснённое расхождение ролей; см. docs/ozon-accrual-reconciliation.md,
-// раздел задачи 5.
+// 32/29/45/59/98) попадает в «логистика возврата» вместо «продажа». Продажа
+// занижена, логистика возврата настолько же завышена (по модулю), сумма обеих
+// ролей вместе — и итог — не меняется. Разобрано и объяснено до постинга в
+// docs/ozon-accrual-reconciliation.md §7.2 (на июле-2026: 4 постинга/835,00 ₽
+// кабинет 1, 1 постинг/99,00 ₽ кабинет 1008 — эти числа НЕ хардкожены здесь,
+// см. ниже).
+//
+// ⚠️ Ревью задачи 6 плана «унификация формул прибыли» (fix-раунд, п.2,
+// .superpowers/sdd/2026-08-20-profit-unification/task-6-report.md):
+// СТРУКТУРНЫЙ детектор вместо фиксированных −835/−99. `casusSql` ниже
+// заново находит постинги-казус КАЖДЫЙ ПРОГОН, любым месяцем/кабинетом —
+// join старого источника (нулевая `accruals_for_sale`/`commission_amount`
+// по всем строкам "Доставка покупателю" одного `posting_id`) с новым
+// (его логистика в бакете "логистика возврата" — `NOT is_sale`, через
+// `unit_number = posting_id`). Найденная Σ применяется через ЧИСТУЮ функцию
+// `applyCasus72` (scripts/lib/ozonAccrualsCasus72.mjs) — она НЕ угадывает
+// сумму сама, только вычитает уже найденную; юнит-тест без БД —
+// scripts/check-ozon-accruals-casus72-selftest.mjs (проверяет в т.ч., что
+// ПОСТОРОННЕЕ, не покрытое казусом расхождение НЕ проглатывается). Если
+// казус в периоде НЕ обнаружен (0 постингов) — коррекция не применяется
+// (0 — не «подгонка под 0», а честный результат SQL).
 //
 // Использование: node scripts/check-ozon-accruals.mjs [cabinet_id] [date_from] [date_to]
 // По умолчанию — июль 2026, кабинет 1 (период брифа задачи 5, полностью
@@ -67,16 +81,20 @@
 import pg from 'pg';
 import { compare } from '../lib/reference.js';
 import { readonlyPgConfig } from './lib/pgpass.mjs';
+import { applyCasus72 } from './lib/ozonAccrualsCasus72.mjs';
 
 const cabinetId = Number(process.argv[2] || 1);
 const dateFrom = process.argv[3] || '2026-07-01';
 const dateTo = process.argv[4] || '2026-07-31';
 
 const num = (v) => (v === null || v === undefined ? 0 : Number(v));
+const fmtRub = (n) => n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pad = (s, n) => String(s).padEnd(n);
+const padL = (s, n) => String(s).padStart(n);
 
 const pool = new pg.Pool(readonlyPgConfig());
 
-let oldRow, newRow, coverage, newCoverage;
+let oldRow, newRow, coverage, newCoverage, casus;
 try {
   // ── покрытие старого источника: предупреждаем, а не молчим, если период
   //    выходит за границы того, что реально лежит в tenant.ozon_finance_report ──
@@ -132,6 +150,47 @@ try {
     LEFT JOIN posting_sale_flag f ON f.cabinet_id = a.cabinet_id AND f.accrual_id = a.accrual_id
     WHERE a.cabinet_id = $1 AND a.date BETWEEN $2 AND $3`;
   ({ rows: [newRow] } = await pool.query(newSql, [cabinetId, dateFrom, dateTo]));
+
+  // ── СТРУКТУРНЫЙ детектор «казуса §7.2» (см. докстроку файла выше) ──
+  // Шаг 1: старый источник — posting_id, где ВСЕ строки "Доставка
+  // покупателю" в периоде дают нулевую accruals_for_sale И нулевую
+  // commission_amount (товар в отправлении ничего не стоит — платится
+  // только доставка).
+  // Шаг 2: join в новый источник по unit_number = posting_id — их
+  // логистика (type_id 32/29/45/59/98), которая при текущей эвристике
+  // (NOT is_sale, т.к. commission-блока нет вовсе) осела в "логистика
+  // возврата". Σ accrued этих строк — и есть сумма казуса ЗА ЭТОТ прогон
+  // (не хардкод; период/кабинет могут дать 0, 1, 4, 40 постингов).
+  // ⚠️ $2/$3 используются здесь И в текстовом контексте (substr(...) BETWEEN),
+  // И в контексте колонки date (date BETWEEN) — postgres извлечённый (extended
+  // protocol) тип параметра единый на весь statement; без явного ::date каста
+  // ниже он выводится как text из первого употребления и падает на "date >=
+  // text" во втором. В newSql/covSql этой коллизии нет (там $2/$3 участвуют
+  // только в одном типе контекста за раз) — здесь оба контекста впервые
+  // встретились в одном запросе, поэтому касты нужны только тут.
+  const casusSql = `
+    WITH zero_postings AS (
+      SELECT posting_id
+      FROM tenant.ozon_finance_report
+      WHERE cabinet_id = $1 AND substr(operation_dt, 1, 10) BETWEEN $2 AND $3
+        AND operation_type_name = 'Доставка покупателю'
+      GROUP BY posting_id
+      HAVING sum(accruals_for_sale) = 0 AND sum(commission_amount) = 0
+    ),
+    posting_sale_flag AS (
+      SELECT cabinet_id, accrual_id, bool_or(type_id IS NULL AND accrued > 0) AS is_sale
+      FROM tenant.ozon_accruals
+      WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date AND accrued_category = 'POSTING'
+      GROUP BY 1, 2
+    )
+    SELECT count(DISTINCT a.accrual_id) AS n, COALESCE(sum(a.accrued), 0) AS amount
+    FROM tenant.ozon_accruals a
+    JOIN posting_sale_flag f ON f.cabinet_id = a.cabinet_id AND f.accrual_id = a.accrual_id
+    WHERE a.cabinet_id = $1 AND a.date BETWEEN $2::date AND $3::date
+      AND a.accrued_category = 'POSTING' AND a.type_id IN (32, 29, 45, 59, 98)
+      AND NOT f.is_sale
+      AND a.unit_number IN (SELECT posting_id FROM zero_postings)`;
+  ({ rows: [casus] } = await pool.query(casusSql, [cabinetId, dateFrom, dateTo]));
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.message}`);
   await pool.end().catch(() => {});
@@ -167,6 +226,29 @@ if (!newCoverage || !newCoverage.min_dt) {
 }
 console.log('');
 
+// ── Казус §7.2 — структурно найден (см. докстроку файла и casusSql выше).
+// Печатается ВСЕГДА (0 постингов — тоже видимая, честная строка, не
+// молчание), корректирует "продажа"/"логистика возврата" ДО сравнения с
+// compare() — чистой функцией applyCasus72, которая не может случайно
+// объяснить постороннее расхождение (проверено юнит-тестом без БД,
+// scripts/check-ozon-accruals-casus72-selftest.mjs). ──
+const casusN = Number(casus?.n) || 0;
+const casusAmount = num(casus?.amount);
+let newRowForCompare = newRow;
+if (casusN > 0) {
+  console.log(
+    `ℹ️  известный казус §7.2 (docs/ozon-accrual-reconciliation.md): ${casusN} отправлени${casusN === 1 ? 'е' : 'й'} `
+    + `с нулевой стоимостью товара, чья логистика (type_id 32/29/45/59/98) не получила блок commission в новом `
+    + `источнике — ${fmtRub(casusAmount)} ₽ структурно осели в роли "логистика возврата" вместо "продажа". `
+    + `Вычтено из сравнения ниже (роли скорректированы: продажа ${casusAmount >= 0 ? '+' : ''}${fmtRub(casusAmount)} ₽, `
+    + `логистика возврата ${casusAmount >= 0 ? '-' : '+'}${fmtRub(Math.abs(casusAmount))} ₽).`
+  );
+  newRowForCompare = applyCasus72(newRow, casusAmount);
+} else {
+  console.log('ℹ️  известный казус §7.2: 0 отправлений в этом периоде — коррекция не применялась (не 0 по подгонке, а честный результат SQL).');
+}
+console.log('');
+
 const roles = [
   { key: 'sale', name: 'продажа' },
   { key: 'return_', name: 'возврат' },
@@ -180,7 +262,7 @@ let sumOldExplicit = 0;
 let sumNewExplicit = 0;
 for (const r of roles) {
   const oldV = num(oldRow[r.key]);
-  const newV = num(newRow[r.key]);
+  const newV = num(newRowForCompare[r.key]);
   sumOldExplicit += oldV;
   sumNewExplicit += newV;
   rows.push({ name: r.name, oldV, newV });
@@ -192,10 +274,6 @@ rows.push({
   newV: num(newRow.total) - sumNewExplicit,
 });
 rows.push({ name: 'ИТОГО', oldV: num(oldRow.total), newV: num(newRow.total) });
-
-const fmtRub = (n) => n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const pad = (s, n) => String(s).padEnd(n);
-const padL = (s, n) => String(s).padStart(n);
 
 console.log(
   pad('роль', 22) + padL('старое, ₽', 16) + padL('новое, ₽', 16)
