@@ -10,6 +10,15 @@ SaaS-сборщик ПРИБЫЛИ ПО ЗАКАЗУ → tenant.wb_order_costs.
 cost_value_total из tenant.wb_orders.total_price (+ profit_alt); self_buyout эвристика.
 
 Идемпотентно по (cabinet_id, srid). Без HTTP — чистый SQL.
+
+ПОЛИТИКА ВОЗВРАТНОГО COGS (владелец, 2026-08-21, дословная цитата): «В
+возвратах должна учитываться только расходка на них, себестоимость не
+учитывается, потому что часть из них идут заново в продажу». Строки
+is_return=1: cost=0 ЯВНО (не NULL, см. _aggregate_sql), profit = только
+фактическая расходка возврата (−logistics в текущей ppvz-модели, см.
+докстроку у "profit" ниже) — COGS в profit возврата не участвует. То же
+решение применено к Ozon коммитом 5a3221d (worker/collectors/ozon_order_
+costs.py) в тот же день.
 """
 import os
 import sys
@@ -76,7 +85,11 @@ def _aggregate_sql(start, end):
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_retail END AS cost_value_retail,
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_pay END AS cost_value_pay,
            o.commission, o.acquiring, o.logistics, o.loyalty,
-           co.cost AS cost,
+           -- ПОЛИТИКА ВЛАДЕЛЬЦА 2026-08-21 (см. докстроку профита ниже, у
+           -- "profit"): себестоимость возврата НЕ списывается — cost=0
+           -- ЯВНО (не NULL) на is_return=1, тем же приёмом, что уже
+           -- применён к cost_value_retail/cost_value_pay строкой выше.
+           CASE WHEN o.is_return = 1 THEN 0 ELSE co.cost END AS cost,
            o.qty
     FROM ops o
     LEFT JOIN tenant.wb_orders ord ON ord.cabinet_id = current_setting('app.cabinet_id')::bigint
@@ -106,8 +119,33 @@ def _aggregate_sql(start, end):
         # полях. commission/acquiring/loyalty УЖЕ внутри ppvz_for_pay → НЕ вычитаем.
         # Логистика идёт ОТДЕЛЬНОЙ операцией («Логистика», delivery_rub) и НЕ входит
         # в ppvz_for_pay операции «Продажа» → вычитаем явно.
-        # Для возврата cost_value_pay обнуляется в SQL (CASE WHEN is_return=1 THEN 0),
-        # поэтому profit возврата = −logistics (убыток на логистику, себест. не списываем).
+        #
+        # ⚠️ ВОЗВРАТЫ (is_return=1) — ПОЛИТИКА ВЛАДЕЛЬЦА 2026-08-21 (дословная
+        # цитата, тот же день и то же решение, что применено к Ozon коммитом
+        # 5a3221d): «В возвратах должна учитываться только расходка на них,
+        # себестоимость не учитывается, потому что часть из них идут заново
+        # в продажу».
+        #
+        # ИСПРАВЛЕНИЕ БАГА (не только новая политика): ДО этой правки cost
+        # здесь молчал о своей главной странности — SQL брал `co.cost AS cost`
+        # БЕЗУСЛОВНО (docs/metrics-contract.md §7, найденный, но не закрытый
+        # разрыв: «cost в строке возврата технически присутствует в
+        # order_costs (join cost_overrides не условен на is_return)»), а этот
+        # комментарий тут же ДО правки заявлял обратное («cost_value_pay
+        # обнуляется, поэтому profit возврата = −logistics, себест. не
+        # списываем») — заявление было ЛОЖНЫМ по факту: cost реально
+        # вычитался (114 строк / 119 756 ₽ кабинета 1, находка разведки этой
+        # задачи). Теперь cost ДЕЙСТВИТЕЛЬНО 0 на is_return=1 — явным CASE в
+        # SQL выше (тем же приёмом, что уже применён к cost_value_retail/
+        # cost_value_pay), не только по случайности NULL-конверсии — так что
+        # /orders LATERAL (app/api/cabinets/[id]/orders/route.js, WB-ветка)
+        # не «воскрешает» его повторной подстановкой cost_overrides (тот же
+        # приём, что и Ozon-фикс a817f97: `oc.cost IS DISTINCT FROM 0`).
+        #
+        # Итог: cost_value_pay для возврата УЖЕ 0 (CASE WHEN is_return=1 THEN
+        # 0 в SQL выше), cost теперь ТОЖЕ 0 → profit возврата = −logistics
+        # (убыток на логистику/расходку возврата, себестоимость не
+        # списывается — «часть из них идут заново в продажу»).
         r["profit"] = round((r["cost_value_pay"] or 0) - cost - (r["logistics"] or 0), 2)
         # profit_alt — контрольная метрика от cost_value_total (прайс-цена). Компонентная,
         # оставлена для диагностики, в расчётах не используется.

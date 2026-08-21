@@ -135,6 +135,17 @@ function dateClause(col, from, to) {
 // WB: order_costs — основа (там все компоненты). JOIN orders для склада/статуса/региона,
 // articles для фото/бренда/имени.
 
+// ⚠️ ФИКС фантомного COGS у возвратов (политика владельца 2026-08-21, см.
+// worker/collectors/wb_order_costs.py — докстрока у "profit", тот же класс
+// фикса, что Ozon получил коммитом 5a3221d + a817f97 в шапке collectOzon
+// ниже): сборщик пишет oc.cost=0 ЯВНО на is_return=1 (не NULL) — «продажа
+// была, но себестоимость возврата не списывается, товар может уйти в
+// повторную продажу». Без guard'а `oc.cost IS DISTINCT FROM 0` эта LATERAL
+// безусловно переоткрывала бы cost_overrides по nm_id/дате НЕЗАВИСИМО от
+// oc.cost и воскрешала бы уже честно занулённый сборщиком COGS — тот же
+// баг, что чинили для Ozon в a817f97. NULL (cost_overrides не резолвился
+// вовсе) по-прежнему IS DISTINCT FROM 0 = true — LATERAL работает как
+// раньше.
 async function collectWB(limit, shopName, qPattern, from, to) {
   const db = new DatabaseSync("wb", { readOnly: true });
   const mainSearch = searchClause(qPattern, ["oc.sa_name", "oc.nm_id::text", "a.name", "oc.srid", "o.brand"]);
@@ -166,6 +177,7 @@ async function collectWB(limit, shopName, qPattern, from, to) {
      LEFT JOIN LATERAL (
        SELECT cost FROM tenant.cost_overrides
        WHERE nm_id = oc.nm_id AND platform = 'wb'
+         AND oc.cost IS DISTINCT FROM 0
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
