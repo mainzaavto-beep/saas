@@ -48,24 +48,24 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const q = (url.searchParams.get("q") || "").trim().toLowerCase();
     const from = url.searchParams.get("from") || "";            // YYYY-MM-DD
     const to = url.searchParams.get("to") || "";
+    const qPattern = q ? "%" + escapeLike(q) + "%" : "";
 
+    // Инцидент 2026-08-21: q/from/to переехали в SQL (см. searchClause/
+    // dateClause + collectWB/collectOzon). Раньше фильтровались в JS ПОСЛЕ
+    // SQL LIMIT (top-N по order_dt) — при годовой истории поиск/период
+    // отсекал совпадения ДО фильтра и молча терял старые строки (живой баг:
+    // артикул 4192570221 каб.1 — 17 продаж за 22.07-04.08 не находились
+    // поиском, т.к. вне топ-500 по дате). status остаётся в JS —
+    // statusGroup вычисляется уже после маппинга WB/Ozon в единый формат
+    // (wbStatusGroup/ozonStatusGroup); дублировать эту логику в SQL для
+    // обеих платформ ради фильтра, который не режет топ-limit так же больно
+    // (сортировка всё равно по дате, не по статусу) — не стоит хрупкости.
     let items = [];
-    if (platform !== "ozon") items = items.concat(await collectWB(limit, cabinet.shop_names?.wb));
-    if (platform !== "wb")   items = items.concat(await collectOzon(limit, cabinet.shop_names?.ozon));
+    if (platform !== "ozon") items = items.concat(await collectWB(limit, cabinet.shop_names?.wb, qPattern, from, to));
+    if (platform !== "wb")   items = items.concat(await collectOzon(limit, cabinet.shop_names?.ozon, qPattern, from, to));
 
     // Фильтрация (после объединения — единые имена полей)
     if (status !== "all") items = items.filter((i) => i.statusGroup === status);
-    if (q) {
-      items = items.filter((i) =>
-        String(i.sa || "").toLowerCase().includes(q) ||
-        String(i.nm || "").includes(q) ||
-        String(i.name || "").toLowerCase().includes(q) ||
-        String(i.number || "").toLowerCase().includes(q) ||
-        String(i.brand || "").toLowerCase().includes(q)
-      );
-    }
-    if (from) items = items.filter((i) => (i.order_dt || "") >= from);
-    if (to)   items = items.filter((i) => (i.order_dt || "") <= to + "T23:59:59");
 
     // Сортировка: новые сверху (по дате заказа)
     items.sort((a, b) => (b.order_dt || "").localeCompare(a.order_dt || ""));
@@ -101,12 +101,44 @@ function agg(items) {
   return t;
 }
 
+// ---------- SQL search/date filter helpers (инцидент 2026-08-21) ----------
+// ILIKE-паттерн уже эскейпнут (% и _), только параметризованные запросы —
+// НИКАКОЙ конкатенации q в SQL.
+function escapeLike(s) {
+  return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+// " AND (field1 ILIKE ? OR field2 ILIKE ? ...)" — те же поля, что раньше
+// проверял JS-фильтр (sa/nm/name/number/brand). qPattern повторяется под
+// каждое вхождение — позиционные ? требуют значение на каждое вхождение.
+function searchClause(qPattern, fields) {
+  if (!qPattern) return { sql: "", params: [] };
+  return {
+    sql: " AND (" + fields.map((f) => `${f} ILIKE ?`).join(" OR ") + ")",
+    params: fields.map(() => qPattern),
+  };
+}
+
+// " AND ..." по order_dt (from/to). COALESCE(col,'') воспроизводит старую
+// JS-семантику (i.order_dt || "") >= from — NULL order_dt ведёт себя как ""
+// вместо того, чтобы молча выпасть из сравнения (NULL >= x → NULL → строка
+// потерялась бы без COALESCE).
+function dateClause(col, from, to) {
+  let sql = "";
+  const params = [];
+  if (from) { sql += ` AND COALESCE(${col}, '') >= ?`; params.push(from); }
+  if (to)   { sql += ` AND COALESCE(${col}, '') <= ?`; params.push(to + "T23:59:59"); }
+  return { sql, params };
+}
+
 // ---------- WB ----------
 // WB: order_costs — основа (там все компоненты). JOIN orders для склада/статуса/региона,
 // articles для фото/бренда/имени.
 
-async function collectWB(limit, shopName) {
+async function collectWB(limit, shopName, qPattern, from, to) {
   const db = new DatabaseSync("wb", { readOnly: true });
+  const mainSearch = searchClause(qPattern, ["oc.sa_name", "oc.nm_id::text", "a.name", "oc.srid", "o.brand"]);
+  const mainDate = dateClause("oc.order_dt", from, to);
   const rows = await db.prepare(
     `SELECT oc.srid          AS number,
             oc.nm_id        AS nm,
@@ -137,15 +169,18 @@ async function collectWB(limit, shopName) {
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
+     WHERE 1=1${mainSearch.sql}${mainDate.sql}
      ORDER BY oc.order_dt DESC NULLS LAST
      LIMIT ?`
-  ).all(limit);
+  ).all(...mainSearch.params, ...mainDate.params, limit);
 
   // PENDING-заказы: есть в orders, но ЕЩЁ НЕ дошли до order_costs (заказаны, но не
   // выкуплены/обработаны). order_costs наполняется из финансового report-detail, который
   // появляется только по факту продажи/логистики → свежие «в пути» заказы здесь отсутствуют.
   // Добираем их из orders. Финансовые поля = 0 (нет продажи), себестоимость — из cogs,
   // стоимость заказа = price_with_disc (цена со скидкой, что заплатил покупатель).
+  const pendingSearch = searchClause(qPattern, ["o.supplier_article", "o.nm_id::text", "a.name", "o.srid", "o.brand"]);
+  const pendingDate = dateClause("o.order_dt", from, to);
   const pending = await db.prepare(
     `SELECT o.srid          AS number,
             o.nm_id        AS nm,
@@ -192,9 +227,9 @@ async function collectWB(limit, shopName) {
      -- схемой и живой БД, план «витрина заказов» 2026-08-18, компонента 3) —
      -- в отличие от Ozon-ветки, здесь нет аналога "заказа без товара",
      -- дубли от NULL-сравнения структурно невозможны.
-     WHERE NOT EXISTS (SELECT 1 FROM order_costs oc WHERE oc.srid = o.srid)
+     WHERE NOT EXISTS (SELECT 1 FROM order_costs oc WHERE oc.srid = o.srid)${pendingSearch.sql}${pendingDate.sql}
      ORDER BY o.order_dt DESC`
-  ).all();
+  ).all(...pendingSearch.params, ...pendingDate.params);
 
   const mapped = rows.map((r) => ({
     ...r,
@@ -251,8 +286,10 @@ function wbStatusLabel(r) {
 // точнее (реальная себестоимость на дату продажи), а order_costs.cost —
 // устаревшим до следующего прогона сборщика; сохраняем LATERAL как есть
 // (не отключаем, это осознанное улучшение витрины, а не расхождение).
-async function collectOzon(limit, shopName) {
+async function collectOzon(limit, shopName, qPattern, from, to) {
   const db = new DatabaseSync("ozon", {readOnly:true});
+  const mainSearch = searchClause(qPattern, ["p.offer_id", "oc.product_id::text", "p.name", "oc.posting_number", "p.brand"]);
+  const mainDate = dateClause("oc.order_dt", from, to);
   const rows = await db.prepare(
     `SELECT oc.posting_number AS number,
             oc.product_id     AS nm,
@@ -282,13 +319,16 @@ async function collectOzon(limit, shopName) {
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
+     WHERE 1=1${mainSearch.sql}${mainDate.sql}
      ORDER BY oc.order_dt DESC NULLS LAST
      LIMIT ?`
-  ).all(limit);
+  ).all(...mainSearch.params, ...mainDate.params, limit);
 
   // PENDING-заказы Ozon: orders есть, order_costs ещё нет (свежие/в пути/отменённые-рано).
   // order_costs наполняется из finance/transaction-list с лагом → недавние delivering
   // здесь отсутствуют. Добираем из orders; sale_total/финансы = 0, стоимость = total.
+  const pendingSearch = searchClause(qPattern, ["p.offer_id", "o.product_id::text", "p.name", "o.posting_number", "p.brand"]);
+  const pendingDate = dateClause("o.order_dt", from, to);
   const pending = await db.prepare(
     `SELECT o.posting_number AS number,
             o.product_id     AS nm,
@@ -369,9 +409,9 @@ async function collectOzon(limit, shopName) {
      -- guard'ах (не Nested Loop, перф-урок выше).
      AND NOT EXISTS (SELECT 1 FROM order_costs oc2
                      WHERE oc2.posting_number = o.posting_number
-                       AND oc2.product_id IS NULL)
+                       AND oc2.product_id IS NULL)${pendingSearch.sql}${pendingDate.sql}
      ORDER BY o.order_dt DESC`
-  ).all();
+  ).all(...pendingSearch.params, ...pendingDate.params);
 
   const mapped = rows.map((r) => ({
     ...r,
