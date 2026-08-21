@@ -31,6 +31,8 @@ const ALERT = {
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const r2 = (v) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 100) / 100);
+// round2 — та же формула, что на сервере (route.js), для клиентского пересчёта итогов.
+const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
 const money = (v) => {
   const x = r2(v);
   return x == null ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(x) + " ₽";
@@ -175,6 +177,63 @@ export default function SummaryPage({ cabinetId }) {
     return arr;
   }, [data, brand, group, catSel, shop, q, sort]);
 
+  // Товарный фильтр — сужает `filtered` относительно `data.items` (в отличие
+  // от mp/период, которые уже отражены в самом data.items сервером).
+  const hasProductFilter = brand !== "__all__" || group !== "__all__" ||
+    catSel.size > 0 || shop !== "__all__" || !!q.trim();
+
+  // ⚠️ ФИКС (жалоба владельца): фин-итоги (KPI-плитки + tfoot таблицы) раньше
+  // брались из data.totals — агрегата СЕРВЕРА по ВСЕМ товарам, который ни один
+  // клиентский фильтр не менял. Пересчитываем аддитивные поля по `filtered`
+  // (те же формулы, что server aggTotals в route.js), производные — от
+  // пересчитанных сумм.
+  //
+  // Реклама (adSpend) — ОСОБЫЙ СЛУЧАЙ: totals.adSpend с сервера — это ПОЛНАЯ
+  // кабинетная реклама (daily_metrics/ozon_daily_efficiency за период), а НЕ
+  // Σ item.adSpend — она физически не размазана по SKU (решение владельца).
+  // Поэтому:
+  //  • без товарного фильтра (filtered === все товары периода) — вычитаем
+  //    fullAd из Σ item.profit, воспроизводя серверную композицию totals.profit
+  //    1:1 (дефолтный вид не меняется ни на копейку);
+  //  • при активном товарном фильтре — вычитать ВСЮ кабинетную рекламу из
+  //    прибыли ПОДМНОЖЕСТВА товаров было бы некорректно (реклама не привязана
+  //    к конкретным SKU), поэтому «Прибыль»/tfoot показывают Σ item.profit
+  //    БЕЗ вычета рекламы, с пометкой в title. Плитки «Реклама, ₽» и «ДРР
+  //    (общий)» остаются кабинетными целиком (не фильтруются) — это следует
+  //    из их подписи «общий» — с явной пометкой в title.
+  const filteredTotals = useMemo(() => {
+    const ft = {
+      ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
+      orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
+      acquiring: 0, loyalty: 0, tax: 0, profit: 0, stock: 0, returnLogistics: 0,
+    };
+    for (const i of filtered) {
+      ft.ordered += i.ordered || 0;
+      ft.sold += i.sold || 0;
+      ft.cancelled += i.cancelled || 0;
+      ft.returns += i.returns || 0;
+      ft.selfBuyout += i.selfBuyout || 0;
+      ft.orderRub += i.orderRub || 0;
+      ft.salesRub += i.salesRub || 0;
+      ft.costRub += i.costRub || 0;
+      ft.commission += i.commission || 0;
+      ft.logistics += i.logistics || 0;
+      ft.acquiring += i.acquiring || 0;
+      ft.loyalty += i.loyalty || 0;
+      ft.tax += i.tax || 0;
+      ft.profit += i.profit || 0; // канон: item.profit рекламу не содержит (ads=0)
+      ft.stock += i.stock || 0;
+      ft.returnLogistics += i.returnLogistics || 0;
+    }
+    const fullAd = data?.totals?.adSpend || 0;
+    if (!hasProductFilter) ft.profit = round2(ft.profit - fullAd);
+    ft.buyoutPct = (ft.sold + ft.returns + ft.cancelled) > 0
+      ? round2(100 * ft.sold / (ft.sold + ft.returns + ft.cancelled)) : null;
+    ft.margin = ft.salesRub ? round2(100 * ft.profit / ft.salesRub) : null;
+    ft.avgCheck = ft.ordered ? round2(ft.orderRub / ft.ordered) : null;
+    return ft;
+  }, [filtered, hasProductFilter, data]);
+
   const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageItems = pageSize === 0 ? filtered : filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -202,7 +261,8 @@ export default function SummaryPage({ cabinetId }) {
   if (error) return <Centered>⚠️ Ошибка: {error}</Centered>;
   if (!data) return <Centered>Загрузка сводки по товарам…</Centered>;
 
-  const t = data.totals || {};
+  const t = data.totals || {};   // серверные итоги по ВСЕМ товарам (для кабинетных плиток — реклама/ДРР).
+  const ft = filteredTotals;     // клиентский пересчёт по активным фильтрам (см. useMemo выше).
   const period = data.period || {};
   // Дата снимка остатков Ozon (грабля #139): показываем последнюю доступную дату,
   // т.к. остаток = снапшот и может не совпадать с концом выбранного периода.
@@ -230,19 +290,34 @@ export default function SummaryPage({ cabinetId }) {
 
       {/* KPI-плитки */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <Kpi label="Выручка" value={money(t.salesRub)} />
-        <Kpi label="Прибыль" value={money(t.profit)} color={t.profit >= 0 ? C.pos : C.neg} />
-        <Kpi label="Средняя маржа" value={pct(t.margin)} />
-        <Kpi label="Заказано, шт" value={num(t.ordered)} />
-        <Kpi label="Продано, шт" value={num(t.sold)} />
-        <Kpi label="% выкупа" value={pct(t.buyoutPct)} />
-        <Kpi label="ДРР (общий)" value={t.salesRub ? pct(100 * (t.adSpend || 0) / t.salesRub) : "—"} />
-        <Kpi label="Реклама, ₽" value={money(t.adSpend)} />
+        <Kpi label="Выручка" value={money(ft.salesRub)} />
+        <Kpi
+          label="Прибыль"
+          value={money(ft.profit)}
+          color={(ft.profit || 0) >= 0 ? C.pos : C.neg}
+          title={hasProductFilter
+            ? "По выбранным товарам, БЕЗ вычета рекламы кабинета целиком (реклама не размазывается по SKU)"
+            : "Вкл. вычет полной рекламы кабинета за период (см. плитку «Реклама, ₽»)"}
+        />
+        <Kpi label="Средняя маржа" value={pct(ft.margin)} />
+        <Kpi label="Заказано, шт" value={num(ft.ordered)} />
+        <Kpi label="Продано, шт" value={num(ft.sold)} />
+        <Kpi label="% выкупа" value={pct(ft.buyoutPct)} />
+        <Kpi
+          label="ДРР (общий)"
+          value={t.salesRub ? pct(100 * (t.adSpend || 0) / t.salesRub) : "—"}
+          title="Реклама и выручка — по всему кабинету целиком, фильтрами не меняется"
+        />
+        <Kpi
+          label="Реклама, ₽"
+          value={money(t.adSpend)}
+          title="Реклама всего кабинета за период — не размазывается по товарам, фильтрами не меняется"
+        />
         <Kpi
           label="Кабинетные расходы, ₽"
           value={cab ? money(cab.totals.all) : "…"}
           color={C.neg}
-          title={cab ? `Без привязки к SKU (№27, вкл. хранение): WB ${money(cab.totals.wb)} · Ozon ${money(cab.totals.ozon)} — не входят в маржу товара` : undefined}
+          title={cab ? `Без привязки к SKU (№27, вкл. хранение): WB ${money(cab.totals.wb)} · Ozon ${money(cab.totals.ozon)} — не входят в маржу товара, фильтрами не меняется` : undefined}
         />
       </div>
 
@@ -378,28 +453,33 @@ export default function SummaryPage({ cabinetId }) {
             <tfoot>
               <tr style={{ background: C.surfaceAlt, borderTop: `2px solid ${C.line}` }}>
                 <td style={tdFootL}>Итого ({filtered.length})</td>
-                <td style={tdFootR}>{num(t.ordered)}</td>
-                <td style={tdFootR}>{num(t.sold)}</td>
-                <td style={tdFootR}>{num(t.cancelled)}</td>
-                <td style={tdFootR}>{num(t.returns)}</td>
-                <td style={{ ...tdFootR, color: t.returnLogistics > 0 ? C.neg : C.faint }}>{money(t.returnLogistics)}</td>
-                <td style={tdFootR}>{num(t.stock)}</td>
-                <td style={tdFootR}>{pct(t.buyoutPct)}</td>
+                <td style={tdFootR}>{num(ft.ordered)}</td>
+                <td style={tdFootR}>{num(ft.sold)}</td>
+                <td style={tdFootR}>{num(ft.cancelled)}</td>
+                <td style={tdFootR}>{num(ft.returns)}</td>
+                <td style={{ ...tdFootR, color: ft.returnLogistics > 0 ? C.neg : C.faint }}>{money(ft.returnLogistics)}</td>
+                <td style={tdFootR}>{num(ft.stock)}</td>
+                <td style={tdFootR}>{pct(ft.buyoutPct)}</td>
                 <td style={tdFootR}>—</td>
-                <td style={tdFootR}>{money(t.orderRub)}</td>
-                <td style={tdFootR}>{money(t.avgCheck)}</td>
-                <td style={tdFootR}>{money(t.salesRub)}</td>
-                <td style={tdFootR}>{money(t.costRub)}</td>
-                <td style={tdFootR}>{money(t.commission)}</td>
+                <td style={tdFootR}>{money(ft.orderRub)}</td>
+                <td style={tdFootR}>{money(ft.avgCheck)}</td>
+                <td style={tdFootR}>{money(ft.salesRub)}</td>
+                <td style={tdFootR}>{money(ft.costRub)}</td>
+                <td style={tdFootR}>{money(ft.commission)}</td>
                 <td style={tdFootR}>—</td>
-                <td style={tdFootR}>{money(t.logistics)}</td>
-                <td style={tdFootR}>{money(t.acquiring)}</td>
-                <td style={tdFootR}>{money(t.adSpend)}</td>
-                <td style={tdFootR}>{money(t.loyalty)}</td>
-                <td style={tdFootR}>{money(t.tax)}</td>
-                <td style={{ ...tdFootR, fontWeight: 800, color: t.profit >= 0 ? C.pos : C.neg }}>{money(t.profit)}</td>
+                <td style={tdFootR}>{money(ft.logistics)}</td>
+                <td style={tdFootR}>{money(ft.acquiring)}</td>
+                <td style={tdFootR} title="Реклама всего кабинета — не размазывается по товарам, фильтрами не меняется">{money(t.adSpend)}</td>
+                <td style={tdFootR}>{money(ft.loyalty)}</td>
+                <td style={tdFootR}>{money(ft.tax)}</td>
+                <td
+                  style={{ ...tdFootR, fontWeight: 800, color: (ft.profit || 0) >= 0 ? C.pos : C.neg }}
+                  title={hasProductFilter
+                    ? "По выбранным товарам, БЕЗ вычета рекламы кабинета целиком"
+                    : "Вкл. вычет полной рекламы кабинета за период"}
+                >{money(ft.profit)}</td>
                 <td style={tdFootR}>—</td>
-                <td style={tdFootR}>{pct(t.margin)}</td>
+                <td style={tdFootR}>{pct(ft.margin)}</td>
                 <td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td>
                 <td style={tdFootR}>—</td>
               </tr>
@@ -595,12 +675,12 @@ function Td({ children, right, left, mono, title, style }) {
 const tdFootL = { padding: "10px 8px", fontSize: 12.5, fontWeight: 800, color: C.ink, textAlign: "left", whiteSpace: "nowrap" };
 const tdFootR = { padding: "10px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
-function Kpi({ label, value, color }) {
+function Kpi({ label, value, color, title }) {
   return (
     <div style={{
       padding: "12px 16px", borderRadius: 10, background: C.surface,
       border: `1px solid ${C.line}`, minWidth: 130,
-    }}>
+    }} title={title}>
       <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
     </div>
