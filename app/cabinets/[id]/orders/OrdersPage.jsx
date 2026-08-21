@@ -31,10 +31,14 @@ const STATUS_COLORS = {
 export default function OrdersPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [mp, setMp] = useState("all");        // all | wb | ozon
   const [status, setStatus] = useState("all"); // all | delivered | delivering | cancelled | return
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
   // Фильтры: период, бренд, группа товаров, № заказа, магазин, № поставки.
+  // brand/group/shop/orderNum/postingId остаются локальными — сервер
+  // (route.js) их не принимает, фильтруются по уже полученной странице.
   const [brand, setBrand] = useState("__all__");
   const [group, setGroup] = useState("__all__");
   const [shop, setShop] = useState("__all__");
@@ -43,12 +47,33 @@ export default function OrdersPage({ cabinetId }) {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  // Поиск дебаунсится (300 мс), чтобы не молотить сервер на каждый символ.
   useEffect(() => {
-    fetch(`/api/cabinets/${cabinetId}/orders?limit=1000`)
+    const t = setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // q / from / to / platform / status уходят на сервер (см. route.js) —
+  // иначе поиск/период работают только по первым 1000 строк окна выдачи
+  // (order_dt DESC), что и было причиной инцидента «поиск — 1 строка».
+  const api = useMemo(() => {
+    const p = new URLSearchParams({ limit: "1000" });
+    if (mp !== "all") p.set("platform", mp);
+    if (status !== "all") p.set("status", status);
+    if (debouncedQ) p.set("q", debouncedQ);
+    if (dateFrom) p.set("from", dateFrom);
+    if (dateTo) p.set("to", dateTo);
+    return `/api/cabinets/${cabinetId}/orders?${p.toString()}`;
+  }, [cabinetId, mp, status, debouncedQ, dateFrom, dateTo]);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(api)
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setData(d)))
-      .catch((e) => setError(String(e)));
-  }, [cabinetId]);
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [api]);
 
   // Фасеты: уникальные значения для дропдаунов brand / subject / shop, считаются
   // из исходной выборки data.items (до фильтрации), чтобы опции не «прыгали».
@@ -67,23 +92,15 @@ export default function OrdersPage({ cabinetId }) {
     };
   }, [data]);
 
+  // mp/status/q/dateFrom/dateTo уже отфильтрованы сервером (см. api выше) —
+  // здесь остаётся только локальная фильтрация по полям, которых нет в
+  // параметрах route.js (brand/group/shop/orderNum/postingId).
   const filtered = useMemo(() => {
     if (!data?.items) return [];
     let arr = data.items;
-    if (mp !== "all") arr = arr.filter((i) => i.platform === mp);
-    if (status !== "all") arr = arr.filter((i) => i.statusGroup === status);
     if (brand !== "__all__") arr = arr.filter((i) => i.brand === brand);
     if (group !== "__all__") arr = arr.filter((i) => i.subject === group);
     if (shop !== "__all__") arr = arr.filter((i) => i.shop === shop);
-    if (q.trim()) {
-      const s = q.trim().toLowerCase();
-      arr = arr.filter((i) =>
-        String(i.sa || "").toLowerCase().includes(s) ||
-        String(i.nm || "").includes(s) ||
-        String(i.name || "").toLowerCase().includes(s) ||
-        String(i.brand || "").toLowerCase().includes(s)
-      );
-    }
     if (orderNum.trim()) {
       const s = orderNum.trim().toLowerCase();
       arr = arr.filter((i) => String(i.number || "").toLowerCase().includes(s));
@@ -92,11 +109,8 @@ export default function OrdersPage({ cabinetId }) {
       const s = postingId.trim().toLowerCase();
       arr = arr.filter((i) => String(i.posting_id || "").toLowerCase().includes(s));
     }
-    // Период по дате заказа (от/до включительно).
-    if (dateFrom) arr = arr.filter((i) => (i.order_dt || "") >= dateFrom);
-    if (dateTo)   arr = arr.filter((i) => (i.order_dt || "") <= dateTo + "T23:59:59");
     return arr;
-  }, [data, mp, status, q, brand, group, shop, orderNum, postingId, dateFrom, dateTo]);
+  }, [data, brand, group, shop, orderNum, postingId]);
 
   const hasActiveFilters = mp !== "all" || status !== "all" || q.trim() ||
     brand !== "__all__" || group !== "__all__" || shop !== "__all__" ||
@@ -134,6 +148,7 @@ export default function OrdersPage({ cabinetId }) {
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>Заказы</h1>
         <p style={{ margin: "3px 0 0", color: C.muted, fontSize: 13 }}>
           Журнал заказов WB + Ozon. {filtered.length} из {data.items.length}. Включая заказанные, но ещё не выкупленные («Доставляется»). Логистика/комиссия появляются по факту списания (для «в пути» = 0).
+          {loading && <span style={{ marginLeft: 8, color: C.faint }}>Обновление…</span>}
         </p>
       </div>
 
