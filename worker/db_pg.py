@@ -1090,6 +1090,87 @@ def upsert_ozon_cabinet_costs_many(rows, date_from, date_to):
     return len(rows)
 
 
+# --- sku_ad (реклама по товарам Ozon) ---
+_OZ_SKU_AD_COLS = ["date", "campaign_id", "sku", "product_id", "spend",
+                   "views", "clicks", "ordered_units", "ordered_amount"]
+
+
+def upsert_ozon_sku_ad_many(rows, date_from, date_to):
+    """Batch DELETE+INSERT рекламы Ozon товар×день×кампания
+    (tenant.ozon_daily_sku_ad, миграция 043). Источник — async-отчёт
+    Performance API groupBy=DATE (сборщик ozon_sku_ad). Идемпотентность
+    пересборки окна ТРЕБУЕТ DELETE перед INSERT: кампания, переставшая
+    отдаваться отчётом (расход обнулён/пересчитан Озоном), должна исчезнуть
+    из окна, а не остаться от прошлого прогона. DELETE и INSERT — одна
+    транзакция (get_connection коммитит на выходе): упавший прогон не
+    оставляет дыру вместо данных."""
+    cid = _cabinet_id()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    all_cols = ["cabinet_id"] + _OZ_SKU_AD_COLS + ["updated_at"]
+    placeholders = ", ".join(["%s"] * len(all_cols))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in _OZ_SKU_AD_COLS[1:] + ["updated_at"])
+    sql = (f"INSERT INTO tenant.ozon_daily_sku_ad ({', '.join(all_cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (cabinet_id, date, campaign_id, sku) DO UPDATE SET {upd}")
+    batch = [[cid] + [r.get(c) for c in _OZ_SKU_AD_COLS] + [now] for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if date_from and date_to:
+                cur.execute(
+                    "DELETE FROM tenant.ozon_daily_sku_ad "
+                    "WHERE cabinet_id = %s AND date >= %s AND date <= %s",
+                    [cid, date_from, date_to],
+                )
+            if batch:
+                cur.executemany(sql, batch)
+    return len(rows)
+
+
+def recompute_ozon_daily_ad(date_from, date_to):
+    """Пересчёт товарных рекламных метрик tenant.ozon_daily_metrics
+    (ad_spend/ad_views/ad_clicks/ad_orders) SQL-суммой из
+    tenant.ozon_daily_sku_ad по (product_id, date) внутри окна. Колонки
+    ad_* в ozon_daily_metrics никем больше не пишутся (ozon_metrics пишет
+    только clicks/orders/cart — проверено grep 2026-08-21), владелец
+    колонок — этот пересчёт. Сначала NULL-им ad_* всего окна (товар,
+    выпавший из рекламы после пересборки, не должен возить старый расход),
+    затем upsert свежих сумм; upsert, НЕ update-only — день с рекламой без
+    заказов создаёт свою строку сам (грабля ozon_efficiency 2026-08-17).
+    product_id IS NULL (не отрезолвленный sku) в товарные метрики не
+    попадает — расход остаётся видимым в сыром слое и в кабинетном итоге."""
+    cid = _cabinet_id()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE tenant.ozon_daily_metrics SET ad_spend=NULL, ad_views=NULL, "
+                "ad_clicks=NULL, ad_orders=NULL, updated_at=%s "
+                "WHERE cabinet_id = %s AND date >= %s AND date <= %s AND ad_spend IS NOT NULL",
+                [now, cid, date_from, date_to],
+            )
+            cur.execute(
+                "SELECT product_id, date::text AS d, SUM(spend) AS spend, "
+                "SUM(views) AS views, SUM(clicks) AS clicks, SUM(ordered_units) AS ord "
+                "FROM tenant.ozon_daily_sku_ad "
+                "WHERE cabinet_id = %s AND product_id IS NOT NULL "
+                "AND date >= %s AND date <= %s "
+                "GROUP BY product_id, date",
+                [cid, date_from, date_to],
+            )
+            sums = cur.fetchall()
+            for r in sums:
+                cur.execute(
+                    "INSERT INTO tenant.ozon_daily_metrics "
+                    "(cabinet_id, product_id, date, ad_spend, ad_views, ad_clicks, ad_orders, updated_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (cabinet_id, product_id, date) DO UPDATE SET "
+                    "ad_spend=EXCLUDED.ad_spend, ad_views=EXCLUDED.ad_views, "
+                    "ad_clicks=EXCLUDED.ad_clicks, ad_orders=EXCLUDED.ad_orders, "
+                    "updated_at=EXCLUDED.updated_at",
+                    [cid, r["product_id"], r["d"], r["spend"], r["views"], r["clicks"], r["ord"], now],
+                )
+    return len(sums)
+
+
 # --- cogs (себестоимость Ozon) ---
 def upsert_ozon_cogs(product_id, cost):
     cid = _cabinet_id()
