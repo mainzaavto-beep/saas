@@ -11,12 +11,13 @@
 //
 //   Check 1 (кампания×день): Σ ozon_daily_sku_ad.spend ПРОТИВ
 //     ozon_daily_campaign_ad.spend по каждой паре (campaign_id, date), где
-//     есть хоть одна из сторон. Кампанийная таблица полнее (строки
-//     «Корректировка» и кампании без товарной разбивки живут только в ней),
-//     поэтому sku_sum <= campaign.spend + допуск ожидаемо; sku_sum ЗАМЕТНО
-//     БОЛЬШЕ кампании — всегда FAIL (это уже не «недостача разбивки», а
-//     лишние деньги в товарном слое). Допуск: |Δ| <= max(1% от
-//     campaign.spend, 50 ₽).
+//     есть хоть одна из сторон. Проверка ОДНОСТОРОННЯЯ (не |Δ|): кампанийная
+//     таблица полнее (строки «Корректировка» и кампании без товарной
+//     разбивки живут только в ней) — sku_sum МЕНЬШЕ campaign.spend (вплоть
+//     до нуля на отдельных кампания×день) ожидаемо и НЕ FAIL. FAIL — только
+//     sku_sum ЗАМЕТНО БОЛЬШЕ кампании (sku_sum − campaign.spend > допуск):
+//     это уже не «недостача разбивки», а лишние деньги в товарном слое.
+//     Допуск: max(1% от campaign.spend, 50 ₽).
 //   Check 2 (день, товарный слой): Σ ozon_daily_metrics.ad_spend по товарам
 //     за день <= Σ ozon_daily_campaign_ad.spend за день + тот же допуск —
 //     товарный ad_spend (пересчитан из ozon_daily_sku_ad, см.
@@ -138,17 +139,19 @@ try {
       const campaignSpend = num(r.campaign_spend);
       const delta = skuSum - campaignSpend;
       const tol = Math.max(TOL_PCT * campaignSpend, TOL_FLOOR_RUB);
-      // sku_sum заметно БОЛЬШЕ кампании — всегда FAIL (лишние деньги в
-      // товарном слое); sku_sum МЕНЬШЕ кампании — ожидаемо (корректировки/
-      // кампании без разбивки), допуск в обе стороны тот же порог.
-      if (Math.abs(delta) > tol) {
+      // ОДНОСТОРОННЯЯ проверка (см. докстринг файла): sku_sum МЕНЬШЕ
+      // кампании — ожидаемо (корректировки/кампании без товарной разбивки
+      // живут только в campaign_ad), НЕ FAIL сколько угодно. sku_sum
+      // ЗАМЕТНО БОЛЬШЕ кампании (delta > допуск) — лишние деньги в товарном
+      // слое, всегда FAIL.
+      if (delta > tol) {
         c1bad.push({ campaign_id: r.campaign_id, date: r.date, skuSum, campaignSpend, delta });
       }
     }
     verdict(
-      'Check 1 — Σ sku_ad.spend против campaign_ad.spend по (campaign_id, date), допуск max(1%, 50₽)',
+      'Check 1 — sku_ad.spend не превышает campaign_ad.spend по (campaign_id, date), допуск max(1%, 50₽)',
       c1bad.length === 0,
-      `пар вне допуска: ${c1bad.length} из ${c1rows.length}`
+      `пар с превышением: ${c1bad.length} из ${c1rows.length}`
     );
     if (c1bad.length) {
       c1bad.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
