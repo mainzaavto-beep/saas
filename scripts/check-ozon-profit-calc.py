@@ -1164,6 +1164,127 @@ def main():
           "(is_return=0, фикс 20a) -> cost == 0.0, как раньше",
           r_cancelled is not None and r_cancelled["cost"] == 0.0, r_cancelled)
 
+    # --- 22. ВОЗВРАТ ЧЕРЕЗ ПОЛНОЕ СТОРНО (находка владельца, заказ
+    #     0131642813-0453-1, 2026-08-21): >1 commission-блока, чистая Σ
+    #     seller_price ≈ 0 (допуск 0,01) при наличии отрицательного блока ->
+    #     is_return=1 (см. is_return в build_order_costs, третья ветка).
+    #     Контролёр (saas_ro): 20 строк / 12 485 ₽ кабинета 1 попадали под
+    #     этот класс (>1 commission-блока, |Σ seller_price| < 0,01,
+    #     is_return=0, cost>0) — cost списывался вопреки политике владельца
+    #     («cost=0 на возврате», 5a3221d), потому что ни первая ветка (коды
+    #     45/59 среди строк юнита), ни вторая (commission_accrued_sum < 0,
+    #     строго отрицательный итог) не ловят блоки, которые гасят друг
+    #     друга РОВНО в ноль, а не уходят в минус.
+
+    # 22a. Эталонный кейс (буквально из находки владельца, числа сведены):
+    #     10.08 commission-блок seller_price=+1378 (продажа), 17.08 второй
+    #     commission-блок seller_price=-1378 (полное сторно) — sale_commission
+    #     обнулена в обоих блоках (фикстура ради простоты не моделирует
+    #     отдельно комиссию/её реверс, только сумму реализации, как в
+    #     формулировке владельца) + возвратные сборы ITEM 38 (PackageCost)/
+    #     39 (PackingFee) — bucket 'logistics' (НЕ RETURN_TYPE_IDS={45,59}),
+    #     поэтому return_dates остаётся пуст, ветка 1 не срабатывает; сумма
+    #     commission-блоков (0) не строго отрицательна — ветка 2 тоже не
+    #     срабатывает. cost_overrides=730 (как у владельца) — ДО фикса
+    #     profit = -127.28 (sum_accrued) - 730 = -857.28; ПОСЛЕ — cost=0,
+    #     profit = -127.28.
+    full_storno_rows = [
+        {"unit_number": "0131642813-0453-1", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": 1378.0, "date": "2026-08-10",
+         "seller_price": 1378.0, "sale_price": 1378.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "0131642813-0453-1", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": -1378.0, "date": "2026-08-17",
+         "seller_price": -1378.0, "sale_price": -1378.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "0131642813-0453-1", "accrued_category": "ITEM", "type_id": 38,
+         "sku": 1, "accrued": -100.00, "date": "2026-08-17",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": "0131642813-0453-1", "accrued_category": "ITEM", "type_id": 39,
+         "sku": 1, "accrued": -27.28, "date": "2026-08-17",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    COGS_MAP_22 = {42: 730.0}
+    r_full_storno = build_order_costs(full_storno_rows, {"product_id": 42, "qty": 1},
+                                       COGS_MAP_22, today=MATURE_TODAY)
+    check("полное сторно (22a, эталон 0131642813-0453-1): 2 commission-блока, "
+          "Σ seller_price == 0 -> is_return == 1",
+          r_full_storno is not None and r_full_storno["is_return"] == 1, r_full_storno)
+    check("полное сторно (22a): cost == 0.0 (COGS не списывается, было бы 730)",
+          r_full_storno is not None and r_full_storno["cost"] == 0.0, r_full_storno)
+    check("полное сторно (22a): profit == sum_accrued (-127.28 = 1378 - 1378 - 100 - 27.28), "
+          "было бы -857.28 (-127.28 - 730) до фикса",
+          r_full_storno is not None and r_full_storno["profit"] == -127.28, r_full_storno)
+    check("полное сторно (22a): согласованность компонент == SUM(accrued) (допуск 0,01)",
+          r_full_storno is not None
+          and abs(comps_of(r_full_storno) - sum_accrued(full_storno_rows)) < 0.01,
+          (comps_of(r_full_storno) if r_full_storno else None, sum_accrued(full_storno_rows)))
+
+    # 22b. Частичное сторно/корректировка цены (НЕ путать с полным сторно):
+    #     блоки +1378 / -400 -> Σ seller_price = 978 (не ≈ 0) -> остаётся
+    #     продажей, cost списывается как обычно.
+    partial_storno_rows = [
+        {"unit_number": "TEST-PARTIAL-STORNO-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": 1378.0, "date": "2026-08-10",
+         "seller_price": 1378.0, "sale_price": 1378.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-PARTIAL-STORNO-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": -400.0, "date": "2026-08-17",
+         "seller_price": -400.0, "sale_price": -400.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+    ]
+    r_partial_storno = build_order_costs(partial_storno_rows, {"product_id": 999, "qty": 1},
+                                          COGS_MAP_20, today=MATURE_TODAY)
+    check("частичное сторно (22b регресс): 2 commission-блока, Σ seller_price == 978 "
+          "(не ≈ 0) -> is_return == 0 (остаётся продажей)",
+          r_partial_storno is not None and r_partial_storno["is_return"] == 0, r_partial_storno)
+    check("частичное сторно (22b регресс): cost_value_retail == 978.0 (Σ seller_price)",
+          r_partial_storno is not None and r_partial_storno["cost_value_retail"] == 978.0,
+          r_partial_storno)
+    check("частичное сторно (22b регресс): cost == 1540.0 (COGS списывается как на продаже)",
+          r_partial_storno is not None and r_partial_storno["cost"] == 1540.0, r_partial_storno)
+    check("частичное сторно (22b регресс): profit == sum_accrued - cost (978 - 1540 = -562.0)",
+          r_partial_storno is not None and r_partial_storno["profit"] == -562.0, r_partial_storno)
+
+    # 22c. Легитимные множественные commission-блоки склеенной семьи с
+    #     net > 0 (мультитоварное отправление, тот же класс, что тест 8) —
+    #     не должно путаться с полным сторно: Σ seller_price = 1500 (не ≈ 0)
+    #     -> is_return остаётся 0.
+    glued_family_rows = [
+        {"unit_number": "TEST-GLUED-FAMILY-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": 800.0, "date": "2026-08-10",
+         "seller_price": 800.0, "sale_price": 800.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-GLUED-FAMILY-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 2, "accrued": 700.0, "date": "2026-08-10",
+         "seller_price": 700.0, "sale_price": 700.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+    ]
+    r_glued_family = build_order_costs(glued_family_rows, {"product_id": 999, "qty": 2},
+                                        COGS_MAP_20, today=MATURE_TODAY)
+    check("склеенная семья, net > 0 (22c регресс): 2 commission-блока (разные sku), "
+          "Σ seller_price == 1500 (не ≈ 0) -> is_return == 0",
+          r_glued_family is not None and r_glued_family["is_return"] == 0, r_glued_family)
+    check("склеенная семья, net > 0 (22c регресс): cost == 1540.0 (продажа, COGS списывается)",
+          r_glued_family is not None and r_glued_family["cost"] == 1540.0, r_glued_family)
+
+    # 22d. Регресс: правило 45/59 (return_dates, ветка 1) не затронуто новой
+    #     веткой — юнит 2 (r2, п.2) по-прежнему is_return=1 через коды 45/59,
+    #     а не через новую ветку (у него всего 1 commission-блок, новая
+    #     ветка физически не может сработать — len(commission_rows) > 1
+    #     обязателен).
+    check("регресс 45/59 (22d): возвратное отправление (r2, п.2) по-прежнему is_return == 1 "
+          "через RETURN_TYPE_IDS, не через новую ветку", r2["is_return"] == 1, r2)
+    # 22e. Регресс: правило «отрицательный единственный commission-блок»
+    #     (ветка 2, commission_accrued_sum < 0) не затронуто — юнит 20d
+    #     (1 commission-блок, отрицательный) по-прежнему is_return=1 через
+    #     ветку 2 (новая ветка требует len(commission_rows) > 1).
+    check("регресс отрицательного единственного блока (22e): возврат с 1 commission-блоком "
+          "(20d, r_return_comm) по-прежнему is_return == 1 через ветку 2",
+          r_return_comm["is_return"] == 1, r_return_comm)
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")

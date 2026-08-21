@@ -126,6 +126,11 @@ ALLOWED_TARGET_TABLES = {"tenant.ozon_order_costs", "tenant.ozon_order_costs_sha
 
 _CONSISTENCY_TOLERANCE = 0.01
 _INVARIANT_TOLERANCE = 0.01
+# Допуск «полного сторно» через пару (и более) commission-блоков — находка
+# владельца, заказ 0131642813-0453-1, 2026-08-21 (см. is_return в
+# build_order_costs). Та же величина 0.01, что у остальных допусков модуля —
+# отдельная константа ради самостоятельного имени/комментария в диффе.
+_RETURN_NET_TOLERANCE = 0.01
 
 # Порог зрелости юнита БЕЗ commission-блока (задача 6 плана «ремонт данных
 # прибыли Ozon», round 3 фикс — владелец нашёл: 350 строк августа кабинета 1
@@ -404,11 +409,25 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # docs/superpowers/specs/2026-08-15-ozon-profit-switch-design.md.
 
     commission_accrued_sum = sum(_num(r.get("accrued")) for r in commission_rows)
+    seller_price_sum = sum(_num(r.get("seller_price")) for r in commission_rows)
 
     # is_return: коды 45/59 (RETURN_TYPE_IDS) ИЛИ отрицательный commission-блок
-    # (реверс уже начисленной продажи, суммарно по ВСЕМ commission-строкам).
-    # Отсутствие commission-блока САМО ПО СЕБЕ возвратом не считается (фикс
-    # эвристики ±835 ₽ из дизайн-дока — "нулевые" отправления: чистые
+    # (реверс уже начисленной продажи, суммарно по ВСЕМ commission-строкам)
+    # ИЛИ ПОЛНОЕ СТОРНО через ПАРУ (и более) commission-блоков (находка
+    # владельца, заказ 0131642813-0453-1, 2026-08-21): 10.08 блок +1378
+    # (продажа), 17.08 второй блок −1378 (сторно) + возвратные сборы ITEM
+    # 38/39 (PackageCost/PackingFee — bucket 'logistics', НЕ RETURN_TYPE_IDS,
+    # см. ozon_profit_map.py) — ни первая, ни вторая ветка выше это НЕ ловят:
+    # commission_accrued_sum ≈ 0 (не < 0 — блоки гасят друг друга ровно, не
+    # уходят в минус), поэтому вторая ветка молчит; RETURN_TYPE_IDS среди
+    # строк тоже нет. Признак: >1 commission-блока И чистая Σ seller_price
+    # ≈ 0 (допуск _RETURN_NET_TOLERANCE) И среди блоков есть отрицательный
+    # (иначе Σ≈0 при ВСЕХ неотрицательных блоках — вырожденный случай нулевых
+    # цен, не сторно). НЕ путать с частичным сторно/корректировкой цены (пара
+    # блоков вида +1378/−400 → Σ=978, не ≈0 — остаётся продажей с cost) и с
+    # легитимной склейкой семьи из НЕСКОЛЬКИХ товаров отправления (Σ>0 — тоже
+    # не ≈0). Отсутствие commission-блока САМО ПО СЕБЕ возвратом не считается
+    # (фикс эвристики ±835 ₽ из дизайн-дока — "нулевые" отправления: чистые
     # сервисные/комиссионные строки без продажи на этом дне, is_return
     # остаётся 0).
     is_return = 0
@@ -422,8 +441,15 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
         commission_dates = [_row_date(r.get("date")) for r in commission_rows
                              if r.get("date") is not None]
         return_dt = min(commission_dates) if commission_dates else None
+    elif (len(commission_rows) > 1
+          and abs(seller_price_sum) <= _RETURN_NET_TOLERANCE
+          and any(_num(r.get("seller_price")) < 0 for r in commission_rows)):
+        is_return = 1
+        commission_dates = [_row_date(r.get("date")) for r in commission_rows
+                             if r.get("date") is not None]
+        return_dt = min(commission_dates) if commission_dates else None
 
-    seller_price = sum(_num(r.get("seller_price")) for r in commission_rows)
+    seller_price = seller_price_sum
     commission_raw = sum(_num(r.get("sale_commission")) for r in commission_rows)
     sale_dates = [_row_date(r.get("date")) for r in commission_rows if r.get("date") is not None]
     sale_dt = min(sale_dates) if sale_dates else None
