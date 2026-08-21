@@ -286,6 +286,21 @@ function wbStatusLabel(r) {
 // точнее (реальная себестоимость на дату продажи), а order_costs.cost —
 // устаревшим до следующего прогона сборщика; сохраняем LATERAL как есть
 // (не отключаем, это осознанное улучшение витрины, а не расхождение).
+//
+// ⚠️ ФИКС фантомного COGS (находка владельца, заказ 09609165-0986-1,
+// 2026-08-21): oc.cost = 0 у сборщика ТЕПЕРЬ означает "продажи не было —
+// списывать нечего" (worker/collectors/ozon_order_costs.py::build_order_costs,
+// has_sale), а НЕ "себестоимость неизвестна" (это по-прежнему NULL). ДО этого
+// уточнения LATERAL безусловно переоткрывала cost_overrides по product_id/дате
+// НЕЗАВИСИМО от oc.cost — живой пример: order_costs.cost=0 (отменённый юнит,
+// продажи не было), но эта LATERAL всё равно находила cost_overrides=1540 для
+// товара и подставляла его в витрину, воскрешая фантомный убыток, который
+// коллектор уже честно занулил (наблюдалось на 09609165-0986-1: витрина
+// показывала cost=1540/profit=-1540 ПОСЛЕ фикса коллектора, хотя сама
+// order_costs.cost/profit в БД уже были 0/0). `oc.cost IS DISTINCT FROM 0` —
+// LATERAL пропускается ИМЕННО когда сборщик явно занулил cost (сигнал «нет
+// продажи»); NULL (сборщик не резолвил cost_overrides вовсе) по-прежнему
+// IS DISTINCT FROM 0 = true, LATERAL продолжает работать как раньше.
 async function collectOzon(limit, shopName, qPattern, from, to) {
   const db = new DatabaseSync("ozon", {readOnly:true});
   const mainSearch = searchClause(qPattern, ["p.offer_id", "oc.product_id::text", "p.name", "oc.posting_number", "p.brand"]);
@@ -302,6 +317,7 @@ async function collectOzon(limit, shopName, qPattern, from, to) {
             p.category        AS subject,
             p.im_url          AS im_url,
             oc.order_dt, oc.sale_dt, oc.return_dt, o.cancel_dt, o.status AS order_status,
+            o.is_cancel       AS order_is_cancel,
             oc.is_return, oc.self_buyout,
             oc.qty,
             COALESCE(co.cost, oc.cost) AS cost,
@@ -316,6 +332,7 @@ async function collectOzon(limit, shopName, qPattern, from, to) {
      LEFT JOIN LATERAL (
        SELECT cost FROM tenant.cost_overrides
        WHERE product_id = oc.product_id AND platform = 'ozon'
+         AND oc.cost IS DISTINCT FROM 0
          AND effective_from <= COALESCE(substr(oc.sale_dt,1,10)::date, substr(oc.order_dt,1,10)::date, current_date)
        ORDER BY effective_from DESC LIMIT 1
      ) co ON true
@@ -443,19 +460,36 @@ async function collectOzon(limit, shopName, qPattern, from, to) {
 // т.к. Python-сборщик и Node-роут не делят код).
 const IN_TRANSIT_ORDER_STATUSES = new Set(["delivering", "awaiting_packaging", "awaiting_deliver"]);
 
+// Инцидент 2026-08-21 (находка владельца): status='cancelled' (или
+// is_cancel=1) из JOIN-а orders раньше НЕ проверялся вовсе — только
+// sale_dt (из order_costs) и мёртвый o.cancel_dt (worker/collectors/
+// ozon_orders.py:80 пишет cancel_dt = last_change_dt ТОЛЬКО когда
+// is_cancel уже взведён, но сам is_cancel в главный SELECT этого роута не
+// попадал вовсе — cancel_dt как единственный сигнал НЕ отражал реальные
+// отмены надёжно). Итог: отменённый заказ с уже проставленным sale_dt
+// (unit_number сначала получил дату продажи по начислениям, потом Ozon
+// его отменил/невыкуп) показывался "Доставлен". Статус ordersо ВСЕГДА
+// приоритетнее sale_dt — источник истины по факту отмены, а не по
+// финансовой дате начисления.
+function isOzonCancelled(r) {
+  return r.order_status === "cancelled" || r.order_is_cancel === 1;
+}
 function ozonStatusGroup(r) {
   if (r.is_return === 1) return "return";
+  if (isOzonCancelled(r)) return "cancelled";
   // Строка с sale_dt, но заказ ПО СТАТУСУ ozon_orders всё ещё в пути (после
   // F3 в сборщике — редкий остаток: рассинхрон заказа/начислений, не
   // штатный случай) НЕ должна показывать "доставлен".
   if (r.sale_dt && !IN_TRANSIT_ORDER_STATUSES.has(r.order_status)) return "delivered";
   // Ozon: есть явный статус в orders.status, но в order_costs его нет —
-  // используем эвристику по датам
+  // используем эвристику по датам (cancel_dt — вспомогательный fallback,
+  // см. докстроку isOzonCancelled: обычно уже покрыт status/is_cancel выше).
   if (r.cancel_dt) return "cancelled";
   return "delivering";
 }
 function ozonStatusLabel(r) {
   if (r.is_return === 1) return "Возврат";
+  if (isOzonCancelled(r)) return "Отменён";
   if (r.sale_dt && !IN_TRANSIT_ORDER_STATUSES.has(r.order_status)) return "Доставлен";
   if (r.cancel_dt) return "Отменён";
   return "Доставляется";

@@ -969,6 +969,101 @@ def main():
           IN_TRANSIT_ORDER_STATUSES == frozenset({"delivering", "awaiting_packaging", "awaiting_deliver"}),
           IN_TRANSIT_ORDER_STATUSES)
 
+    # --- 20. ФИКС ФАНТОМНОГО COGS (находка владельца, заказ 09609165-0986-1,
+    #     2026-08-21): cost списывается ТОЛЬКО при ФАКТИЧЕСКОЙ продаже
+    #     (есть commission-блок) — юниты без единой продажи (отменённые/
+    #     невыкупленные/чисто сервисные) НЕ должны терять себестоимость.
+    #     Костс-мэп ниже сознательно НЕПУСТОЙ (999: 1540.0) — это ключевое
+    #     отличие от прежних тестов (использовавших {}), где cost и раньше
+    #     был None по совпадению отсутствия override, а не по признаку
+    #     «продажи не было»: без этого различия регресс фикса был бы
+    #     незаметен тесту.
+    COGS_MAP_20 = {999: 1540.0}
+
+    # 20a. Живой пример владельца: отменённый юнит, начисления сальдо ~0
+    #     (эквайринг +30,51/−30,51, взаимно гасятся), БЕЗ commission-блока,
+    #     is_return=0. ДО фикса: cost=1540 списывался всегда -> profit=−1540
+    #     без всякой продажи. ПОСЛЕ фикса: cost=0, profit=0 (== sum_accrued).
+    cancelled_rows = [
+        {"unit_number": "TEST-CANCELLED-0001", "accrued_category": "ITEM", "type_id": 1,
+         "sku": 1, "accrued": 30.51, "date": "2026-08-01",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+        {"unit_number": "TEST-CANCELLED-0001", "accrued_category": "ITEM", "type_id": 1,
+         "sku": 1, "accrued": -30.51, "date": "2026-08-01",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_cancelled = build_order_costs(cancelled_rows, {"product_id": 999, "qty": 1}, COGS_MAP_20,
+                                     today=MATURE_TODAY)
+    check("фикс COGS (20a): отменённый юнит (нулевые начисления, без commission-блока) -> "
+          "cost == 0.0 (не 1540, несмотря на cost_overrides)",
+          r_cancelled is not None and r_cancelled["cost"] == 0.0, r_cancelled)
+    check("фикс COGS (20a): отменённый юнит -> profit == 0.0 (== sum_accrued, было бы −1540)",
+          r_cancelled is not None and r_cancelled["profit"] == 0.0, r_cancelled)
+
+    # 20b. Сервисный юнит: без commission-блока, БЕЗ 45/59 (не возврат),
+    #     ненулевые начисления (например, чистая логистическая корректировка
+    #     без факта продажи). profit == SUM(accrued), БЕЗ вычета COGS.
+    service_rows = [
+        {"unit_number": "TEST-SERVICE-0001", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -45.0, "date": "2026-08-01",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_service = build_order_costs(service_rows, {"product_id": 999, "qty": 1}, COGS_MAP_20,
+                                   today=MATURE_TODAY)
+    check("фикс COGS (20b): сервисный юнит (без commission, не возврат) -> cost == 0.0",
+          r_service is not None and r_service["cost"] == 0.0, r_service)
+    check("фикс COGS (20b): сервисный юнит -> profit == SUM(accrued) (−45.0), БЕЗ COGS "
+          "(было бы −45.0 − 1540 = −1585.0 до фикса)",
+          r_service is not None and r_service["profit"] == -45.0, r_service)
+
+    # 20c. Возврат БЕЗ commission-блока (невыкуп/отмена, оформленная Ozon как
+    #     return-flow типы 45/59, но продажи в истории юнита не было) — тот
+    #     же класс, что 20a/20b: cost == 0.0 (уже неявно проверялось п.12
+    #     через r2/r_nodate_ret с пустым costs-мэпом — здесь ЯВНО с непустым).
+    return_no_commission_rows = [
+        {"unit_number": "TEST-RETURN-NOCOMM-0001", "accrued_category": "POSTING", "type_id": 45,
+         "sku": 1, "accrued": -20.0, "date": "2026-08-01",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_return_nocomm = build_order_costs(return_no_commission_rows, {"product_id": 999, "qty": 1},
+                                         COGS_MAP_20, today=MATURE_TODAY)
+    check("фикс COGS (20c): возврат БЕЗ commission-блока (невыкуп/отмена как return-flow) -> "
+          "is_return == 1, cost == 0.0 (продажи не было — списывать нечего)",
+          r_return_nocomm is not None and r_return_nocomm["is_return"] == 1
+          and r_return_nocomm["cost"] == 0.0, r_return_nocomm)
+
+    # 20d. Возврат С commission-блоком (реальная продажа БЫЛА, товар потом
+    #     вернулся — is_return=1 через отрицательный commission-блок,
+    #     реверс уже начисленной продажи). Решение (сверено с v1/WB/каноном,
+    #     см. докстроку build_order_costs у cost): cost НЕ зануляется —
+    #     это РЕАЛЬНЫЙ убыток возврата состоявшейся продажи, а не фантом.
+    return_with_commission_rows = [
+        {"unit_number": "TEST-RETURN-COMM-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": -700.0, "date": "2026-08-01",
+         "seller_price": 1000.0, "sale_price": -700.0, "sale_commission": 300.0,
+         "coinvestment": 0.0, "bonus": -300.0},
+    ]
+    r_return_comm = build_order_costs(return_with_commission_rows, {"product_id": 999, "qty": 1},
+                                       COGS_MAP_20, today=MATURE_TODAY)
+    check("фикс COGS (20d): возврат С commission-блоком (реверс продажи, commission_accrued<0) "
+          "-> is_return == 1", r_return_comm is not None and r_return_comm["is_return"] == 1,
+          r_return_comm)
+    check("фикс COGS (20d): возврат С commission-блоком -> cost == 1540 (НЕ зануляется — "
+          "реальная продажа была, единообразно с v1/WB/каноном, см. докстроку)",
+          r_return_comm is not None and r_return_comm["cost"] == 1540.0, r_return_comm)
+
+    # 20e. Регресс: продающий юнит (sale_unit, п.1) — cost как был (300, из
+    #     costs-мэпа теста 1), поведение с commission-блоком не изменилось.
+    check("фикс COGS (20e регресс): продающий юнит (commission-блок есть) -> cost == 300.0 "
+          "как раньше (без изменений)",
+          r1["cost"] == 300.0, r1)
+    check("фикс COGS (20e регресс): продающий юнит -> profit == SUM(accrued) − cost, как раньше",
+          r1["profit"] == expected_profit, r1["profit"])
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")
