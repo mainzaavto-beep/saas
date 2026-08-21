@@ -627,7 +627,11 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
     out.push({
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
       name: r.name || r.sa || String(nm), brand: r.brand || "", grp: r.grp || "",
-      cat: "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
+      // cat = grp (p.category) для Ozon: каталог у нас одноуровневый (нет
+      // отдельной иерархии категория/группа, как o.category/a.subject у WB).
+      // Раньше cat всегда был "" → фильтр «Категория» на Сводке пустовал
+      // для Ozon (owner-жалоба). Честно отражаем структуру: категория=группа.
+      cat: r.grp || "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
       orderRub: round2(o.orderRub), salesRub: f.revenue,
