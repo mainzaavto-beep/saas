@@ -411,6 +411,27 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     commission_accrued_sum = sum(_num(r.get("accrued")) for r in commission_rows)
     seller_price_sum = sum(_num(r.get("seller_price")) for r in commission_rows)
 
+    # Полное сторно (третья ветка is_return ниже) — ПО КАЖДОМУ sku ОТДЕЛЬНО,
+    # не по сумме всех commission-блоков юнита (пробел ревью фикса возврата
+    # через полное сторно, 2026-08-21, найден ДО прода): мультитоварное
+    # отправление может нести один sku, полностью возвращённый (его блоки
+    # гасят друг друга в ноль), И другой sku, реально проданный (net>0) —
+    # суммарный Σ seller_price ВСЕГО юнита при этом может СЛУЧАЙНО попасть в
+    # допуск ±0.01 (например, проданный товар на копейки дешевле
+    # возвращённого), и юнит-по-сумме пометил бы is_return=1 ВЕСЬ юнит,
+    # обнулив COGS реально проданного sku. На живых 20 строках фикса это не
+    # проявилось (n_skus=1 у всех — не гарантия кода, свойство данных).
+    # commission-строка без sku (None) — своя отдельная группа (безопасный
+    # дефолт: не смешивается с реальными sku).
+    commission_by_sku = defaultdict(list)
+    for r in commission_rows:
+        commission_by_sku[r.get("sku")].append(r)
+    full_storno_all_skus = bool(commission_by_sku) and all(
+        abs(sum(_num(rr.get("seller_price")) for rr in rows)) <= _RETURN_NET_TOLERANCE
+        and any(_num(rr.get("seller_price")) < 0 for rr in rows)
+        for rows in commission_by_sku.values()
+    )
+
     # is_return: коды 45/59 (RETURN_TYPE_IDS) ИЛИ отрицательный commission-блок
     # (реверс уже начисленной продажи, суммарно по ВСЕМ commission-строкам)
     # ИЛИ ПОЛНОЕ СТОРНО через ПАРУ (и более) commission-блоков (находка
@@ -420,14 +441,19 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # см. ozon_profit_map.py) — ни первая, ни вторая ветка выше это НЕ ловят:
     # commission_accrued_sum ≈ 0 (не < 0 — блоки гасят друг друга ровно, не
     # уходят в минус), поэтому вторая ветка молчит; RETURN_TYPE_IDS среди
-    # строк тоже нет. Признак: >1 commission-блока И чистая Σ seller_price
-    # ≈ 0 (допуск _RETURN_NET_TOLERANCE) И среди блоков есть отрицательный
-    # (иначе Σ≈0 при ВСЕХ неотрицательных блоках — вырожденный случай нулевых
-    # цен, не сторно). НЕ путать с частичным сторно/корректировкой цены (пара
-    # блоков вида +1378/−400 → Σ=978, не ≈0 — остаётся продажей с cost) и с
-    # легитимной склейкой семьи из НЕСКОЛЬКИХ товаров отправления (Σ>0 — тоже
-    # не ≈0). Отсутствие commission-блока САМО ПО СЕБЕ возвратом не считается
-    # (фикс эвристики ±835 ₽ из дизайн-дока — "нулевые" отправления: чистые
+    # строк тоже нет. Признак: >1 commission-блока И у КАЖДОГО sku юнита
+    # (full_storno_all_skus выше) чистая Σ seller_price ЕГО блоков ≈ 0
+    # (допуск _RETURN_NET_TOLERANCE) И среди его блоков есть отрицательный
+    # (иначе Σ≈0 при ВСЕХ неотрицательных блоках sku — вырожденный случай
+    # нулевых цен, не сторно). НЕ путать с частичным сторно/корректировкой
+    # цены (пара блоков вида +1378/−400 → Σ=978, не ≈0 — остаётся продажей
+    # с cost), с легитимной склейкой семьи из НЕСКОЛЬКИХ товаров отправления
+    # (Σ>0 — тоже не ≈0), и с мультитоварным юнитом, где вернулся ТОЛЬКО
+    # один sku из нескольких (хотя бы у одного sku net не ≈0 —
+    # full_storno_all_skus=False, юнит остаётся продажей с cost, известное
+    # ограничение модели «1 unit_number = 1 запись», см. докстроку выше).
+    # Отсутствие commission-блока САМО ПО СЕБЕ возвратом не считается (фикс
+    # эвристики ±835 ₽ из дизайн-дока — "нулевые" отправления: чистые
     # сервисные/комиссионные строки без продажи на этом дне, is_return
     # остаётся 0).
     is_return = 0
@@ -441,9 +467,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
         commission_dates = [_row_date(r.get("date")) for r in commission_rows
                              if r.get("date") is not None]
         return_dt = min(commission_dates) if commission_dates else None
-    elif (len(commission_rows) > 1
-          and abs(seller_price_sum) <= _RETURN_NET_TOLERANCE
-          and any(_num(r.get("seller_price")) < 0 for r in commission_rows)):
+    elif len(commission_rows) > 1 and full_storno_all_skus:
         is_return = 1
         commission_dates = [_row_date(r.get("date")) for r in commission_rows
                              if r.get("date") is not None]

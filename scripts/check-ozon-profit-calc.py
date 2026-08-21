@@ -1285,6 +1285,85 @@ def main():
           "(20d, r_return_comm) по-прежнему is_return == 1 через ветку 2",
           r_return_comm["is_return"] == 1, r_return_comm)
 
+    # --- 23. ВЕТКА-3 ВОЗВРАТА — NET ПО КАЖДОМУ SKU (пробел ревью фикса 22,
+    #     найден ДО прода, 2026-08-21): в мультитоварном отправлении Σ
+    #     seller_price ВСЕГО юнита (22a-22c мерили её ПО ВСЕМ commission-
+    #     блокам разом, независимо от sku) могла СЛУЧАЙНО попасть в допуск
+    #     ±0.01, даже если РЕАЛЬНО возвращён только ОДИН sku, а другой
+    #     остался продан — старое условие пометило бы is_return=1 ВЕСЬ юнит
+    #     и обнулило бы COGS проданного sku. Фикс: full_storno_all_skus
+    #     группирует commission_rows по sku и требует, чтобы У КАЖДОГО sku
+    #     ЕГО СОБСТВЕННАЯ Σ seller_price была ≈0 (допуск) И несла
+    #     отрицательный блок — если хотя бы у одного sku net не ≈0, юнит
+    #     остаётся продажей.
+    COGS_MAP_23 = {777: 500.0}
+
+    # 23a. Кейс ревью: 2 sku, sku 1001 продан (+1000, НЕ возвращён, ни
+    #     одного отрицательного блока), sku 1002 возвращён (-1000,
+    #     отдельный sku, единственный его блок отрицателен) — Σ ВСЕГО
+    #     юнита == 0 (совпадение цен), но у sku 1001 net == 1000 (не ≈0) ->
+    #     full_storno_all_skus == False -> is_return ДОЛЖЕН остаться 0.
+    mixed_sku_rows = [
+        {"unit_number": "TEST-MIXED-SKU-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1001, "accrued": 1000.0, "date": "2026-08-10",
+         "seller_price": 1000.0, "sale_price": 1000.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-MIXED-SKU-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1002, "accrued": -1000.0, "date": "2026-08-10",
+         "seller_price": -1000.0, "sale_price": -1000.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+    ]
+    r_mixed_sku = build_order_costs(mixed_sku_rows, {"product_id": 777, "qty": 2},
+                                     COGS_MAP_23, today=MATURE_TODAY)
+    check("ветка-3 net по sku (23a, пробел ревью): sku 1001 продан (+1000), sku 1002 "
+          "возвращён (-1000) -> Σ ЮНИТА == 0, но у sku 1001 net != 0 -> is_return == 0 "
+          "(НЕ весь юнит полное сторно)",
+          r_mixed_sku is not None and r_mixed_sku["is_return"] == 0, r_mixed_sku)
+    check("ветка-3 net по sku (23a): cost == 500.0 (COGS проданного sku НЕ обнуляется "
+          "ошибочно политикой возврата)",
+          r_mixed_sku is not None and r_mixed_sku["cost"] == 500.0, r_mixed_sku)
+
+    # 23b. Регресс: ГЕНУИННЫЙ мультитоварный полный возврат — ОБА sku
+    #     (a: +500/-500, b: +300/-300) имеют net == 0 СО своим отрицательным
+    #     блоком -> full_storno_all_skus == True -> is_return == 1, cost == 0
+    #     (фикс 23 не должен сломать сам класс 22a на мультитоварных
+    #     отправлениях).
+    both_skus_returned_rows = [
+        {"unit_number": "TEST-BOTH-SKU-RETURNED-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 2001, "accrued": 500.0, "date": "2026-08-10",
+         "seller_price": 500.0, "sale_price": 500.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-BOTH-SKU-RETURNED-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 2001, "accrued": -500.0, "date": "2026-08-17",
+         "seller_price": -500.0, "sale_price": -500.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-BOTH-SKU-RETURNED-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 2002, "accrued": 300.0, "date": "2026-08-10",
+         "seller_price": 300.0, "sale_price": 300.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        {"unit_number": "TEST-BOTH-SKU-RETURNED-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 2002, "accrued": -300.0, "date": "2026-08-17",
+         "seller_price": -300.0, "sale_price": -300.0, "sale_commission": 0.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+    ]
+    r_both_skus_returned = build_order_costs(both_skus_returned_rows, {"product_id": 777, "qty": 2},
+                                              COGS_MAP_23, today=MATURE_TODAY)
+    check("ветка-3 net по sku (23b регресс): ОБА sku полностью возвращены (каждый net == 0 "
+          "со своим отрицательным блоком) -> is_return == 1 (класс 22a на мультитоварных "
+          "отправлениях не сломан)",
+          r_both_skus_returned is not None and r_both_skus_returned["is_return"] == 1,
+          r_both_skus_returned)
+    check("ветка-3 net по sku (23b регресс): cost == 0.0 (COGS не списывается)",
+          r_both_skus_returned is not None and r_both_skus_returned["cost"] == 0.0,
+          r_both_skus_returned)
+
+    # 23c. Регресс: секция 22a (эталон, ОДИН sku) должна остаться зелёной —
+    #     commission_by_sku из одного sku ведёт себя тождественно старой
+    #     проверке по сумме юнита.
+    check("ветка-3 net по sku (23c регресс): эталон 0131642813-0453-1 (22a, один sku) "
+          "по-прежнему is_return == 1 (группировка по sku не ломает однотоварный случай)",
+          r_full_storno["is_return"] == 1, r_full_storno)
+
     print()
     if failed:
         print(f"ИТОГО: {failed} провалено")
