@@ -27,6 +27,11 @@ User=root
 # копится, а не прерывает выполнение) — иначе при падении первой сверки
 # отчёт по остальным не появится в журнале вовсе. Итоговый код — 1,
 # если упала хотя бы одна: юнит помечается failed, виден в systemd/journalctl.
+#   5) check-ozon-sku-ad.mjs — задача 4 плана «реклама Ozon по товарам»,
+#      .superpowers/sdd/2026-08-21-ozon-sku-ads/: Σ ozon_daily_sku_ad.spend
+#      против ozon_daily_campaign_ad.spend (пара campaign_id×date) И
+#      Σ ozon_daily_metrics.ad_spend против кампанийного итога за день, оба
+#      кабинета (1, 1008), окно — 4 последние закрытые ISO-недели.
 ExecStart=/bin/bash -c '\
   set +e; \
   FROM=$(date -d "-1 month" +%%Y-%%m-01); \
@@ -39,7 +44,9 @@ ExecStart=/bin/bash -c '\
   /usr/bin/node scripts/check-ozon-profit-invariant.mjs; rc3=$?; \
   echo "=== check-profit-canon-cross.mjs: прошлая ISO-неделя, все активные магазины ==="; \
   /usr/bin/node scripts/check-profit-canon-cross.mjs; rc4=$?; \
-  if [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ] || [ $rc3 -ne 0 ] || [ $rc4 -ne 0 ]; then exit 1; fi; \
+  echo "=== check-ozon-sku-ad.mjs: 4 закрытые ISO-недели, оба кабинета ==="; \
+  /usr/bin/node scripts/check-ozon-sku-ad.mjs; rc5=$?; \
+  if [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ] || [ $rc3 -ne 0 ] || [ $rc4 -ne 0 ] || [ $rc5 -ne 0 ]; then exit 1; fi; \
   exit 0'
 StandardOutput=journal
 StandardError=journal
