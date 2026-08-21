@@ -1,7 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // Цветовая палитра SAAS (тёмно-синяя). Согласована с globals.css.
 // Внутренние компоненты (Kpi/Th/Td/ProductCell/...) обращаются к C.*,
@@ -54,7 +54,8 @@ export default function SummaryPage({ cabinetId }) {
   // Остальные фильтры — клиентские (по готовым агрегатам).
   const [brand, setBrand] = useState("__all__");
   const [group, setGroup] = useState("__all__");
-  const [cat, setCat] = useState("__all__");
+  // Категория — мультивыбор галочками; пустой Set = без фильтра (все).
+  const [catSel, setCatSel] = useState(() => new Set());
   const [shop, setShop] = useState("__all__");
   const [q, setQ] = useState("");
   // Сортировка + пагинация.
@@ -148,7 +149,7 @@ export default function SummaryPage({ cabinetId }) {
     let arr = data.items;
     if (brand !== "__all__") arr = arr.filter((i) => i.brand === brand);
     if (group !== "__all__") arr = arr.filter((i) => i.grp === group);
-    if (cat !== "__all__")   arr = arr.filter((i) => i.cat === cat);
+    if (catSel.size > 0)     arr = arr.filter((i) => catSel.has(i.cat));
     if (shop !== "__all__")  arr = arr.filter((i) => i.shop === shop);
     if (q.trim()) {
       const s = q.trim().toLowerCase();
@@ -172,19 +173,19 @@ export default function SummaryPage({ cabinetId }) {
       });
     }
     return arr;
-  }, [data, brand, group, cat, shop, q, sort]);
+  }, [data, brand, group, catSel, shop, q, sort]);
 
   const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageItems = pageSize === 0 ? filtered : filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  useEffect(() => { setPage(1); }, [brand, group, cat, shop, q, pageSize, qs]);
+  useEffect(() => { setPage(1); }, [brand, group, catSel, shop, q, pageSize, qs]);
 
   const hasActiveFilters = mp !== "all" || preset !== "default" || dateFrom || dateTo ||
-    brand !== "__all__" || group !== "__all__" || cat !== "__all__" || shop !== "__all__" || q.trim();
+    brand !== "__all__" || group !== "__all__" || catSel.size > 0 || shop !== "__all__" || q.trim();
   const resetFilters = () => {
     setMp("all"); setPreset("default"); setDateFrom(""); setDateTo("");
-    setBrand("__all__"); setGroup("__all__"); setCat("__all__"); setShop("__all__"); setQ("");
+    setBrand("__all__"); setGroup("__all__"); setCatSel(new Set()); setShop("__all__"); setQ("");
   };
 
   // Переход в детальную сводку товара (drill-down → /cabinets/[id]/detail).
@@ -293,10 +294,7 @@ export default function SummaryPage({ cabinetId }) {
           </select>
         </Field>
         <Field label="Категория">
-          <select value={cat} onChange={(e) => setCat(e.target.value)} style={selectStyle}>
-            <option value="__all__">Все</option>
-            {facets.cat.map(([v, n]) => <option key={v} value={v}>{v} ({n})</option>)}
-          </select>
+          <CategoryMultiSelect options={facets.cat} selected={catSel} setSelected={setCatSel} />
         </Field>
         <Field label="Магазин">
           <select value={shop} onChange={(e) => setShop(e.target.value)} style={selectStyle}>
@@ -660,6 +658,91 @@ function Field({ label, children }) {
     </label>
   );
 }
+// Мультивыбор категорий галочками: кнопка "Все категории"/"N выбрано" +
+// дропдаун со списком чекбоксов (счётчик товаров из facets.cat) и
+// "Выбрать все"/"Сбросить". Закрытие — по клику вне контрола.
+function CategoryMultiSelect({ options, selected, setSelected }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const toggleValue = (v) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v); else next.add(v);
+      return next;
+    });
+  };
+
+  const label = selected.size === 0 ? "Все категории" : `${selected.size} выбрано`;
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{ ...selectStyle, minWidth: 150, textAlign: "left" }}
+      >
+        {label}
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+          minWidth: 240, maxWidth: 320, background: C.surface, border: `1px solid ${C.line}`,
+          borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.25)", overflow: "hidden",
+        }}>
+          <div style={{
+            display: "flex", gap: 8, padding: "6px 8px", borderBottom: `1px solid ${C.line}`,
+            background: C.surfaceAlt,
+          }}>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set(options.map(([v]) => v)))}
+              style={miniBtnStyle}
+            >Выбрать все</button>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              style={miniBtnStyle}
+            >Сбросить</button>
+          </div>
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {options.length === 0 && (
+              <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>Нет данных</div>
+            )}
+            {options.map(([v, n]) => (
+              <label
+                key={v}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
+                  fontSize: 12.5, color: C.ink, cursor: "pointer",
+                }}
+              >
+                <input type="checkbox" checked={selected.has(v)} onChange={() => toggleValue(v)} />
+                <span style={{
+                  flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }} title={v}>{v}</span>
+                <span style={{ color: C.faint, fontSize: 11 }}>{n}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const miniBtnStyle = {
+  padding: "3px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600,
+  border: `1px solid ${C.line}`, background: "transparent", color: C.muted, fontFamily: "inherit",
+};
 const inputStyle = {
   padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.line}`,
   background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit",
