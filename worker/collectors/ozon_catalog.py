@@ -2,8 +2,21 @@
 SaaS-сборщик КАТАЛОГА Ozon → tenant.ozon_products.
 
 Источники: /v3/product/list + /v3/product/info/list (комиссии/объём) +
-/v4/product/info/attributes (габариты) + /v5/product/info/prices (цены).
-БЕЗ дерева категорий (упрощение — добавим позже; description_category_id сохраняем).
+/v4/product/info/attributes (габариты, description_category_id, type_id) +
+/v5/product/info/prices (цены) + /v1/description-category/tree (имена категорий/
+типов — ОДИН запрос на прогон, дерево кэшируется в памяти процесса, см. collect()).
+
+products.category (задача 2026-08-21: находка «category пуст у ВСЕХ товаров» —
+фильтры категорий на Сводке были пусты для Ozon) = человекочитаемое имя КАТЕГОРИИ
+(description_category_id → category_name из дерева), не типа товара. Панель
+одноуровневая: category одновременно кормит и «Группу», и «Категорию» в фильтрах
+Сводки (см. app/api/cabinets/[id]/products-summary/route.js, cat=grp=p.category).
+Категория выбрана вместо типа, потому что type_name у Ozon почти 1:1 с товаром
+(узкие "листья" дерева) — как фильтр даёт кучу групп по 1 товару. category_name —
+более широкий уровень (аналог o.category у WB, а не узкого a.subject) — даёт
+few содержательных групп, пригодных для фильтрации. type_name тоже сохраняем
+(колонка products.type_name) — fallback, если для description_category_id вдруг
+нет узла в дереве (не должно случаться, но не роняем сборщик).
 
 Использует ozon_client.OzonClient (скопирован из боевого, параметризуемый —
 воркер выставляет OZON_CLIENT_ID/OZON_API_KEY в env).
@@ -36,10 +49,41 @@ def _to_float(v):
         return None
 
 
+def _flatten_category_tree(nodes):
+    """Разворачивает дерево /v1/description-category/tree в две плоские карты:
+    description_category_id → category_name и type_id → type_name.
+
+    Дерево рекурсивно (children на любом уровне); узлы-категории и узлы-типы
+    неразличимы по форме, кроме наличия своего id/name — берём оба, если есть,
+    на КАЖДОМ уровне (description_category_id у Ozon может указывать и на
+    промежуточный, и на листовой узел категории)."""
+    cat_map, type_map = {}, {}
+
+    def walk(items):
+        for n in (items or []):
+            if not isinstance(n, dict):
+                continue
+            cid = n.get("description_category_id")
+            if cid is not None and n.get("category_name"):
+                cat_map[int(cid)] = n["category_name"]
+            tid = n.get("type_id")
+            if tid is not None and n.get("type_name"):
+                type_map[int(tid)] = n["type_name"]
+            walk(n.get("children"))
+
+    walk(nodes)
+    return cat_map, type_map
+
+
 def collect(visibility="ALL"):
     print(f"[ozon_catalog] товары visibility={visibility}", flush=True)
     db_pg.init()
     cli = OzonClient()  # читает OZON_CLIENT_ID/OZON_API_KEY из env (воркер выставил)
+
+    # 0. Дерево категорий — ОДИН запрос на весь прогон (кэш в памяти процесса,
+    # не в БД: дерево общее для всех продавцов, дёшево запросить каждый раз).
+    cat_by_id, type_by_id = _flatten_category_tree(cli.category_tree())
+    print(f"  дерево категорий: {len(cat_by_id)} категорий, {len(type_by_id)} типов", flush=True)
 
     # 1. Список product_id + offer_id.
     product_ids = []
@@ -90,6 +134,20 @@ def collect(visibility="ALL"):
             elif isinstance(primary, str):
                 im_url = primary
 
+            # Категория/тип — по id из attributes (/v4) + имена из дерева (шаг 0).
+            # ⚠️ Раньше здесь читался несуществующий ключ a.get("type_name") —
+            # /v4/product/info/attributes отдаёт только type_id (числовой), не имя;
+            # поэтому колонка type_name всегда была NULL. Имя типа теперь тоже
+            # берём из дерева, по type_id.
+            desc_cat_id = a.get("description_category_id")
+            type_id = a.get("type_id")
+            cat_name = cat_by_id.get(int(desc_cat_id)) if desc_cat_id is not None else None
+            typ_name = type_by_id.get(int(type_id)) if type_id is not None else None
+            # category = категория (широкий уровень), не тип (см. докстрока файла).
+            # Fallback на type_name, если для description_category_id нет узла
+            # в дереве (не должно случаться при живом id, но не роняем сборщик).
+            category = cat_name or typ_name
+
             db_pg.upsert_product(
                 int(pid), item.get("name") or str(pid),
                 offer_id=item.get("offer_id"),
@@ -108,8 +166,9 @@ def collect(visibility="ALL"):
                 price=_to_float(p.get("marketing_seller_price")),
                 old_price=_to_float(p.get("old_price")),
                 im_url=im_url,
-                description_category_id=a.get("description_category_id"),
-                type_name=a.get("type_name"),
+                description_category_id=desc_cat_id,
+                type_name=typ_name,
+                category=category,
             )
             n += 1
     print(f"[ozon_catalog] записано {n} товаров → tenant.ozon_products", flush=True)
