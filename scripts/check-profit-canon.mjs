@@ -52,25 +52,30 @@
 //   4. cabinetCosts[].label — ни один не содержит подстроку «accrual_»
 //      сырым текстом (задача 1 плана: «accrual_93 больше нигде не
 //      показывается сырым»).
-//   5. productId-фильтр аддитивен: Σ по всем товарам периода ozProfitProduct
-//      (period, productId).profit, МИНУС ads кабинета (см. ниже — ПОЧЕМУ),
-//      = ozProfitProduct(period).profit без фильтра, допуск 0,05 ₽ (шире
-//      базового 0,01 — см. обоснование допуска ниже, у самого чека).
-//      ⚠️ ПОЧЕМУ «−ads», а не голое сравнение сумм: Ozon Performance API не
-//      даёт пер-SKU расход рекламы (см. докстроку ozAdSpend в
-//      lib/ozonMetrics.js) — ozProfitProduct(pid).ads ВСЕГДА 0 (честно, а не
-//      «размазано»), поэтому Σ profit(товар) НИКОГДА не вычитает рекламу.
-//      Кабинетный вызов (без productId) вычитает её РОВНО ОДИН раз — Σ по
-//      товарам оттого ВЫШЕ (менее убыточна), чем profit(без фильтра), РОВНО
-//      на ads кабинета: Σ profit(товар) = profit(без фильтра) + ads. Если бы
-//      проверка сравнивала голые суммы без поправки, она была бы
-//      математически невыполнима при ЛЮБОЙ ненулевой рекламе (кабинет 1,
-//      июль-2026: 63 947,03 ₽) — не баг канона, а неизбежное следствие
-//      отсутствия пер-SKU данных. Налог при этом ОСТАЁТСЯ в сумме по
-//      товарам без поправки (под usn_income он линеен по выручке —
-//      Σtax(товар) = tax(кабинет) с точностью до округления round2 на
-//      каждый товар, см. коммент в lib/ozonMetrics.js) — поправка нужна
-//      только для ads.
+//   5. productId-фильтр аддитивен (формула переписана задачей 6, 2026-08-22
+//      — пер-SKU реклама Ozon теперь ЕСТЬ, см. докстроку ozAdSpend в
+//      lib/ozonMetrics.js): Σ ozProfitProduct(period, productId).profit по
+//      всем товарам периода, МИНУС нераспределённый остаток рекламы
+//      (ads(кабинета) − Σ ozProfitProduct(товар).ads), = ozProfitProduct
+//      (period).profit без фильтра, допуск 0,05 ₽ (шире базового 0,01 — см.
+//      обоснование допуска ниже, у самого чека).
+//      ⚠️ ПОЧЕМУ «−остаток», а не голое сравнение сумм: даже с пер-SKU
+//      данными (миграция 043, tenant.ozon_daily_sku_ad) Σ ads(товар) НЕ
+//      равна ads(кабинета) — кампании без товарной разбивки (напр. «Оплата
+//      за заказ — все товары», campaign_id 27109544 у кабинета 1, ~47%
+//      бюджета кабинета в июле) физически не отдают per-SKU статистику
+//      Performance API, их расход остаётся только в ads(кабинета). Кабинетный
+//      вызов (без productId) вычитает ПОЛНУЮ ads(кабинета) РОВНО ОДИН раз —
+//      Σ по товарам оттого ВЫШЕ (менее убыточна), чем profit(без фильтра),
+//      РОВНО на нераспределённый остаток: Σ profit(товар) = profit(без
+//      фильтра) + остаток. Если бы проверка сравнивала голые суммы без
+//      поправки, она была бы математически невыполнима при ЛЮБОМ
+//      нераспределённом остатке — не баг канона, а неизбежное следствие
+//      структурного пробела покрытия (не 100% кампаний имеют SKU-разбивку).
+//      Налог при этом ОСТАЁТСЯ в сумме по товарам без поправки (под
+//      usn_income он линеен по выручке — Σtax(товар) = tax(кабинет) с
+//      точностью до округления round2 на каждый товар, см. коммент в
+//      lib/ozonMetrics.js) — поправка нужна только для ads.
 //
 // ═══════════════════════ WB-СЕКЦИЯ (задача 2) ═══════════════════════
 // Симметричные проверки против lib/wbMetrics.js::wbProfitProduct/
@@ -97,12 +102,14 @@
 //   4. cabinetCosts[].label — ни один НЕ равен сырому costType (весь набор
 //      cost_type у WB резолвится статичным словарём WB_COST_LABELS,
 //      unknownCostTypes должен быть 0 на живых данных).
-//   5. nmId-фильтр аддитивен: Σ wbProfitProduct(period, nmId).profit по
-//      всем nm периода, МИНУС ads(кабинета) (та же причина, что у Ozon —
-//      см. докстроку wbProfitProduct в lib/wbMetrics.js: реклама по nm_id У
-//      WB ЕСТЬ, но часть ad_spend «осиротела» на nm без строк order_costs
-//      в периоде — 7 077,17 ₽ на кабинете 1 за июль-2026 — поэтому канон
-//      тоже даёт ads=0 при nmId), допуск 0,05 ₽.
+//   5. nmId-фильтр аддитивен (формула переписана задачей 6, 2026-08-22,
+//      симметрично Ozon): Σ wbProfitProduct(period, nmId).profit по всем nm
+//      периода, МИНУС нераспределённый остаток рекламы (ads(кабинета) −
+//      Σ wbProfitProduct(nm).ads) — см. докстроку wbProfitProduct в
+//      lib/wbMetrics.js: реклама по nm_id У WB ЕСТЬ и с задачи 6 реально
+//      подставляется в ads(nm), но часть ad_spend «осиротела» на nm без
+//      строк order_costs в периоде — 7 077,17 ₽ на кабинете 1 за июль-2026 —
+//      этот остаток вычитается только на кабинетном вызове, допуск 0,05 ₽.
 //   6. ⚠️ is_return НЕ фильтруется — независимая проверка №1 явно НЕ
 //      добавляет "AND is_return=0"; отдельно выводится информационная
 //      строка «что было бы, если» (см. WB_IS_RETURN_FILTER_LOSS ниже) —
@@ -198,9 +205,11 @@ async function runOzonChecks() {
       .get(FROM, TO);
 
     let sumByProduct = 0;
+    let sumByProductAds = 0;
     for (const row of productRows) {
       const pp = await ozProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, row.product_id);
       sumByProduct += pp.profit;
+      sumByProductAds += pp.ads;
     }
 
     return {
@@ -208,6 +217,7 @@ async function runOzonChecks() {
       productCount: productRows.length,
       nullProductRows: Number(nullProductRow?.n) || 0,
       sumByProduct: Math.round(sumByProduct * 100) / 100,
+      sumByProductAds: Math.round(sumByProductAds * 100) / 100,
     };
   });
 
@@ -317,16 +327,18 @@ async function runOzonChecks() {
     rawLabels.length ? `сырых меток: ${rawLabels.length} (${rawLabels.map((c) => `${c.costType}→"${c.label}"`).join(', ')})` : `${canon.profitCabinet.cabinetCosts.length} статей, все с русскими именами`
   );
 
-  // ── Проверка 5: productId-фильтр аддитивен (см. докстроку файла, п.5) ──
-  // Допуск шире базового (0,05 ₽ вместо 0,01): 44 товара, у каждого свой
-  // round2(tax) — независимые округления могут накопить пару копеек, что не
-  // является расхождением канона (в отличие от проверок 1-3, где сравнение
-  // идёт «один канон-вызов vs один независимый SQL» без per-item округлений).
-  const sumByProductMinusAds = Math.round((canon.sumByProduct - canon.profitProduct.ads) * 100) / 100;
+  // ── Проверка 5: productId-фильтр аддитивен (см. докстроку файла, п.5,
+  // формула задачи 6). Допуск шире базового (0,05 ₽ вместо 0,01): 44
+  // товара, у каждого свой round2(tax) — независимые округления могут
+  // накопить пару копеек, что не является расхождением канона (в отличие
+  // от проверок 1-3, где сравнение идёт «один канон-вызов vs один
+  // независимый SQL» без per-item округлений). ──
+  const unallocatedAds = Math.round((canon.profitProduct.ads - canon.sumByProductAds) * 100) / 100;
+  const sumByProductMinusUnallocated = Math.round((canon.sumByProduct - unallocatedAds) * 100) / 100;
   verdict(
-    'productId-фильтр аддитивен: Σ ozProfitProduct(товар).profit − ads(кабинета) = ozProfitProduct(без фильтра).profit',
-    Math.abs(sumByProductMinusAds - canon.profitProduct.profit) <= PRODUCT_SUM_TOL,
-    `Σ по товарам=${fmtRub(canon.sumByProduct)} (${canon.productCount} тов.), −ads=${fmtRub(canon.profitProduct.ads)} ⇒ ${fmtRub(sumByProductMinusAds)}, без фильтра=${fmtRub(canon.profitProduct.profit)}`
+    'productId-фильтр аддитивен: Σ ozProfitProduct(товар).profit − (ads(кабинета) − Σ ads(товар)) = ozProfitProduct(без фильтра).profit',
+    Math.abs(sumByProductMinusUnallocated - canon.profitProduct.profit) <= PRODUCT_SUM_TOL,
+    `Σ profit(товар)=${fmtRub(canon.sumByProduct)} (${canon.productCount} тов.), Σ ads(товар)=${fmtRub(canon.sumByProductAds)}, ads(кабинета)=${fmtRub(canon.profitProduct.ads)}, нераспределено=${fmtRub(unallocatedAds)} ⇒ ${fmtRub(sumByProductMinusUnallocated)}, без фильтра=${fmtRub(canon.profitProduct.profit)}`
   );
   if (canon.nullProductRows > 0) {
     console.log(`  ⚠️ product_id IS NULL строк в периоде: ${canon.nullProductRows} — их деньги в Σ по товарам не попадают (ожидаемо, не баг проверки).`);
@@ -372,9 +384,11 @@ async function runWbChecks() {
       .get(FROM, TO);
 
     let sumByNm = 0;
+    let sumByNmAds = 0;
     for (const row of nmRows) {
       const pp = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, row.nm_id);
       sumByNm += pp.profit;
+      sumByNmAds += pp.ads;
     }
 
     return {
@@ -382,6 +396,7 @@ async function runWbChecks() {
       nmCount: nmRows.length,
       nullNmRows: Number(nullNmRow?.n) || 0,
       sumByNm: Math.round(sumByNm * 100) / 100,
+      sumByNmAds: Math.round(sumByNmAds * 100) / 100,
     };
   });
 
@@ -514,12 +529,14 @@ async function runWbChecks() {
       : `${canon.profitCabinet.cabinetCosts.length} статей, все с русскими именами, unknownCostTypes=${canon.profitCabinet.unknownCostTypes}`
   );
 
-  // ── Проверка 5: nmId-фильтр аддитивен (см. докстроку файла, WB п.5) ──
-  const sumByNmMinusAds = Math.round((canon.sumByNm - canon.profitProduct.ads) * 100) / 100;
+  // ── Проверка 5: nmId-фильтр аддитивен (см. докстроку файла, WB п.5,
+  // формула задачи 6, симметрично Ozon). ──
+  const unallocatedAdsWb = Math.round((canon.profitProduct.ads - canon.sumByNmAds) * 100) / 100;
+  const sumByNmMinusUnallocated = Math.round((canon.sumByNm - unallocatedAdsWb) * 100) / 100;
   verdict(
-    'nmId-фильтр аддитивен: Σ wbProfitProduct(nm).profit − ads(кабинета) = wbProfitProduct(без фильтра).profit',
-    Math.abs(sumByNmMinusAds - canon.profitProduct.profit) <= PRODUCT_SUM_TOL,
-    `Σ по nm=${fmtRub(canon.sumByNm)} (${canon.nmCount} nm), −ads=${fmtRub(canon.profitProduct.ads)} ⇒ ${fmtRub(sumByNmMinusAds)}, без фильтра=${fmtRub(canon.profitProduct.profit)}`
+    'nmId-фильтр аддитивен: Σ wbProfitProduct(nm).profit − (ads(кабинета) − Σ ads(nm)) = wbProfitProduct(без фильтра).profit',
+    Math.abs(sumByNmMinusUnallocated - canon.profitProduct.profit) <= PRODUCT_SUM_TOL,
+    `Σ profit(nm)=${fmtRub(canon.sumByNm)} (${canon.nmCount} nm), Σ ads(nm)=${fmtRub(canon.sumByNmAds)}, ads(кабинета)=${fmtRub(canon.profitProduct.ads)}, нераспределено=${fmtRub(unallocatedAdsWb)} ⇒ ${fmtRub(sumByNmMinusUnallocated)}, без фильтра=${fmtRub(canon.profitProduct.profit)}`
   );
   if (canon.nullNmRows > 0) {
     console.log(`  ⚠️ nm_id IS NULL строк в периоде: ${canon.nullNmRows} — их деньги в Σ по nm не попадают (ожидаемо, не баг проверки).`);
