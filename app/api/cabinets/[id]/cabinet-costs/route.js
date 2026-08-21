@@ -1,6 +1,8 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
+import { wbCabinetCostLabel } from "@/lib/wbMetrics.js";
+import { ozCabinetCostLabel } from "@/lib/ozonMetrics.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,27 +26,13 @@ export const dynamic = "force-dynamic";
 
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
-// Объединённый маппинг cost_type → человекочитаемый лейбл (WB + Ozon).
-// Правка 2026-06-25 (gotcha #148): «Удержание» в WB — ДВЕ разные услуги
-// (promotion vs reviews). См. оригинал в data-presenter.
-const LABELS = {
-  storage:               "Хранение",
-  deduction:             "Удержание (прочее)",          // legacy
-  reviews:               "Баллы за отзывы (возврат аванса)",
-  deduction_other:       "Удержание (прочее)",
-  // Разовые выплаты WB продавцу приходят отрицательными «Удержаниями» (например
-  // компенсация за пострадавший товар). В отдельном типе, чтобы не гасили расходы.
-  payout_other:          "Выплаты WB (компенсации)",
-  promotion:             "Продвижение WB (платная услуга)",
-  pvz_compensation:      "Возмещение за ПВЗ",
-  transport_compensation:"Возмещение перевозки",
-  subscription:          "Подписка Premium Plus",
-  ad_unmapped:           "Реклама без привязки к SKU",
-  crossdocking:          "Кросс-докинг",
-  supply:                "Приёмка / недостача",
-  penalty:               "Штрафы",
-  other:                 "Прочее",
-};
+// Лейблы больше НЕ дублируются локально (мини-фикс 2026-08-21: страница
+// показывала сырые accrual_N для Ozon — LABELS ниже был WB-only словарём и
+// не знал про Ozon accrual_<id>). Канон:
+//  - WB: wbCabinetCostLabel(costType) — lib/wbMetrics.js (статичный словарь).
+//  - Ozon: ozCabinetCostLabel(db, costType) — lib/ozonMetrics.js
+//    (accrual_<id> → shared.ozon_accrual_types, кэш на процесс внутри).
+// Сырой cost_type всё равно остаётся в ответе отдельным полем (для отладки).
 
 async function collectWB(from, to) {
   // WB хранит период отчёта как диапазон (period_from, period_to).
@@ -65,7 +53,7 @@ async function collectWB(from, to) {
     sum: round2(sum),
     byType: rows.map((r) => ({
       cost_type: r.cost_type,
-      label: LABELS[r.cost_type] || r.cost_type,
+      label: wbCabinetCostLabel(r.cost_type),
       amount: round2(r.s),
       platform: "wb",
     })),
@@ -75,8 +63,9 @@ async function collectWB(from, to) {
 async function collectOzon(from, toEnd) {
   // Ozon: period = один день (date). Простой BETWEEN.
   let rows = [];
+  const db = new DatabaseSync("ozon", { readOnly: true });
   try {
-    rows = await new DatabaseSync("ozon", { readOnly: true }).prepare(
+    rows = await db.prepare(
       `SELECT cost_type, COALESCE(SUM(amount),0) AS s
          FROM cabinet_costs
         WHERE date >= ? AND date <= ?
@@ -86,15 +75,15 @@ async function collectOzon(from, toEnd) {
     rows = [];
   }
   const sum = rows.reduce((acc, r) => acc + (Number(r.s) || 0), 0);
-  return {
-    sum: round2(sum),
-    byType: rows.map((r) => ({
-      cost_type: r.cost_type,
-      label: LABELS[r.cost_type] || r.cost_type,
-      amount: round2(r.s),
-      platform: "ozon",
-    })),
-  };
+  // ozCabinetCostLabel асинхронный (accrual_<id> резолвится через
+  // shared.ozon_accrual_types, кэш на процесс внутри lib/ozonMetrics.js).
+  const byType = await Promise.all(rows.map(async (r) => ({
+    cost_type: r.cost_type,
+    label: await ozCabinetCostLabel(db, r.cost_type),
+    amount: round2(r.s),
+    platform: "ozon",
+  })));
+  return { sum: round2(sum), byType };
 }
 
 export const GET = withCabinet(async (req, { cabinet }) => {
