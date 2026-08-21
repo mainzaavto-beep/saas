@@ -1038,9 +1038,14 @@ def main():
 
     # 20d. Возврат С commission-блоком (реальная продажа БЫЛА, товар потом
     #     вернулся — is_return=1 через отрицательный commission-блок,
-    #     реверс уже начисленной продажи). Решение (сверено с v1/WB/каноном,
-    #     см. докстроку build_order_costs у cost): cost НЕ зануляется —
-    #     это РЕАЛЬНЫЙ убыток возврата состоявшейся продажи, а не фантом.
+    #     реверс уже начисленной продажи). ПОЛИТИКА ВЛАДЕЛЬЦА 2026-08-21
+    #     (расширение фикса 20a-c, см. докстроку build_order_costs у секции
+    #     «ВОЗВРАТЫ», дословная цитата: «В возвратах должна учитываться
+    #     только расходка на них, себестоимость не учитывается, потому что
+    #     часть из них идут заново в продажу») — ПЕРЕСМОТРЕНО относительно
+    #     прежнего теста (был: cost НЕ зануляется, сверено с v1/WB/каноном):
+    #     cost == 0.0 ТЕПЕРЬ И ЗДЕСЬ, profit == sum_accrued (только расходка
+    #     возврата, COGS не участвует).
     return_with_commission_rows = [
         {"unit_number": "TEST-RETURN-COMM-0001", "accrued_category": "POSTING", "type_id": None,
          "sku": 1, "accrued": -700.0, "date": "2026-08-01",
@@ -1052,9 +1057,13 @@ def main():
     check("фикс COGS (20d): возврат С commission-блоком (реверс продажи, commission_accrued<0) "
           "-> is_return == 1", r_return_comm is not None and r_return_comm["is_return"] == 1,
           r_return_comm)
-    check("фикс COGS (20d): возврат С commission-блоком -> cost == 1540 (НЕ зануляется — "
-          "реальная продажа была, единообразно с v1/WB/каноном, см. докстроку)",
-          r_return_comm is not None and r_return_comm["cost"] == 1540.0, r_return_comm)
+    check("фикс COGS (20d, политика владельца 2026-08-21): возврат С commission-блоком -> "
+          "cost == 0.0 (ЗАНУЛЯЕТСЯ — было 1540 ДО политики возвратного COGS, товар может "
+          "уйти в повторную продажу)",
+          r_return_comm is not None and r_return_comm["cost"] == 0.0, r_return_comm)
+    check("фикс COGS (20d, политика владельца 2026-08-21): возврат С commission-блоком -> "
+          "profit == sum_accrued (-700.0, только расходка возврата, COGS не вычитается)",
+          r_return_comm is not None and r_return_comm["profit"] == -700.0, r_return_comm)
 
     # 20e. Регресс: продающий юнит (sale_unit, п.1) — cost как был (300, из
     #     costs-мэпа теста 1), поведение с commission-блоком не изменилось.
@@ -1063,6 +1072,97 @@ def main():
           r1["cost"] == 300.0, r1)
     check("фикс COGS (20e регресс): продающий юнит -> profit == SUM(accrued) − cost, как раньше",
           r1["profit"] == expected_profit, r1["profit"])
+
+    # --- 21. Политика возвратного COGS (решение владельца 2026-08-21,
+    #     прямое продолжение фикса 20, задача «возвраты без списания COGS»):
+    #     возвратный юнит с commission-блоком И ОТДЕЛЬНОЙ строкой расходки
+    #     возврата (логистика/комиссия ВОЗВРАТА, отдельная POSTING-строка,
+    #     не сам commission-блок) — profit должен нести ИМЕННО эту расходку,
+    #     а не «0 минус COGS». Показывает, что «cost=0» не означает
+    #     «profit=0» — возврат остаётся видимым убытком РОВНО на сумму
+    #     фактических затрат на сам возврат, без фантомной себестоимости
+    #     сверху.
+    # commission-строка сделана САМОСОГЛАСОВАННОЙ под тождество компонент
+    # (sale_commission == accrued этой строки, т.к. cost_value_retail
+    # принудительно 0 при is_return=1 — seller_price/sale_price/bonus сюда
+    # не входят вовсе; ⚠️ фикстура 20d/21 (return_with_commission_rows) этому
+    # тождеству НЕ следует (унаследована из ДО-политики теста, где
+    # consistency_ok не проверялся) — здесь взяты независимые, согласованные
+    # числа именно ради проверки инварианта согласованности).
+    return_with_logistics_rows = [
+        {"unit_number": "TEST-RETURN-LOGISTICS-0001", "accrued_category": "POSTING", "type_id": None,
+         "sku": 1, "accrued": -700.0, "date": "2026-08-01",
+         "seller_price": 1000.0, "sale_price": -700.0, "sale_commission": -700.0,
+         "coinvestment": 0.0, "bonus": -300.0},
+        # Расходка возврата: отдельная логистическая строка (доставка товара
+        # обратно на склад) — реальные деньги, которые ДОЛЖНЫ остаться в
+        # profit (это и есть «расходка на возврат» из цитаты владельца).
+        {"unit_number": "TEST-RETURN-LOGISTICS-0001", "accrued_category": "POSTING", "type_id": 32,
+         "sku": 1, "accrued": -85.30, "date": "2026-08-03",
+         "seller_price": None, "sale_price": None, "sale_commission": None,
+         "coinvestment": None, "bonus": None},
+    ]
+    r_return_log = build_order_costs(return_with_logistics_rows, {"product_id": 999, "qty": 1},
+                                      COGS_MAP_20, today=MATURE_TODAY)
+    check("политика возвратного COGS (21a): возврат с commission-блоком + расходка возврата "
+          "(логистика -85.30) -> is_return == 1",
+          r_return_log is not None and r_return_log["is_return"] == 1, r_return_log)
+    check("политика возвратного COGS (21a): cost == 0.0 (COGS не учитывается)",
+          r_return_log is not None and r_return_log["cost"] == 0.0, r_return_log)
+    check("политика возвратного COGS (21a): profit == sum_accrued (-785.30 = -700 реверс "
+          "+ -85.30 расходка возврата) — РАСХОДКА на возврат остаётся в profit, COGS — нет",
+          r_return_log is not None and r_return_log["profit"] == -785.30, r_return_log)
+    check("политика возвратного COGS (21a): согласованность компонент == SUM(accrued)",
+          abs(comps_of(r_return_log) - sum_accrued(return_with_logistics_rows)) < 0.01,
+          (comps_of(r_return_log), sum_accrued(return_with_logistics_rows)))
+
+    # --- 21b. Симуляция предиката LATERAL app/api/cabinets/[id]/orders/route.js
+    #     (`oc.cost IS DISTINCT FROM 0`, фикс a817f97) — та же защита от
+    #     "воскрешения" фантомного cost на новом классе строк (возврат С
+    #     commission-блоком), не только на прежнем (юнит без продажи). Без БД,
+    #     чистая имитация предиката ради теста (тот же приём, что
+    #     _simulate_order_costs_delete в проверке 11e).
+    def _simulate_orders_lateral_cost(oc_cost, cost_overrides_cost):
+        """Возвращает итоговый cost, который увидела бы витрина /orders:
+        предикат LATERAL — `oc.cost IS DISTINCT FROM 0` (a817f97). SQL
+        IS DISTINCT FROM трактует NULL как обычное сравниваемое значение —
+        NULL IS DISTINCT FROM 0 == true (LATERAL СРАБАТЫВАЕТ: cost неизвестен,
+        не «списывать нечего»), 0 IS DISTINCT FROM 0 == false (LATERAL
+        ПРОПУСКАЕТСЯ: cost явно занулён сборщиком). Итог витрины —
+        COALESCE(co.cost, oc.cost) — co.cost, если LATERAL сработала и нашла
+        override, иначе oc.cost как есть."""
+        lateral_fires = (oc_cost is None) or (oc_cost != 0)
+        co_cost = cost_overrides_cost if lateral_fires else None
+        return co_cost if co_cost is not None else oc_cost
+
+    # Возврат с commission-блоком под НОВОЙ политикой -> сборщик пишет
+    # oc.cost=0.0 явно -> LATERAL обязана быть пропущена -> витрина видит 0,
+    # а НЕ переоткрытый cost_overrides (1540) — иначе фикс сборщика
+    # "воскрешался" бы той же LATERAL, что уже чинили в a817f97 для
+    # юнитов без продажи.
+    witness_cost = _simulate_orders_lateral_cost(oc_cost=r_return_comm["cost"], cost_overrides_cost=1540.0)
+    check("политика возвратного COGS (21b): витрина /orders (LATERAL, a817f97) НЕ "
+          "воскрешает COGS у возвратного юнита с cost=0 (тот же механизм, что уже "
+          "защищает юниты без продажи) — витрина видит 0.0, не 1540.0",
+          witness_cost == 0.0, witness_cost)
+    # Контроль: юнит с NULL cost (сборщик не резолвил cost_overrides вовсе,
+    # а НЕ «списывать нечего») — LATERAL по-прежнему ДОЛЖНА сработать
+    # (регресс-проверка, что симуляция не сломала штатный путь a817f97).
+    witness_null = _simulate_orders_lateral_cost(oc_cost=None, cost_overrides_cost=1540.0)
+    check("политика возвратного COGS (21b, регресс a817f97): oc.cost IS NULL (cost "
+          "неизвестен, не 'списывать нечего') -> LATERAL по-прежнему подставляет "
+          "cost_overrides (1540.0)", witness_null == 1540.0, witness_null)
+
+    # --- 21c. Регрессия: продающий юнит БЕЗ возврата (r1, п.1) — cost как
+    #     был, политика возвратного COGS его не касается (is_return=0).
+    check("политика возвратного COGS (21c регресс): продающий юнит (is_return=0) -> "
+          "cost == 300.0, не затронут политикой возвратов", r1["cost"] == 300.0, r1)
+    # --- 21d. Регрессия: отменённый юнит без продажи (20a) — cost как был
+    #     (уже 0.0 через has_sale=False независимо от is_return — этот класс
+    #     is_return=0, политика возвратов на него физически не влияет).
+    check("политика возвратного COGS (21d регресс): отменённый юнит без продажи "
+          "(is_return=0, фикс 20a) -> cost == 0.0, как раньше",
+          r_cancelled is not None and r_cancelled["cost"] == 0.0, r_cancelled)
 
     print()
     if failed:
