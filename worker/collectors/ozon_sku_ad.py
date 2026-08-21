@@ -132,8 +132,11 @@ def _fetch_report(token, campaign_ids, since_s, to_s):
         raise PartialError(f"download HTTP {d.status_code}")
     content = d.content
     if content[:2] != b"PK":
-        # Один CSV без архива (одна кампания) — API так тоже умеет.
-        return [("single.csv", content.decode("utf-8-sig", errors="replace"))]
+        # Один CSV без архива (одна кампания) — API так тоже умеет. Не-ZIP ответ
+        # бывает только при одной кампании в запросе — имя восстанавливаем из
+        # запрошенного списка, иначе _parse_member не извлечёт campaign_id и
+        # кампания молча пропадёт.
+        return [(f"{campaign_ids[0]}_single.csv", content.decode("utf-8-sig", errors="replace"))]
     zf = zipfile.ZipFile(io.BytesIO(content))
     return [(n, zf.read(n).decode("utf-8-sig", errors="replace")) for n in zf.namelist()]
 
@@ -235,6 +238,9 @@ def collect(since=None, to=None):
             for name, text in members:
                 all_rows.extend(_parse_member(name, text, sku_to_pid, counters))
         win_start = win_end + timedelta(days=1)
+    # Потеря целой кампании (bad_member) не должна коммититься молча — окно не пишем.
+    if counters["bad_member"] > 0:
+        raise PartialError(f"{counters['bad_member']} членов отчёта без campaign_id в имени — окно не пишем")
     since_s, to_s = since.strftime("%Y-%m-%d"), to.strftime("%Y-%m-%d")
     n = db_pg.upsert_ozon_sku_ad_many(all_rows, since_s, to_s)
     m = db_pg.recompute_ozon_daily_ad(since_s, to_s)
