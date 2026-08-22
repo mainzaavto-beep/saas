@@ -330,6 +330,7 @@ def collect(date_from=None, date_to=None):
     if mismatches:
         msg += f", расхождений строки/total_amount: {mismatches}"
     print(msg, flush=True)
+    print(f"##OBS rows={written} from={d_from} to={d_to}", flush=True)
     _MISMATCHES = mismatches
     return written
 

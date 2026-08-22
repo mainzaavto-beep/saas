@@ -115,6 +115,7 @@ def collect(start=None, end=None):
     rows = fetch_by_days(start, end)
     n = db_pg.upsert_finance_many(rows)
     print(f"[wb_finance] записано {n} строк → tenant.wb_finance_report", flush=True)
+    print(f"##OBS rows={n} from={start} to={end}", flush=True)
     return n
 
 

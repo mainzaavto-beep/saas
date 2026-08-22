@@ -26,6 +26,7 @@ Env (читает из Machine/.env): SAAS_DB_* для подключения к
 Координация: боевые Планировщик/сборщики НЕ трогаются. Это отдельный SaaS-воркер.
 """
 import os
+import re
 import sys
 import json
 import time
@@ -89,23 +90,51 @@ PAUSE_EXEMPT_COLLECTORS = {
 # 0 = ok · 3 = partial (собрано, но часть окон пропущена — см. wb_finance.py)
 # · прочее = failed. Маппинг в _run_one.
 
+_OBS_RE_ROWS = re.compile(r"\brows=(\d+)")
+_OBS_RE_FROM = re.compile(r"\bfrom=(\d{4}-\d{2}-\d{2})")
+_OBS_RE_TO = re.compile(r"\bto=(\d{4}-\d{2}-\d{2})")
+
+
+def _parse_obs(stdout_text):
+    """##OBS-маркер сборщика (спека наблюдаемости, компонент 3): последняя
+    строка вида '##OBS rows=N [from=D to=D]' из stdout. Маркера нет (старый/
+    сторонний сборщик) → (None, None, None) — это не ошибка."""
+    rows = eff_from = eff_to = None
+    for line in (stdout_text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("##OBS"):
+            continue
+        m = _OBS_RE_ROWS.search(line)
+        rows = int(m.group(1)) if m else None
+        mf = _OBS_RE_FROM.search(line)
+        mt = _OBS_RE_TO.search(line)
+        eff_from = mf.group(1) if mf else None
+        eff_to = mt.group(1) if mt else None
+    return rows, eff_from, eff_to
+
+
 def _record_run(cabinet_id, collector, status, *, error=None,
-                date_from=None, date_to=None, started_at=None, finished_at=None):
+                date_from=None, date_to=None, started_at=None, finished_at=None,
+                rows_written=None, eff_date_from=None, eff_date_to=None):
     """Строка прогона → jobs.collector_runs. Сбой записи НЕ роняет прогон,
-    но печатается в stderr (правило «никаких молчаливых catch»)."""
+    но печатается в stderr (правило «никаких молчаливых catch»). Возвращает
+    id вставленной строки (нужен задаче 6) или None при сбое записи."""
     try:
         with psycopg.connect(**PG_SUPER) as conn:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO jobs.collector_runs "
                 "(cabinet_id, collector, run_kind, date_from, date_to, status, "
-                " error, started_at, finished_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " error, started_at, finished_at, rows_written, eff_date_from, eff_date_to) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (cabinet_id, collector, RUN_KIND, date_from, date_to, status,
                  error, started_at or datetime.now(timezone.utc),
-                 finished_at or datetime.now(timezone.utc)))
+                 finished_at or datetime.now(timezone.utc),
+                 rows_written, eff_date_from, eff_date_to)).fetchone()
+            return row[0] if row else None
     except Exception as e:
         print(f"    [collector_runs] не записал ({collector}/{status}): {e}",
               file=sys.stderr, flush=True)
+        return None
 
 # Путь к Python интерпретатору.
 PY = sys.executable
@@ -436,6 +465,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         started = datetime.now(timezone.utc)
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=COLLECTOR_TIMEOUT)
+            obs_rows, obs_from, obs_to = _parse_obs(r.stdout)
             if r.returncode == 0:
                 out = (r.stdout or "").strip().splitlines()
                 last = out[-1] if out else "ok"
@@ -443,7 +473,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 ok.append(coll)
                 statuses[coll] = "ok"
                 _record_run(cid, coll, "ok",
-                            date_from=date_from, date_to=date_to, started_at=started)
+                            date_from=date_from, date_to=date_to, started_at=started,
+                            rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
             elif r.returncode == 3:
                 # Контракт exit-кодов: 3 = partial (часть окон пропущена, напр. 429).
                 err = (r.stderr or r.stdout or "").strip().splitlines()
@@ -451,7 +482,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 failed.append(coll)
                 statuses[coll] = "partial"
                 _record_run(cid, coll, "partial", error=(err[-1] if err else None),
-                            date_from=date_from, date_to=date_to, started_at=started)
+                            date_from=date_from, date_to=date_to, started_at=started,
+                            rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
             else:
                 err = (r.stderr or r.stdout or "").strip().splitlines()
                 print(f"{label} FAIL (exit {r.returncode}): {err[-1] if err else ''}", flush=True)
@@ -462,7 +494,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 statuses[coll] = "failed"
                 _record_run(cid, coll, "failed",
                             error=(err[-1] if err else f"exit {r.returncode}"),
-                            date_from=date_from, date_to=date_to, started_at=started)
+                            date_from=date_from, date_to=date_to, started_at=started,
+                            rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
                 err_text = "\n".join(err[-3:]) if err else ""
                 if is_auth_error(err_text):
                     # Храним ТОТ ЖЕ текст, по которому принято решение (может быть
