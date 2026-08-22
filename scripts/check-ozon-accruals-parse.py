@@ -49,7 +49,7 @@ def main():
 
     try:
         from worker.collectors.ozon_accruals import (
-            parse_accrual, parse_accrual_types, row_sum_mismatch, check_single_page,
+            parse_accrual, parse_accrual_types, row_sum_mismatch,
             resolve_window, MIN_LOOKBACK_DAYS, partial_exit_code)
     except ImportError as e:
         print(f"FAIL  модуль worker.collectors.ozon_accruals не импортируется: {e}")
@@ -202,38 +202,7 @@ def main():
     check("Отсутствие unit_number/sku не роняет разбор (синтетические записи)",
           robust, err)
 
-    # --- 6. Ревью задачи 3, важный финдинг №1: сторожок пагинации.
-    #        /v1/finance/accrual/by-day может отдать last_id — курсор не
-    #        реализован, недобор должен падать громко, а не молчать.
-    try:
-        check_single_page({"accruals": [], "last_id": "abc123"}, "2026-08-05")
-        page_guard_raises = False
-    except RuntimeError:
-        page_guard_raises = True
-    check("check_single_page: непустой last_id — исключение (не молчаливый недобор)",
-          page_guard_raises)
-
-    no_raise_ok = True
-    try:
-        check_single_page({"accruals": [], "last_id": ""}, "2026-08-05")
-        check_single_page({"accruals": []}, "2026-08-05")  # last_id вовсе отсутствует
-    except Exception as e:
-        no_raise_ok = False
-        print(f"  неожиданное исключение: {e!r}")
-    check("check_single_page: пустой/отсутствующий last_id — без исключения", no_raise_ok)
-
-    # Сверка на реальной фикстуре: last_id пуст на всех 79 записях (проба
-    # задачи 1), поэтому весь прогон check_single_page должен молча пройти.
-    fixture_page_ok = True
-    try:
-        check_single_page(fixture, "2026-08-05")
-    except RuntimeError as e:
-        fixture_page_ok = False
-        print(f"  {e}")
-    check("check_single_page: фикстура задачи 1 (last_id пуст) — без исключения",
-          fixture_page_ok)
-
-    # --- 7. Ревью задачи 3, важный финдинг №2: рантайм-сверка Σaccrued по
+    # --- 6. Ревью задачи 3, важный финдинг №2: рантайм-сверка Σaccrued по
     #        строкам записи против total_amount (ловит container_fees и любое
     #        другое неразобранное поле, не требуя заранее знать его форму).
     real_mismatches = [a for a in accruals if row_sum_mismatch(a, parse_accrual(a)) is not None]

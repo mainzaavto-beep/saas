@@ -22,6 +22,8 @@ import requests
 REQUEST_PAUSE_SEC = 1.0  # ≥1 с между страницами пагинации (см. iter_postings) —
                          # тот же лимит и та же константа, что в ozon_accruals.py
 
+ACCRUAL_MAX_PAGES = 200  # потолок страниц/день: выше — что-то не так с курсором
+
 SELLER_HOST = "https://api-seller.ozon.ru"
 # ВНИМАНИЕ: api-analytics.ozon.ru НЕ резолвится с нашего сервера (проверено в Фазе 2,
 # 2026-06-17). Все методы, которые раньше шли на analytics_host
@@ -402,14 +404,42 @@ class OzonClient:
 
     def accrual_by_day(self, date) -> dict:
         """POST /v1/finance/accrual/by-day — начисления за сутки по методу
-        начислений. body: {"date": "YYYY-MM-DD"}. Возвращает
-        {"accruals": [...], "last_id": ...}. На пробе (кабинет 1, 2026-08-05)
-        last_id пуст — одна страница на 79 записей, см.
-        docs/ozon-accrual-reconciliation.md. Пагинация через last_id не
-        реализована здесь: до появления кабинета с объёмом, требующим второй
-        страницы, реализовывать курсор без проверки живым ответом — гадать."""
-        return self._post(self.host, "/v1/finance/accrual/by-day",
-                          {"date": _date_iso(date)})
+        начислений, ВСЕ страницы (курсор last_id; реализовано 2026-08-22 —
+        «до онбординга крупных клиентов», спека ozon-accruals-pagination).
+        Возвращает {"accruals": [...все строки...], "pages": N} — last_id
+        наружу не отдаётся, потребителю он больше не нужен.
+        Защита от зацикливания (урок iter_postings 2026-07-02: API может
+        игнорировать курсор и отдавать ту же страницу): повтор last_id или
+        больше ACCRUAL_MAX_PAGES страниц → RuntimeError; вызывающий сборщик
+        обрабатывает это как partial, окно НЕ записывается — громкий отказ
+        вместо молчаливо неполного дня (принцип check_single_page, который
+        этот цикл заменяет)."""
+        accruals = []
+        seen_last_ids = set()
+        pages = 0
+        last_id = ""
+        while True:
+            body = {"date": _date_iso(date)}
+            if last_id:
+                body["last_id"] = last_id
+            data = self._post(self.host, "/v1/finance/accrual/by-day", body)
+            pages += 1
+            page_rows = data.get("accruals") or [] if isinstance(data, dict) else []
+            accruals.extend(page_rows)
+            last_id = (data.get("last_id") or "") if isinstance(data, dict) else ""
+            if not last_id or not page_rows:
+                break
+            if last_id in seen_last_ids:
+                raise RuntimeError(
+                    f"accrual_by_day({_date_iso(date)}): повтор last_id={last_id!r} "
+                    f"— API игнорирует курсор, день собрать целиком нельзя")
+            seen_last_ids.add(last_id)
+            if pages >= ACCRUAL_MAX_PAGES:
+                raise RuntimeError(
+                    f"accrual_by_day({_date_iso(date)}): {pages} страниц — "
+                    f"превышен потолок ACCRUAL_MAX_PAGES")
+            time.sleep(1.0)  # межстраничная пауза: проба 2026-08-11 ловила code 8
+        return {"accruals": accruals, "pages": pages}
 
     def accrual_types(self) -> list[dict]:
         """POST /v1/finance/accrual/types — общий (не per-кабинет) справочник
