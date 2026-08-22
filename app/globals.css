@@ -8,55 +8,58 @@
 :root,
 .dark {
   color-scheme: dark;
-  --bg: #0b1220;
-  --panel: #131c2e;
-  --panel2: #1a2540;
-  --text: #e8edf7;
-  --muted: #8a99b8;
-  --accent: #4f8cff;
-  --accent2: #2bd4a0;
-  --danger: #ff6b6b;
-  --border: #243049;
-  --radius: 12px;
+  --bg: #131417;
+  --panel: #1B1C20;
+  --panel2: #222327;
+  --text: #ECECEA;
+  --muted: #9A9CA3;
+  --accent: #6B8DF2;
+  --accent2: #3FA796;
+  --danger: #E5636A;
+  --border: #2A2B30;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
   /* Алиасы для inline-палитры lib/palette.js (C.surface = var(--surface) …) */
   --surface: var(--panel);
   --surfaceAlt: var(--panel2);
   --ink: var(--text);
-  --faint: #6b7a8f;
+  --faint: #6E7076;
   --line: var(--border);
-  --pos: #4ade80;
-  --neg: #ff6b6b;
-  --warn: #fbbf24;
-  --pink: #f97316;
+  --pos: #4CC38A;
+  --neg: #E5636A;
+  --warn: #D9A44A;
+  --pink: #D07B62;
   --blue: var(--accent);
 }
 
 .light {
   color-scheme: light;
-  --bg: #f5f7fa;
-  --panel: #ffffff;
-  --panel2: #eef1f6;
-  --text: #1a2335;
-  --muted: #5d6b85;
-  --accent: #2563eb;
-  --accent2: #0d9488;
-  --danger: #dc2626;
-  --border: #d8deea;
-  --radius: 12px;
+  --bg: #FAFAF9;
+  --panel: #FFFFFF;
+  --panel2: #F4F4F2;
+  --text: #1C1D21;
+  --muted: #6E7076;
+  --accent: #2E5CE6;
+  --accent2: #0F766E;
+  --danger: #C6373C;
+  --border: #E7E6E3;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(28,29,33,.05), 0 4px 16px rgba(28,29,33,.04);
   --surface: var(--panel);
   --surfaceAlt: var(--panel2);
   --ink: var(--text);
-  --faint: #8a98b0;
+  --faint: #9A9CA0;
   --line: var(--border);
-  --pos: #16a34a;
-  --neg: #dc2626;
-  --warn: #d97706;
-  --pink: #ea580c;
+  --pos: #177E4D;
+  --neg: #C6373C;
+  --warn: #B7791F;
+  --pink: #B45341;
   --blue: var(--accent);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+h1, h2, h3 { letter-spacing: -0.01em; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
@@ -76,7 +79,7 @@ a:hover { text-decoration: underline; }
 .btn:hover { opacity: .9; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.secondary { background: var(--panel2); border: 1px solid var(--border); }
-.err { background: rgba(255,107,107,.12); color: var(--danger); padding: 10px 12px; border-radius: 8px;
+.err { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); padding: 10px 12px; border-radius: 8px;
   font-size: 14px; margin-bottom: 16px; }
 .foot { margin-top: 18px; text-align: center; font-size: 14px; color: var(--muted); }
 
@@ -128,7 +131,7 @@ a:hover { text-decoration: underline; }
   display: none; position: absolute; top: 100%; left: 0;
   min-width: 200px; background: var(--panel);
   border: 1px solid var(--border); border-radius: 10px;
-  padding: 6px; box-shadow: 0 12px 28px rgba(0,0,0,0.4);
+  padding: 6px; box-shadow: var(--shadow);
   z-index: 100; margin-top: 4px;
 }
 /* Невидимый мостик над dropdown — закрывает зазор margin-top:4px,
@@ -143,7 +146,7 @@ a:hover { text-decoration: underline; }
   color: var(--muted); white-space: nowrap;
 }
 .topnav-sublink:hover { background: var(--panel2); color: var(--text); text-decoration: none; }
-.topnav-sublink.active { color: var(--accent); font-weight: 700; background: rgba(79,140,255,0.10); }
+.topnav-sublink.active { color: var(--accent); font-weight: 700; background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .topbar-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; flex-shrink: 0; }
 .topbar-action {
   display: inline-block; padding: 8px 12px; border-radius: 8px;
