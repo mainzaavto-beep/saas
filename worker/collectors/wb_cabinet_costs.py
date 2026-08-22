@@ -109,6 +109,7 @@ def collect(start=None, end=None):
     # cost_type, если правила разнесения поменялись или операция исчезла из отчёта.
     n = db_pg.replace_cabinet_costs_range(rows, start, end)
     print(f"[wb_cabinet_costs] записано {n} строк → tenant.wb_cabinet_costs", flush=True)
+    print(f"##OBS rows={n} from={start} to={end}", flush=True)
     return n
 
 

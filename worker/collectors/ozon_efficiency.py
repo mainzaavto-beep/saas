@@ -220,6 +220,7 @@ def collect(since=None, to=None):
     n_sales = _collect_sales(since, to)
     n_ads = _collect_ads(since, to)
     print(f"[ozon_efficiency] дней с продажами {n_sales}, дней с рекламой {n_ads}", flush=True)
+    print(f"##OBS rows={n_sales} from={since.strftime('%Y-%m-%d')} to={to.strftime('%Y-%m-%d')}", flush=True)
     return n_sales
 
 

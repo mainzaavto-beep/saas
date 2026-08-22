@@ -212,6 +212,7 @@ def collect():
     if nw == 0 and nt == 0:
         print("[wb_references] ПРОПУСК: WB API недоступен, справочники не обновлены (exit 0)", flush=True)
         return 0
+    print(f"##OBS rows={nw + nt}", flush=True)
     return nw + nt
 
 

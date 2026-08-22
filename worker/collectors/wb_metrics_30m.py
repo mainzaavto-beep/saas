@@ -125,6 +125,7 @@ def collect():
         removed = None
 
     print(f"[wb_metrics_30m] записано {written} снапшотов на слот {ts}, удалено старых: {removed}", flush=True)
+    print(f"##OBS rows={written}", flush=True)
     return written
 
 

@@ -74,6 +74,7 @@ def collect():
     n = db_pg.upsert_ozon_prices_many(rows)
     print(f"[ozon_prices] записано {n} из {len(pids)} товаров"
           + (f", сбойных батчей: {failed_batches}" if failed_batches else ""), flush=True)
+    print(f"##OBS rows={n}", flush=True)
     if len(pids) > 0 and n == 0:
         # Каталог есть, а цен нет — это провал сбора, кричим, не молчим.
         print("[ozon_prices] FAIL: каталог непустой, но не записано ни одной цены", flush=True)

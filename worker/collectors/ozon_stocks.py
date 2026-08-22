@@ -65,6 +65,7 @@ def collect():
     written = db_pg.upsert_ozon_stock_many(rows)
     print(f"[ozon_stocks] записано {written} строк"
           + (f", пропущено {n_orphans}" if n_orphans else ""), flush=True)
+    print(f"##OBS rows={written}", flush=True)
     return written
 
 

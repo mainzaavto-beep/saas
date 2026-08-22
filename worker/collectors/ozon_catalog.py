@@ -172,6 +172,7 @@ def collect(visibility="ALL"):
             )
             n += 1
     print(f"[ozon_catalog] записано {n} товаров → tenant.ozon_products", flush=True)
+    print(f"##OBS rows={n}", flush=True)
     return n
 
 

@@ -108,6 +108,7 @@ def collect(since=None, to=None):
     written = db_pg.upsert_ozon_orders_many(clean)
     print(f"[ozon_orders] отправлений {n_postings}, записано {written}"
           + (f", пропущено(нет в каталоге) {n_orphans}" if n_orphans else ""), flush=True)
+    print(f"##OBS rows={written} from={d_from.isoformat()} to={d_to.isoformat()}", flush=True)
     return written
 
 

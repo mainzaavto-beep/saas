@@ -79,6 +79,7 @@ def collect() -> int:
         db_pg.upsert_article(c["nm_id"], c["name"], c.get("brand"), c.get("subject"), c.get("im_url"))
         count += 1
     print(f"[wb_catalog] собрано {count} артикулов → tenant.wb_articles", flush=True)
+    print(f"##OBS rows={count}", flush=True)
     return count
 
 

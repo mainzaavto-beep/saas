@@ -103,6 +103,7 @@ def _collect_one(ds):
         )
         written += 1
     print(f"[wb_metrics] записано {written} метрик за {ds}", flush=True)
+    print(f"##OBS rows={written} from={ds} to={ds}", flush=True)
     return written
 
 

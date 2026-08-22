@@ -78,6 +78,7 @@ def collect(since=None, to=None):
     written = db_pg.upsert_ozon_sales_many(all_rows)
     print(f"[ozon_sales] delivered {len(delivered)}, cancelled {len(cancelled)}, записано {written}"
           + (f", пропущено {n_orphans}" if n_orphans else ""), flush=True)
+    print(f"##OBS rows={written} from={since.strftime('%Y-%m-%d')} to={to.strftime('%Y-%m-%d')}", flush=True)
     return written
 
 

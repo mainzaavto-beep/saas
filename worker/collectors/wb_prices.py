@@ -104,6 +104,7 @@ def collect():
         time.sleep(0.2)
     n = db_pg.upsert_prices_many(rows)
     print(f"[wb_prices] записано {n} цен → tenant.wb_prices", flush=True)
+    print(f"##OBS rows={n}", flush=True)
     collect_site_prices([r["nm_id"] for r in rows])
     return n
 

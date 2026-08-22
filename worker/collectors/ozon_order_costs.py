@@ -1056,6 +1056,7 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
     if mismatches:
         msg += f", расхождений (согласованность/инвариант): {mismatches}"
     print(msg, flush=True)
+    print(f"##OBS rows={n_order + n_cabinet} from={eff_from} to={eff_to}", flush=True)
     _MISMATCHES = mismatches
     return n_order
 

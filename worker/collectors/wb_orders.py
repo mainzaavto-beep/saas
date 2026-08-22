@@ -91,6 +91,7 @@ def collect(start=None, end=None):
     no = db_pg.upsert_orders_many(orders)
     ns = db_pg.upsert_sales_many(sales)
     print(f"[wb_orders] записано: orders +{no}, sales +{ns}", flush=True)
+    print(f"##OBS rows={no + ns} from={start} to={end}", flush=True)
     return no + ns
 
 

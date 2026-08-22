@@ -79,6 +79,7 @@ def collect(since=None, to=None):
         n += 1
     print(f"[ozon_metrics] записано {n} метрик"
           + (f", пропущено {n_orphans}" if n_orphans else ""), flush=True)
+    print(f"##OBS rows={n} from={date_from} to={date_to}", flush=True)
     return n
 
 

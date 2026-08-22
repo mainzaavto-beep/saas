@@ -182,6 +182,7 @@ def collect():
               f"({n_src} строк API → {len(rows)} уникальных nm_id+склад)", flush=True)
     n = db_pg.upsert_stock_many(rows)
     print(f"[wb_stocks] записано {n} строк → tenant.wb_daily_stock", flush=True)
+    print(f"##OBS rows={n}", flush=True)
     return n
 
 

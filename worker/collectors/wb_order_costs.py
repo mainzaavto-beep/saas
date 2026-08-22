@@ -181,6 +181,7 @@ def collect(start=None, end=None):
     rows = _aggregate_sql(start, end)
     n = db_pg.upsert_order_costs_many(rows)
     print(f"[wb_order_costs] записано {n} строк → tenant.wb_order_costs", flush=True)
+    print(f"##OBS rows={n} from={start} to={end}", flush=True)
     return n
 
 

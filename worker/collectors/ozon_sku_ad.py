@@ -265,6 +265,7 @@ def collect(since=None, to=None):
         print(f"  «Корректировка» (без даты/sku, в товары не пишется): "
               f"{counters['correction_sum']:.2f} ₽", flush=True)
     print(f"[ozon_sku_ad] записано строк {n}, товар-дней пересчитано {m}", flush=True)
+    print(f"##OBS rows={n} from={since_s} to={to_s}", flush=True)
     return n
 
 

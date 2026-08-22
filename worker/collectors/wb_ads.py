@@ -203,6 +203,7 @@ def collect(start=None, end=None):
             days_written += 1
 
     print(f"[wb_ads] дней с рекламой: {days_written}, строк daily_ad: {ad_rows}, расход: {round(total_spend)}₽", flush=True)
+    print(f"##OBS rows={ad_rows} from={start} to={end}", flush=True)
     return ad_rows
 
 
