@@ -171,7 +171,8 @@ export default async function CabinetLayout({ children, params }) {
   if (onboardingState === "failed") {
     // Реальный сбой сборки без ретраев (status='failed', см. worker/orchestrator.py
     // --drain-queue) — клиент не должен молча решить, что сервис не работает.
-    // Владельцу алерт уже ушёл через systemd OnFailure — клиенту это знать не нужно.
+    // Владелец видит это операторским баннером (/api/ops/alerts); клиенту
+    // хватает жёлтого баннера устаревших данных.
     banners.push({
       tone: "neg",
       text: "Не получилось загрузить историю заказов — сбой на нашей стороне, не в ваших ключах. Мы уже знаем о проблеме и разбираемся.",

@@ -1,6 +1,7 @@
 // app/layout.js — корневой layout SaaS-дашборда.
 import './globals.css';
 import ThemeProvider from './ThemeProvider.jsx';
+import OpsAlertsBanner from './OpsAlertsBanner.jsx';
 
 export const metadata = {
   title: 'SySell',
@@ -14,7 +15,13 @@ export default function RootLayout({ children }) {
   return (
     <html lang="ru" suppressHydrationWarning>
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          {/* Операторский баннер алертов воркера — рендерится на всех страницах
+              панели (в т.ч. /cabinets/*, /settings, /health); для не-ops
+              пользователей и при ошибке fetch рендерит null (см. компонент). */}
+          <OpsAlertsBanner />
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );
