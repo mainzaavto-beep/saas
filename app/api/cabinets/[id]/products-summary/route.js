@@ -124,19 +124,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     const totals = aggTotals(items);
 
-    // ⚠️ КАНОН (задача 5 плана унификации прибыли): it.profit теперь = canon
-    // profitProduct(nm/pid).profit, где ads ВСЕГДА 0 (реклама у Ozon физически
-    // не разносится по SKU, у WB — решение задачи 2 «симметрично Ozon», см.
-    // докстроку wbProfitProduct) — Σ(item.profit) НЕ содержит рекламу вовсе.
+    // ⚠️ КАНОН (задача 5 плана унификации прибыли; формула ads переписана
+    // задачей 6/7 плана «реклама Ozon по товарам», 2026-08-21/22): it.profit
+    // = canon profitProduct(nm/pid).profit, где ads(товар) ТЕПЕРЬ реальный
+    // per-SKU расход (не 0) — Σ(item.profit) уже содержит Σ item.adSpend.
     // Чтобы totals.profit сходился с pnl.profit (товарная часть = profitProduct
-    // БЕЗ productId, где ads(кабинета) вычитается ОДИН раз) — см. Task 1
-    // check-profit-canon.mjs, проверка «productId-фильтр аддитивен»: Σ profit
-    // (товар) − ads(кабинета) = profit(без фильтра) — вычитаем ПОЛНУЮ кабинетную
-    // рекламу периода здесь, единым блоком (totals.adSpend — информационная
-    // колонка «сколько потрачено на рекламу», как и раньше, item.adSpend
-    // остаётся реальным per-SKU расходом для ДРР/CPA/ROMI, просто больше не
-    // вычитается из item.profit — решение владельца, шлюз
-    // docs/profit-unification-delta.md).
+    // БЕЗ productId, где ПОЛНАЯ ads(кабинета) вычитается ОДИН раз) — см.
+    // check-profit-canon.mjs, проверка 5 «productId-фильтр аддитивен»:
+    // Σ profit(товар) − (ads(кабинета) − Σ ads(товар)) = profit(без фильтра).
+    // Довычитаем здесь ТОЛЬКО нераспределённый остаток (fullAd − Σ item.
+    // adSpend, снизу зажат нулём — округления не должны давать отрицательный
+    // довычет), а не всю fullAd целиком (иначе Σ item.adSpend вычлась бы
+    // ДВАЖДЫ — один раз внутри item.profit, второй раз здесь). item.adSpend
+    // остаётся реальным per-SKU расходом для ДРР/CPA/ROMI (решение владельца,
+    // шлюз docs/profit-unification-delta.md → задача 6 плана «реклама Ozon по
+    // товарам»).
     //
     // logistics больше НЕ пересчитывается отдельным «полным» блоком (в отличие
     // от рекламы): canon-логистика каждого товара — это ПРЯМАЯ сумма
@@ -180,11 +182,15 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           fullAd += (ozad && ozad.s) || 0;
         } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
       }
+      // Σ item.adSpend ДО перезаписи totals.adSpend кабинетной суммой ниже —
+      // нужна, чтобы довычесть только нераспределённый остаток (см. коммент
+      // блока выше), а не всю fullAd целиком.
+      const sumItemAd = totals.adSpend;
       totals.adSpend = round2(fullAd);
-      // item.profit (канон) рекламу не вычитает вовсе (ads=0 на товаре) —
-      // вычитаем ПОЛНУЮ кабинетную рекламу здесь один раз (см. коммент блока
-      // выше), чтобы totals.profit = pnl.profit (товарная часть).
-      totals.profit = round2((totals.profit || 0) - fullAd);
+      // item.profit (канон) ТЕПЕРЬ включает рекламу товара — довычитаем
+      // только нераспределённую часть кабинетной рекламы (fullAd − Σ item.
+      // adSpend), чтобы totals.profit = pnl.profit (товарная часть).
+      totals.profit = round2((totals.profit || 0) - Math.max(0, round2(fullAd - sumItemAd)));
       if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
     }
 
@@ -602,9 +608,10 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
   // товару (SUM(order_costs.profit) БЕЗ фильтра is_return — возвраты внутри,
   // возвратный убыток УЖЕ в returnLogistics/logistics/commission, см.
   // докстроку ozProfitProduct). adSpend — daily_metrics.ad_spend по SKU
-  // (сегодня у Ozon пуст, как и раньше) остаётся информационной колонкой:
-  // canon.ads при productId всегда 0 (Performance API не даёт пер-SKU расход),
-  // profit его больше не вычитает.
+  // (с 2026-08-22 реально заполняется, tenant.ozon_daily_sku_ad, миграция
+  // 043, план «реклама Ozon по товарам») остаётся информационной колонкой
+  // ДЛЯ ДРР/ROI витрины, но с 2026-08-21/22 canon.ads при productId — РЕАЛЬНЫЙ
+  // расход (не 0), profit его теперь вычитает.
   const out = [];
   for (const r of rows) {
     const nm = r.nm;

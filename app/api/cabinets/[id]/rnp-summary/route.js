@@ -106,13 +106,17 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const totals = aggTotals(items);
 
     // ⚠️ КАНОН (задача 5 плана унификации прибыли, симметрично products-
-    // summary): it.profitFact = canon profitProduct(nm/pid).profit, где ads
-    // ВСЕГДА 0 на товаре — Σ(item.profitFact) рекламу не вычитает вовсе.
-    // Вычитаем ПОЛНУЮ кабинетную рекламу периода здесь единым блоком, чтобы
-    // totals.profitFact сходился с pnl.profit (товарная часть) и
-    // products-summary.Σprofit — «один период = одна цифра» (шаг 5 плана).
-    // totals.adSpend (Σ item.adSpend, реальный per-SKU расход) остаётся
-    // информационной колонкой — не трогаем.
+    // summary; формула ads переписана задачей 6/7 плана «реклама Ozon по
+    // товарам», 2026-08-21/22): it.profitFact = canon profitProduct(nm/pid).
+    // profit, где ads(товар) ТЕПЕРЬ реальный per-SKU расход (не 0) —
+    // Σ(item.profitFact) уже содержит Σ item.adSpend. Довычитаем здесь ТОЛЬКО
+    // нераспределённый остаток кабинетной рекламы (fullAd − Σ item.adSpend,
+    // снизу зажат нулём), а не всю fullAd целиком (иначе Σ item.adSpend
+    // вычлась бы дважды), чтобы totals.profitFact = pnl.profit (товарная
+    // часть) и products-summary.Σprofit — «один период = одна цифра» (шаг 5
+    // плана). totals.adSpend (Σ item.adSpend, реальный per-SKU расход, не
+    // перезаписывается ниже, в отличие от products-summary) остаётся
+    // информационной колонкой.
     if (from && to) {
       let fullAd = 0;
       if (platform !== "ozon") {
@@ -133,7 +137,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           fullAd += (ozad && ozad.s) || 0;
         } catch (e) { console.error('[rnp-summary] Ozon ad пересчёт:', e.message); }
       }
-      totals.profitFact = round2((totals.profitFact || 0) - fullAd);
+      totals.profitFact = round2((totals.profitFact || 0) - Math.max(0, round2(fullAd - (totals.adSpend || 0))));
     }
 
     return NextResponse.json({
@@ -409,8 +413,9 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
 
   // Деньги — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли), по
   // товару. adSp остаётся РЕАЛЬНЫМ per-SKU расходом (тот же источник, что и
-  // раньше — daily_metrics) для ДРР/ROI — profit его больше не вычитает
-  // (canon.ads при nmId всегда 0, решение задачи 2).
+  // раньше — daily_metrics) для ДРР/ROI — с 2026-08-21/22 (план «реклама
+  // Ozon по товарам», задача 6) profit его снова вычитает (canon.ads при
+  // nmId — реальный расход, не 0).
   const out = [];
   for (const k of keys) {
     const nm = Number(k);

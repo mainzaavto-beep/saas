@@ -15,10 +15,13 @@
 //
 // Источники факта (сверено с lib/wbMetrics.js, lib/ozonMetrics.js):
 //   WB:    order_costs (канон), sales (шт факт), daily_metrics.ad_spend
-//          (реклама — информационная колонка, canon.ads=0 на товаре),
-//          wb_articles (имя/фото).
+//          (реклама — с 2026-08-21/22 canon.ads на товаре РЕАЛЬНЫЙ расход,
+//          не 0, план «реклама Ozon по товарам», задача 6), wb_articles
+//          (имя/фото).
 //   OZON:  order_costs (канон, включая шт факт), daily_metrics.ad_spend
-//          (информационная), ozon_products (имя/фото).
+//          (с 2026-08-22 реально заполнен по SKU из tenant.ozon_daily_
+//          sku_ad, миграция 043; canon.ads на товаре тоже реальный расход),
+//          ozon_products (имя/фото).
 //
 // Перенос эталона fin/plan.py:plan_fact() под tenantQuery (PG+RLS).
 import { NextResponse } from "next/server";

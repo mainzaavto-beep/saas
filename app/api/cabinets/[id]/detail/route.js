@@ -498,10 +498,10 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // прибыли): revenue/cogs/commission/logistics/acquiring/loyalty/
   // returnLogistics/tax/profit ЕДИНЫЕ с products-summary/rnp-summary/pnl
   // (SUM(order_costs.profit) БЕЗ фильтра is_return — возвраты внутри, см.
-  // докстроку ozProfitProduct). ads канона при productId всегда 0
-  // (Performance API не даёт пер-SKU расход) — totals.ad_spend НИЖЕ
-  // остаётся тем же источником, что и раньше (daily_metrics.ad_spend,
-  // сегодня пуст по SKU у Ozon — как и было).
+  // докстроку ozProfitProduct). ads канона при productId — РЕАЛЬНЫЙ расход
+  // с 2026-08-21/22 (план «реклама Ozon по товарам», tenant.ozon_daily_
+  // sku_ad, миграция 043) — totals.ad_spend НИЖЕ остаётся тем же источником,
+  // что и раньше (daily_metrics.ad_spend), теперь реально заполнен по SKU.
   const finPeriod = await ozProfitProduct(db, taxMode, { from, to }, nm);
 
   // Динамика по дням.

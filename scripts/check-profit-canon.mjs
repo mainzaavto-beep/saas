@@ -61,21 +61,41 @@
 //      обоснование допуска ниже, у самого чека).
 //      ⚠️ ПОЧЕМУ «−остаток», а не голое сравнение сумм: даже с пер-SKU
 //      данными (миграция 043, tenant.ozon_daily_sku_ad) Σ ads(товар) НЕ
-//      равна ads(кабинета) — кампании без товарной разбивки (напр. «Оплата
-//      за заказ — все товары», campaign_id 27109544 у кабинета 1, ~47%
-//      бюджета кабинета в июле) физически не отдают per-SKU статистику
-//      Performance API, их расход остаётся только в ads(кабинета). Кабинетный
-//      вызов (без productId) вычитает ПОЛНУЮ ads(кабинета) РОВНО ОДИН раз —
-//      Σ по товарам оттого ВЫШЕ (менее убыточна), чем profit(без фильтра),
-//      РОВНО на нераспределённый остаток: Σ profit(товар) = profit(без
-//      фильтра) + остаток. Если бы проверка сравнивала голые суммы без
-//      поправки, она была бы математически невыполнима при ЛЮБОМ
+//      равна ads(кабинета) — «нераспределённый остаток» складывается из ДВУХ
+//      компонент: (а) кампании без товарной разбивки (напр. «Оплата за
+//      заказ — все товары», campaign_id 27109544 у кабинета 1, ~47% бюджета
+//      кабинета в июле) физически не отдают per-SKU статистику Performance
+//      API, их расход остаётся только в ads(кабинета); (б) реклама товаров,
+//      у которых В ЭТОМ ПЕРИОДЕ НЕТ строк order_costs (товар рекламировался,
+//      но не продавался/не попал в фин-отчёт) — такой product_id не входит в
+//      цикл проверки (он строится по DISTINCT product_id FROM order_costs),
+//      поэтому его ads физически не попадает в Σ ads(товар), хотя запись в
+//      ozon_daily_metrics/ozon_daily_sku_ad есть (симметрично уже известному
+//      WB-случаю ниже, 7 077,17 ₽ «осиротевших» на nm без order_costs).
+//      Кабинетный вызов (без productId) вычитает ПОЛНУЮ ads(кабинета) РОВНО
+//      ОДИН раз — Σ по товарам оттого ВЫШЕ (менее убыточна), чем profit(без
+//      фильтра), РОВНО на нераспределённый остаток: Σ profit(товар) =
+//      profit(без фильтра) + остаток. Если бы проверка сравнивала голые
+//      суммы без поправки, она была бы математически невыполнима при ЛЮБОМ
 //      нераспределённом остатке — не баг канона, а неизбежное следствие
-//      структурного пробела покрытия (не 100% кампаний имеют SKU-разбивку).
-//      Налог при этом ОСТАЁТСЯ в сумме по товарам без поправки (под
-//      usn_income он линеен по выручке — Σtax(товар) = tax(кабинет) с
-//      точностью до округления round2 на каждый товар, см. коммент в
-//      lib/ozonMetrics.js) — поправка нужна только для ads.
+//      структурного пробела покрытия (не 100% кампаний имеют SKU-разбивку,
+//      не все рекламируемые товары продаются в периоде). Налог при этом
+//      ОСТАЁТСЯ в сумме по товарам без поправки (под usn_income он линеен по
+//      выручке — Σtax(товар) = tax(кабинет) с точностью до округления
+//      round2 на каждый товар, см. коммент в lib/ozonMetrics.js) — поправка
+//      нужна только для ads.
+//   5б. ⚠️ НАХОДКА РЕВЬЮ задачи 6/7: проверка 5 (и WB п.5 ниже) алгебраически
+//      НЕЧУВСТВИТЕЛЬНА к фактическому значению ads_i — Σ ads(товар) сначала
+//      вычитается (внутри profit(товар)), потом прибавляется обратно
+//      (поправка на остаток), поэтому в итоговой формуле ads_i полностью
+//      СОКРАЩАЮТСЯ; проверка 5 прошла бы зелёной, даже если бы ozAdSpend/
+//      wbAdTotal(id) всегда возвращали неверное число — лишь бы одно и то же
+//      число участвовало в обеих частях формулы. Проверка 5б — НЕЗАВИСИМАЯ
+//      сверка САМИХ ads_i: Σ ads(товар)/Σ ads(nm), которую посчитал канон
+//      (цикл по ozAdSpend/wbAdTotal с productId/nmId), против ОДНОГО bulk SQL
+//      SUM(ad_spend) (roPool/saas_ro, без RLS) по ТОМУ ЖЕ множеству id из
+//      ozon_daily_metrics/wb_daily_metrics — другой код, другое подключение,
+//      значит бы поймала регресс в самом ozAdSpend/wbAdTotal, допуск 0,05 ₽.
 //
 // ═══════════════════════ WB-СЕКЦИЯ (задача 2) ═══════════════════════
 // Симметричные проверки против lib/wbMetrics.js::wbProfitProduct/
@@ -218,6 +238,7 @@ async function runOzonChecks() {
       nullProductRows: Number(nullProductRow?.n) || 0,
       sumByProduct: Math.round(sumByProduct * 100) / 100,
       sumByProductAds: Math.round(sumByProductAds * 100) / 100,
+      productIds: productRows.map((r) => r.product_id),
     };
   });
 
@@ -343,6 +364,34 @@ async function runOzonChecks() {
   if (canon.nullProductRows > 0) {
     console.log(`  ⚠️ product_id IS NULL строк в периоде: ${canon.nullProductRows} — их деньги в Σ по товарам не попадают (ожидаемо, не баг проверки).`);
   }
+
+  // ── Проверка 5б (находка ревью задачи 6): проверка 5 выше алгебраически
+  // НЕЧУВСТВИТЕЛЬНА к фактическому значению ads_i — Σ profit(товар) уже
+  // содержит "−ads_i" (см. ozProfitProduct), а поправка "−(ads(кабинета) −
+  // Σ ads(товар))" прибавляет Σ ads_i обратно → ads_i сокращаются в формуле,
+  // проверка 5 прошла бы ЗЕЛЁНОЙ, даже если бы ozAdSpend(productId) всегда
+  // возвращал 0 или любое другое неверное число, лишь бы одно и то же число
+  // подставлялось и в profit(товар), и в Σ ads(товар). Эта проверка —
+  // НЕЗАВИСИМАЯ сверка САМИХ значений ads_i (не их алгебраической роли):
+  // Σ ads(товар), которую только что посчитал канон (через ozAdSpend по
+  // каждому product_id в цикле выше), против ОДНОГО bulk SQL-запроса к тому
+  // же ozon_daily_metrics.ad_spend по ТОМУ ЖЕ множеству product_id — другой
+  // код (агрегатный GROUP не нужен, просто SUM с ANY-фильтром), другое
+  // подключение (roPool/saas_ro, без RLS), поэтому баг в SQL-тексте самого
+  // ozAdSpend (например, неверная граница даты) здесь бы проявился. ──
+  const { rows: [pidAdRow] } = await roPool.query(
+    `SELECT COALESCE(SUM(ad_spend),0) AS s
+     FROM tenant.ozon_daily_metrics
+     WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date
+       AND product_id = ANY($4::bigint[])`,
+    [CABINET_ID, FROM, TO, canon.productIds]
+  );
+  const indSumByProductAds = num(pidAdRow.s);
+  verdict(
+    'Σ ads(товар) = SQL(ad_spend) — независимая проверка (bulk SUM по ozon_daily_metrics, тот же набор product_id)',
+    Math.abs(canon.sumByProductAds - indSumByProductAds) <= PRODUCT_SUM_TOL,
+    `Σ ads(товар) канон=${fmtRub(canon.sumByProductAds)}, независимый SQL=${fmtRub(indSumByProductAds)}, разница=${fmtRub(canon.sumByProductAds - indSumByProductAds)}`
+  );
   console.log('');
 }
 
@@ -397,6 +446,7 @@ async function runWbChecks() {
       nullNmRows: Number(nullNmRow?.n) || 0,
       sumByNm: Math.round(sumByNm * 100) / 100,
       sumByNmAds: Math.round(sumByNmAds * 100) / 100,
+      nmIds: nmRows.map((r) => r.nm_id),
     };
   });
 
@@ -541,6 +591,26 @@ async function runWbChecks() {
   if (canon.nullNmRows > 0) {
     console.log(`  ⚠️ nm_id IS NULL строк в периоде: ${canon.nullNmRows} — их деньги в Σ по nm не попадают (ожидаемо, не баг проверки).`);
   }
+
+  // ── Проверка 5б (находка ревью задачи 6, симметрично Ozon): проверка 5
+  // выше алгебраически нечувствительна к фактическому значению ads_i (то же
+  // сокращение в формуле, см. коммент у Ozon-версии этой проверки). Здесь —
+  // независимая сверка Σ ads(nm) против bulk SQL SUM(ad_spend) по тому же
+  // множеству nm_id из wb_daily_metrics, другое подключение (roPool/
+  // saas_ro). ──
+  const { rows: [nmAdRow] } = await roPool.query(
+    `SELECT COALESCE(SUM(ad_spend),0) AS s
+     FROM tenant.wb_daily_metrics
+     WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date
+       AND nm_id = ANY($4::bigint[])`,
+    [CABINET_ID, FROM, TO, canon.nmIds]
+  );
+  const indSumByNmAds = num(nmAdRow.s);
+  verdict(
+    'Σ ads(nm) = SQL(ad_spend) — независимая проверка (bulk SUM по wb_daily_metrics, тот же набор nm_id)',
+    Math.abs(canon.sumByNmAds - indSumByNmAds) <= PRODUCT_SUM_TOL,
+    `Σ ads(nm) канон=${fmtRub(canon.sumByNmAds)}, независимый SQL=${fmtRub(indSumByNmAds)}, разница=${fmtRub(canon.sumByNmAds - indSumByNmAds)}`
+  );
   console.log('');
 }
 

@@ -39,7 +39,15 @@ DAYS_TO="${3:-0}"
 # прогон systemd-таймера saas-worker. Без этой строки ozon_accruals отрабатывал
 # бы только при онбординге/backfill, а данные tenant.ozon_accruals застывали бы
 # на дате последнего ручного прогона, как и было с wb_cabinet_costs до 2026-08-07.
-MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency"
+# 2026-08-22: ozon_sku_ad добавлен сюда тем же порядком (план «реклама Ozon по
+# товарам», задача 7) — зарегистрирован в OZON_COLLECTORS оркестратора (задача 3
+# того же плана), но без явного упоминания здесь регулярный прогон его бы не звал
+# → tenant.ozon_daily_sku_ad и товарная реклама на «Сводке» застывали бы на дате
+# последнего ручного прогона/бэкфилла. ⚠️ Отчёт Performance API отдаёт ОДИН
+# активный отчёт кабинета одновременно — прогон занимает ~9 минут НА КАБИНЕТ
+# (опрос статуса до готовности отчёта), заметно дольше остальных Ozon-сборщиков
+# в этом списке — учтено в docs/metrics-contract.md (окно сбора/расписание).
+MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю

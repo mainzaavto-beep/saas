@@ -188,24 +188,33 @@ export default function SummaryPage({ cabinetId }) {
   // (те же формулы, что server aggTotals в route.js), производные — от
   // пересчитанных сумм.
   //
-  // Реклама (adSpend) — ОСОБЫЙ СЛУЧАЙ: totals.adSpend с сервера — это ПОЛНАЯ
-  // кабинетная реклама (daily_metrics/ozon_daily_efficiency за период), а НЕ
-  // Σ item.adSpend — она физически не размазана по SKU (решение владельца).
+  // Реклама (adSpend) — с 2026-08-21 (канон обеих площадок, задача 6 плана
+  // «реклама по товарам») item.profit ТЕПЕРЬ ВКЛЮЧАЕТ реальную рекламу самого
+  // товара (item.adSpend, из daily_metrics/ozon_daily_sku_ad по SKU). Но
+  // totals.adSpend с сервера — это ПОЛНАЯ кабинетная реклама
+  // (daily_metrics/ozon_daily_efficiency за период), а Σ item.adSpend по всем
+  // товарам периода СТРУКТУРНО МЕНЬШЕ: часть кампаний (напр. «Оплата за
+  // заказ — все товары» у Ozon) не отдаёт пер-SKU разбивку через API, их
+  // расход остаётся только в totals.adSpend («нераспределённый остаток»).
   // Поэтому:
-  //  • без товарного фильтра (filtered === все товары периода) — вычитаем
-  //    fullAd из Σ item.profit, воспроизводя серверную композицию totals.profit
-  //    1:1 (дефолтный вид не меняется ни на копейку);
-  //  • при активном товарном фильтре — вычитать ВСЮ кабинетную рекламу из
-  //    прибыли ПОДМНОЖЕСТВА товаров было бы некорректно (реклама не привязана
+  //  • без товарного фильтра (filtered === все товары периода) — Σ item.profit
+  //    уже содержит Σ item.adSpend; довычитаем ТОЛЬКО нераспределённый остаток
+  //    (fullAd − Σ item.adSpend, снизу зажат нулём — округления не должны
+  //    давать отрицательный «довычет»), воспроизводя серверную композицию
+  //    totals.profit 1:1 (дефолтный вид не меняется ни на копейку);
+  //  • при активном товарном фильтре — довычитать нераспределённый остаток из
+  //    прибыли ПОДМНОЖЕСТВА товаров было бы некорректно (остаток не привязан
   //    к конкретным SKU), поэтому «Прибыль»/tfoot показывают Σ item.profit
-  //    БЕЗ вычета рекламы, с пометкой в title. Плитки «Реклама, ₽» и «ДРР
-  //    (общий)» остаются кабинетными целиком (не фильтруются) — это следует
-  //    из их подписи «общий» — с явной пометкой в title.
+  //    КАК ЕСТЬ (реклама выбранных товаров уже внутри), с пометкой в title.
+  //    Плитки «Реклама, ₽» и «ДРР (общий)» остаются кабинетными целиком (не
+  //    фильтруются) — это следует из их подписи «общий» — с явной пометкой в
+  //    title.
   const filteredTotals = useMemo(() => {
     const ft = {
       ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
       orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
       acquiring: 0, loyalty: 0, tax: 0, profit: 0, stock: 0, returnLogistics: 0,
+      adSpend: 0,
     };
     for (const i of filtered) {
       ft.ordered += i.ordered || 0;
@@ -221,12 +230,17 @@ export default function SummaryPage({ cabinetId }) {
       ft.acquiring += i.acquiring || 0;
       ft.loyalty += i.loyalty || 0;
       ft.tax += i.tax || 0;
-      ft.profit += i.profit || 0; // канон: item.profit рекламу не содержит (ads=0)
+      ft.profit += i.profit || 0; // канон: item.profit ТЕПЕРЬ включает рекламу товара
       ft.stock += i.stock || 0;
       ft.returnLogistics += i.returnLogistics || 0;
+      ft.adSpend += i.adSpend || 0;
     }
     const fullAd = data?.totals?.adSpend || 0;
-    if (!hasProductFilter) ft.profit = round2(ft.profit - fullAd);
+    // item.profit теперь ВКЛЮЧАЕТ рекламу самого товара (канон 2026-08-21).
+    // Без фильтра доводим до серверного totals.profit, вычитая только
+    // НЕРАСПРЕДЕЛЁННУЮ часть кабинетной рекламы (корректировки + кампании
+    // без товарной разбивки): fullAd − Σ item.adSpend.
+    if (!hasProductFilter) ft.profit = round2(ft.profit - Math.max(0, round2(fullAd - ft.adSpend)));
     ft.buyoutPct = (ft.sold + ft.returns + ft.cancelled) > 0
       ? round2(100 * ft.sold / (ft.sold + ft.returns + ft.cancelled)) : null;
     ft.margin = ft.salesRub ? round2(100 * ft.profit / ft.salesRub) : null;
@@ -296,8 +310,8 @@ export default function SummaryPage({ cabinetId }) {
           value={money(ft.profit)}
           color={(ft.profit || 0) >= 0 ? C.pos : C.neg}
           title={hasProductFilter
-            ? "По выбранным товарам, БЕЗ вычета рекламы кабинета целиком (реклама не размазывается по SKU)"
-            : "Вкл. вычет полной рекламы кабинета за период (см. плитку «Реклама, ₽»)"}
+            ? "По выбранным товарам, включая их рекламу; нераспределённая кабинетная реклама (корректировки, кампании без товарной разбивки) не вычитается"
+            : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный)"}
         />
         <Kpi label="Средняя маржа" value={pct(ft.margin)} />
         <Kpi label="Заказано, шт" value={num(ft.ordered)} />
@@ -311,7 +325,7 @@ export default function SummaryPage({ cabinetId }) {
         <Kpi
           label="Реклама, ₽"
           value={money(t.adSpend)}
-          title="Реклама всего кабинета за период — не размазывается по товарам, фильтрами не меняется"
+          title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы"
         />
         <Kpi
           label="Кабинетные расходы, ₽"
@@ -469,14 +483,14 @@ export default function SummaryPage({ cabinetId }) {
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{money(ft.logistics)}</td>
                 <td style={tdFootR}>{money(ft.acquiring)}</td>
-                <td style={tdFootR} title="Реклама всего кабинета — не размазывается по товарам, фильтрами не меняется">{money(t.adSpend)}</td>
+                <td style={tdFootR} title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы">{money(t.adSpend)}</td>
                 <td style={tdFootR}>{money(ft.loyalty)}</td>
                 <td style={tdFootR}>{money(ft.tax)}</td>
                 <td
                   style={{ ...tdFootR, fontWeight: 800, color: (ft.profit || 0) >= 0 ? C.pos : C.neg }}
                   title={hasProductFilter
-                    ? "По выбранным товарам, БЕЗ вычета рекламы кабинета целиком"
-                    : "Вкл. вычет полной рекламы кабинета за период"}
+                    ? "По выбранным товарам, включая их рекламу; нераспределённая кабинетная реклама (корректировки, кампании без товарной разбивки) не вычитается"
+                    : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный)"}
                 >{money(ft.profit)}</td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{pct(ft.margin)}</td>
