@@ -218,6 +218,10 @@ def collect(since=None, to=None):
         to = yesterday          # текущий день не пишем — растёт внутри дня
     if since is None:
         since = datetime.now() - timedelta(days=14)
+    # Пол окна: ретро-ревизии закрытых дней доказаны пробой 2026-08-21;
+    # расписание передаёт узкое окно, без пола ревизии молча замрут — грабля
+    # F2 ozon_accruals.
+    since = min(since, datetime.now() - timedelta(days=14))
     token = _token()
     if not token:
         print("  Performance credentials нет/токен не получен — skip "

@@ -170,11 +170,14 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       }
       if (platform !== "wb") {
         try {
-          // ⚠️ 2026-08-02: реклама Ozon существует только «кабинет×день»
+          // ⚠️ 2026-08-02: было — реклама Ozon существовала только «кабинет×день»
           // (ozon_daily_efficiency; per-SKU daily_metrics.ad_spend ПУСТ, до
           // фикса 6046d36 расход не собирался вовсе — прибыль завышалась).
-          // В totals вычитаем кабинетный расход; по товарам Ozon-реклама не
-          // разнесена (как кабинетные расходы WB). date — DATE, сравниваем с 'YYYY-MM-DD'.
+          // С 2026-08-22 per-SKU расход реально заполняется (tenant.ozon_daily_
+          // sku_ad, миграция 043, план «реклама Ozon по товарам») и уже вычтен
+          // внутри item.profit — здесь по-прежнему вычитаем кабинетный fullAd
+          // из totals, но только НЕРАСПРЕДЕЛЁННЫЙ остаток (см. коммент блока
+          // выше), не всю сумму. date — DATE, сравниваем с 'YYYY-MM-DD'.
           const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
             `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM ozon_daily_efficiency
                      WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
@@ -379,10 +382,9 @@ async function collectWB(from, toEnd, shopName, taxMode) {
 
   // Деньги — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли), по
   // товару. adSpend — РЕАЛЬНЫЙ per-SKU расход (данные у WB есть физически,
-  // wbAdTotal groupByNm), остаётся информационной колонкой: canon.ads при
-  // nmId всегда 0 (решение задачи 2 — «симметрично Ozon», см. докстроку
-  // wbProfitProduct), profit его больше не вычитает — решение владельца
-  // (шлюз docs/profit-unification-delta.md).
+  // wbAdTotal groupByNm) — с 2026-08-22 canon.ads при nmId тоже РЕАЛЬНЫЙ
+  // расход, не 0 (план «реклама Ozon по товарам», задача 6/7, симметрично
+  // Ozon, см. докстроку wbProfitProduct), profit его теперь вычитает.
   const out = [];
   for (const r of rows) {
     const nm = r.nm;

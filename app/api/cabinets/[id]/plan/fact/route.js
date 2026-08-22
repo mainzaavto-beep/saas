@@ -210,9 +210,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // унификации прибыли): margin_fact_rub = f.profit, себестоимость факта —
     // ФАКТ из order_costs.cost (f.cogs), НЕ плановая cost_plan (была
     // аппроксимацией costPlan×qtyFact) — цель задачи 5 «факт-COGS». ads
-    // канона на товаре всегда 0 — ad_spend остаётся реальной информационной
-    // колонкой (drr_fact/roi_fact её используют для отображения, profit её
-    // больше не вычитает).
+    // канона на товаре — РЕАЛЬНЫЙ per-SKU расход с 2026-08-21/22 (план
+    // «реклама Ozon по товарам», задача 6) — f.profit (marginFactRub) его
+    // уже вычитает; ad_spend остаётся тем же источником для drr_fact/roi_fact.
     if (is_waiting) { items.push(item); continue; }
     if (platform === "WB" && nm == null) { items.push(item); continue; }
     if (platform === "OZON" && pid == null) { items.push(item); continue; }

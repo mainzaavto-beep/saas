@@ -213,6 +213,10 @@ def collect(since=None, to=None):
         since = datetime.now() - timedelta(days=7)
     if to is None:
         to = datetime.now()
+    # Пол окна: ретро-ревизии закрытых дней доказаны пробой 2026-08-21;
+    # расписание передаёт узкое окно, без пола ревизии молча замрут — грабля
+    # F2 ozon_accruals.
+    since = min(since, datetime.now() - timedelta(days=14))
     n_sales = _collect_sales(since, to)
     n_ads = _collect_ads(since, to)
     print(f"[ozon_efficiency] дней с продажами {n_sales}, дней с рекламой {n_ads}", flush=True)

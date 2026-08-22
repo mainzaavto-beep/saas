@@ -27,10 +27,12 @@ export const dynamic = "force-dynamic";
 //
 //  Канон финансов = тот же, что в /products-summary и pnl (lib/wbMetrics.js
 //  ::wbProfitProduct, lib/ozonMetrics.js::ozProfitProduct — задача 5 плана
-//  унификации прибыли) — profitFact на товар = canon.profit (ads=0 на
-//  товаре, кабинетная реклама вычитается из totals единым блоком ниже).
-//  adSpend в строках — реальный per-SKU расход (daily_metrics), информационная
-//  колонка, profit больше не вычитает.
+//  унификации прибыли) — profitFact на товар = canon.profit, где ads(товар)
+//  с 2026-08-21/22 РЕАЛЬНЫЙ per-SKU расход (план «реклама Ozon по товарам»,
+//  задача 6/7), не 0 — profit его вычитает; нераспределённый остаток
+//  кабинетной рекламы довычитается из totals единым блоком ниже.
+//  adSpend в строках — тот же реальный per-SKU расход (daily_metrics),
+//  информационная колонка для ДРР/ROI.
 //
 //  Динамика (CTR, рейтинг): текущий период vs предыдущий период той же длины.
 //  prevTo = from − 1 день, prevFrom = prevTo − (days−1).
@@ -574,8 +576,9 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
   ]);
 
   // Деньги — КАНОН (ozProfitProduct, задача 5 плана унификации прибыли), по
-  // товару. adSp — daily_metrics.ad_spend (сегодня у Ozon пуст по SKU, как и
-  // раньше) остаётся информационной колонкой, profit её не вычитает.
+  // товару. adSp — daily_metrics.ad_spend (с 2026-08-22 реально заполнен по
+  // SKU из tenant.ozon_daily_sku_ad, миграция 043) — canon.ads при productId
+  // РЕАЛЬНЫЙ расход, profit его теперь вычитает (см. header-докстроку файла).
   const out = [];
   for (const k of keys) {
     const nm = Number(k);

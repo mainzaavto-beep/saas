@@ -255,9 +255,9 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   // 5б) Финансы периода — КАНОН (wbProfitProduct, задача 5 плана унификации
   // прибыли): revenue/commission/logistics/acquiring/loyalty/returnLogistics/
   // tax/profit ЕДИНЫЕ с products-summary/rnp-summary/pnl. ads канона при nmId
-  // всегда 0 (см. докстроку wbProfitProduct) — totals.adSpend НИЖЕ остаётся
-  // РЕАЛЬНЫМ информационным per-SKU расходом (данные у WB физически есть,
-  // profit их просто больше не вычитает — решение владельца, шлюз).
+  // — РЕАЛЬНЫЙ per-SKU расход с 2026-08-22 (план «реклама Ozon по товарам»,
+  // задача 6/7, симметрично Ozon) — profit его теперь вычитает; totals.adSpend
+  // НИЖЕ остаётся тем же источником (данные у WB физически есть).
   const fin = await wbProfitProduct(db, taxMode, { from, to }, nm);
   const unitCost = await wbUnitCost(db, nm);
 
@@ -361,9 +361,9 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   totals.price_with_spp = lastDay.price_with_spp ?? null;
   for (const k of SUM_KEYS) if (k.endsWith("spend")) totals[k] = Math.round(totals[k] * 100) / 100;
 
-  // Итоги периода — КАНОН (fin = wbProfitProduct выше). adSp остаётся
-  // РЕАЛЬНЫМ информационным per-SKU расходом (см. коммент у fin выше) —
-  // profit его больше не вычитает (canon.ads при nmId = 0, решение задачи 2).
+  // Итоги периода — КАНОН (fin = wbProfitProduct выше). adSp — РЕАЛЬНЫЙ
+  // per-SKU расход (см. коммент у fin выше) — с 2026-08-22 profit его снова
+  // вычитает (canon.ads при nmId — реальный расход, не 0).
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
   totals.revenue = fin.revenue; totals.cost = fin.cogs;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
@@ -612,9 +612,9 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     totals[k] = Math.round(totals[k] * 100) / 100;
   }
   // Налог/прибыль периода — КАНОН (finPeriod = ozProfitProduct выше). ads
-  // канона при productId = 0 — totals.ad_spend (реальный daily_metrics-
-  // расход, у Ozon сегодня пуст по SKU) остаётся информационной колонкой,
-  // profit её больше не вычитает (решение задачи 1/5, симметрично WB).
+  // канона при productId — РЕАЛЬНЫЙ расход с 2026-08-21/22 (см. коммент у
+  // finPeriod выше) — totals.ad_spend тот же источник (daily_metrics.ad_spend,
+  // реально заполнен по SKU), profit его теперь вычитает (симметрично WB).
   totals.tax = finPeriod.tax;
   totals.profit = finPeriod.profit;
   totals.returnLogistics = finPeriod.returnLogistics;
