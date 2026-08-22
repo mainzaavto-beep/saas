@@ -6,10 +6,11 @@
 .kpi-card {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 16px 20px;
   flex: 1 1 200px;
   min-width: 180px;
+  box-shadow: var(--shadow);
 }
 .kpi-card .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .kpi-card .value { font-size: 26px; font-weight: 700; }
@@ -19,9 +20,10 @@
 .section {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 20px;
   margin-bottom: 24px;
+  box-shadow: var(--shadow);
 }
 .section h3 { margin: 0 0 16px; font-size: 16px; }
 
@@ -34,12 +36,15 @@
   border-bottom: 1px solid var(--border);
   font-weight: 600;
   white-space: nowrap;
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
 }
 .table td {
   padding: 8px 6px;
-  border-bottom: 1px solid rgba(36, 48, 73, 0.5);
+  border-bottom: 1px solid var(--border);
 }
-.table tr:hover td { background: rgba(79, 140, 255, 0.05); }
+.table tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 
 /* МП-бейджи */
 .mp-badge {
@@ -48,12 +53,12 @@
   font-size: 11px;
   font-weight: 600;
 }
-.mp-wb { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
-.mp-ozon { background: rgba(249, 115, 22, 0.15); color: #f97316; }
+.mp-wb { background: color-mix(in srgb, var(--blue) 15%, transparent); color: var(--blue); }
+.mp-ozon { background: color-mix(in srgb, var(--pink) 15%, transparent); color: var(--pink); }
 
 /* Цвета прибыли */
-.positive { color: #4ade80; }
-.negative { color: #f87171; }
+.positive { color: var(--pos); }
+.negative { color: var(--neg); }
 
 /* Фильтры */
 .filters {
