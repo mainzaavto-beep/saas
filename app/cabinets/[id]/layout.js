@@ -91,6 +91,30 @@ export default async function CabinetLayout({ children, params }) {
     [cabinetId]
   );
 
+  // Устаревшие данные при исправных ключах: auth_state='ok', но воркер тихо
+  // перестал докатывать ключевые сборщики площадки (финансы/заказы) — клиент
+  // смотрит на старые цифры и не знает об этом. Порог — SAAS_STALE_HOURS
+  // (по умолчанию 24 ч), задача 5 плана наблюдаемости воркера.
+  const STALE_HOURS = Number(process.env.SAAS_STALE_HOURS || 24);
+  const STALE_COLLECTORS = { ozon: ["ozon_accruals", "ozon_orders"], wb: ["wb_finance", "wb_orders"] };
+  const okShops = await query(
+    `SELECT mp_code, created_at
+       FROM auth.shops
+      WHERE cabinet_id = $1 AND is_active = true AND auth_state = 'ok'`,
+    [cabinetId]
+  );
+  const staleCollectorCodes = okShops.flatMap((s) => STALE_COLLECTORS[s.mp_code] || []);
+  const lastOkRuns = staleCollectorCodes.length
+    ? await query(
+        `SELECT collector, MAX(finished_at) AS last_ok
+           FROM jobs.collector_runs
+          WHERE cabinet_id = $1 AND status = 'ok' AND collector = ANY($2)
+          GROUP BY collector`,
+        [cabinetId, staleCollectorCodes]
+      )
+    : [];
+  const lastOkByCollector = Object.fromEntries(lastOkRuns.map((r) => [r.collector, r.last_ok]));
+
   // Первичная загрузка: задание в очереди означает, что данные ещё едут.
   // Фильтр по job_type='onboarding' — иначе ежедневное/ресинк-задание того же
   // кабинета ложно показало бы «загружаем историю за 75 дней» (находка №7:
@@ -156,6 +180,38 @@ export default async function CabinetLayout({ children, params }) {
       text: `${mp}: ключи не работают${since}.`,
       link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
     });
+  }
+  // Ключи целы, но данные площадки не обновлялись дольше порога — тихий сбой
+  // сборщика, а не проблема клиента. Магазин без ни одного успешного прогона
+  // ключевого сборщика не считаем сломанным, пока он моложе порога: это
+  // обычный онбординг, а не сбой (см. классификацию ниже).
+  {
+    const staleMs = STALE_HOURS * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    for (const s of okShops) {
+      const collectors = STALE_COLLECTORS[s.mp_code];
+      if (!collectors) continue;
+      const dates = collectors.map((c) => lastOkByCollector[c] || null);
+      const known = dates.filter(Boolean).sort((a, b) => new Date(a) - new Date(b));
+      const oldestKnown = known[0] || null;
+      const missingAny = dates.some((d) => !d);
+      const shopAgeMs = nowMs - new Date(s.created_at).getTime();
+
+      let staleSince = null;
+      if (missingAny) {
+        if (shopAgeMs > staleMs) staleSince = oldestKnown || s.created_at;
+      } else if (nowMs - new Date(oldestKnown).getTime() > staleMs) {
+        staleSince = oldestKnown;
+      }
+
+      if (staleSince) {
+        const mp = s.mp_code === "wb" ? "Wildberries" : s.mp_code === "ozon" ? "Ozon" : s.mp_code;
+        banners.push({
+          tone: "warn",
+          text: `Данные ${mp} не обновлялись с ${new Date(staleSince).toLocaleDateString("ru-RU")}. Мы уже разбираемся.`,
+        });
+      }
+    }
   }
   // Классификация состояния первичной загрузки — общая с /onboarding-status
   // (lib/onboardingStatus.js), чтобы SSR-рендер и клиентский опрос не расходились.
