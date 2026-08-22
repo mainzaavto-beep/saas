@@ -23,8 +23,9 @@ export async function GET() {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
-  // Лёгкий запрос (индекс collector_runs_coll_fin) — баннер опрашивается со
-  // всех страниц панели, поэтому окно уже, чем /api/health (48 ч вместо 14 дн).
+  // Лёгкий запрос (фильтр по started_at, индекс collector_runs_coll_fin тут
+  // не участвует — таблица небольшая, seq scan приемлем) — баннер опрашивается
+  // со всех страниц панели, поэтому окно уже, чем /api/health (48 ч вместо 14 дн).
   const rows = await query(
     `SELECT cabinet_id, collector, run_kind, status, started_at
        FROM jobs.collector_runs

@@ -78,6 +78,8 @@ def mark_failure(shop_id, error):
                 """UPDATE auth.shops
                       SET auth_fail_count = auth_fail_count + 1,
                           auth_state = CASE
+                                          WHEN auth_state = 'disabled'
+                                               THEN 'disabled'
                                           WHEN auth_state = 'paused'
                                                AND auth_fail_count + 1 >= %s
                                                THEN 'disabled'
