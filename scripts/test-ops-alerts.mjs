@@ -9,7 +9,7 @@ const HOUR = 3600 * 1000;
 const ago = (h) => new Date(NOW.getTime() - h * HOUR).toISOString();
 
 let passed = 0;
-const total = 7;
+const total = 8;
 function check(name, fn) {
   try {
     fn();
@@ -96,6 +96,19 @@ check('partial×2,ok → пусто', () => {
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 0);
+});
+
+// (з) timeout, failed (2 тика подряд, DESC) → red — timeout считается сбоем
+// наравне с failed, иначе стабильно падающий по таймауту сборщик никогда
+// не даст серийный алерт.
+check('timeout,failed → red', () => {
+  const rows = [
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'timeout', started_at: ago(1) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(2) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].level, 'red');
 });
 
 console.log(`OK ${passed}/${total}`);
