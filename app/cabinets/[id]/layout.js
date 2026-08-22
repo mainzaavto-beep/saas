@@ -175,9 +175,14 @@ export default async function CabinetLayout({ children, params }) {
     const since = s.auth_failed_at
       ? ` — данные не обновляются с ${new Date(s.auth_failed_at).toLocaleDateString("ru-RU")}`
       : "";
+    // disabled — контрольные попытки паузы исчерпаны (worker/shop_auth.py), сбор
+    // не возобновится сам; paused — ещё пробуем раз в сутки, текст мягче.
+    const text = s.auth_state === "disabled"
+      ? `${mp}: сбор остановлен — обновите ключи API${since}.`
+      : `${mp}: ключи не работают${since}.`;
     banners.push({
       tone: "neg",
-      text: `${mp}: ключи не работают${since}.`,
+      text,
       link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
     });
   }

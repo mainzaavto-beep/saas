@@ -136,6 +136,26 @@ def _record_run(cabinet_id, collector, status, *, error=None,
               file=sys.stderr, flush=True)
         return None
 
+
+def _mark_blocked(run_ids):
+    """Переклассифицировать уже записанные строки collector_runs в 'blocked'
+    (задача 6 плана «наблюдаемость воркера»). Вызывается ПОСЛЕ цикла по
+    сборщикам в _run_one, когда стало известно, какие из уже отработавших
+    (и записанных как failed/skipped) сборщиков на самом деле упёрлись в
+    отказ авторизации — контрольная попытка паузы, а не настоящий сбой
+    сборки. Тот же паттерн, что у _record_run: сбой UPDATE не роняет прогон,
+    только печатается в stderr."""
+    if not run_ids:
+        return
+    try:
+        with psycopg.connect(**PG_SUPER) as conn:
+            conn.execute(
+                "UPDATE jobs.collector_runs SET status = 'blocked' WHERE id = ANY(%s)",
+                (run_ids,))
+    except Exception as e:
+        print(f"    [collector_runs] не переклассифицировал в blocked ({run_ids}): {e}",
+              file=sys.stderr, flush=True)
+
 # Путь к Python интерпретатору.
 PY = sys.executable
 
@@ -433,6 +453,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
     auth_error_texts = []      # тексты ошибок, похожих на отказ авторизации
     auth_failed_collectors = []  # какие сборщики упали именно по авторизации
+    run_ids = {}  # coll -> id строки collector_runs (для переклассификации в blocked ниже)
 
     for coll in shop_collectors:
         dep = GUARD_DEPS.get(coll)
@@ -440,7 +461,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             reason = f"{dep} status={statuses[dep]} — агрегат не пересчитан (guard от затирания)"
             print(f"     [{coll}] SKIP: {reason}", flush=True)
             statuses[coll] = "skipped"
-            _record_run(cid, coll, "skipped", error=reason,
+            run_ids[coll] = _record_run(cid, coll, "skipped", error=reason,
                         date_from=date_from, date_to=date_to)
             if dep in auth_failed_collectors:
                 # Зависимость упала именно по отказу авторизации (сломанные
@@ -492,7 +513,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                         print(f"        {line}", flush=True)
                 failed.append(coll)
                 statuses[coll] = "failed"
-                _record_run(cid, coll, "failed",
+                run_ids[coll] = _record_run(cid, coll, "failed",
                             error=(err[-1] if err else f"exit {r.returncode}"),
                             date_from=date_from, date_to=date_to, started_at=started,
                             rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
@@ -539,12 +560,23 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             new_state = shop_auth.mark_failure(shop_id, last_line)
             if new_state == "paused":
                 print(f"    shop #{shop_id} {mp}: ключи не работают — магазин на паузе", flush=True)
+            elif new_state == "disabled":
+                print(f"    shop #{shop_id} {mp}: контрольные попытки паузы исчерпаны — "
+                      f"сбор остановлен (disabled)", flush=True)
             # Отказ авторизации не считаем сбоем сборки (чинит его клиент), но и
             # успехом это не назовёшь — работа не выполнена, а «заблокирована».
             failed = [f for f in failed if f not in auth_failed_collectors]
             blocked = list(auth_failed_collectors)
         elif ok:
             shop_auth.mark_ok(shop_id)
+
+    # Журнал: сборщики выше уже записаны как failed/skipped (в момент записи
+    # ещё не знали финальную классификацию — она наступает только здесь, после
+    # цикла). Тем, кто попал в blocked, переклассифицируем строку постфактум —
+    # иначе контрольная попытка паузы, упавшая по битым ключам клиента,
+    # выглядела бы в журнале настоящим сбоем сборки (см. _mark_blocked).
+    blocked_ids = [run_ids[c] for c in blocked if run_ids.get(c) is not None]
+    _mark_blocked(blocked_ids)
     return ok, failed, blocked
 
 

@@ -239,6 +239,12 @@ export const PUT = withCabinet(async (req, { cabinet, session }) => {
       sets.push(`auth_fail_count = 0`);
       sets.push(`auth_last_error = NULL`);
       sets.push(`auth_notified_at = NULL`);
+      // Выравнивание с python mark_ok() (worker/shop_auth.py): там же сбрасываются
+      // auth_failed_at/auth_last_attempt_at при возврате в ok. Без этого баннер и
+      // should_skip видели бы даты старого эпизода после ручного ввода новых ключей.
+      // Это же — выход из disabled: auth_state='ok' выше снимает и его.
+      sets.push(`auth_failed_at = NULL`);
+      sets.push(`auth_last_attempt_at = NULL`);
     }
   }
 
