@@ -191,20 +191,25 @@ export default async function CabinetLayout({ children, params }) {
     for (const s of okShops) {
       const collectors = STALE_COLLECTORS[s.mp_code];
       if (!collectors) continue;
-      const dates = collectors.map((c) => lastOkByCollector[c] || null);
-      const known = dates.filter(Boolean).sort((a, b) => new Date(a) - new Date(b));
-      const oldestKnown = known[0] || null;
-      const missingAny = dates.some((d) => !d);
       const shopAgeMs = nowMs - new Date(s.created_at).getTime();
-
-      let staleSince = null;
-      if (missingAny) {
-        if (shopAgeMs > staleMs) staleSince = oldestKnown || s.created_at;
-      } else if (nowMs - new Date(oldestKnown).getTime() > staleMs) {
-        staleSince = oldestKnown;
+      // Каждый ключевой сборщик проверяем НЕЗАВИСИМО: у одного могут быть
+      // свежие ok-строки, у другого — ни одной. Если считать по площадке в
+      // целом (взять дату свежего сборщика на весь баннер), текст соврёт —
+      // «не обновлялось с сегодня» при фактическом отсутствии данных.
+      const staleSinceDates = [];
+      for (const c of collectors) {
+        const lastOk = lastOkByCollector[c] || null;
+        if (lastOk) {
+          if (nowMs - new Date(lastOk).getTime() > staleMs) staleSinceDates.push(lastOk);
+        } else if (shopAgeMs > staleMs) {
+          // Ни одного успешного прогона, а магазин активен дольше порога —
+          // это не онбординг (см. классификацию ниже), а тихий сбой;
+          // «просрочен» с момента подключения магазина.
+          staleSinceDates.push(s.created_at);
+        }
       }
-
-      if (staleSince) {
+      if (staleSinceDates.length) {
+        const staleSince = staleSinceDates.sort((a, b) => new Date(a) - new Date(b))[0];
         const mp = s.mp_code === "wb" ? "Wildberries" : s.mp_code === "ozon" ? "Ozon" : s.mp_code;
         banners.push({
           tone: "warn",
