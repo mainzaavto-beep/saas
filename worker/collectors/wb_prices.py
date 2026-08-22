@@ -70,6 +70,7 @@ def collect():
     seen = set()
     offset = 0
     limit = 1000
+    last_page_full = False
     while offset <= 50000:
         r = _wb_get({"limit": limit, "offset": offset})
         if r is None or r.status_code != 200:
@@ -78,6 +79,7 @@ def collect():
         items = r.json().get("data", {}).get("listGoods", [])
         if not items:
             break
+        last_page_full = (len(items) == limit)
         for item in items:
             nm = item.get("nmID")
             if nm is None or nm in seen:
@@ -102,6 +104,11 @@ def collect():
             })
         offset += limit
         time.sleep(0.2)
+    # Потолок 50000 — не молчим: полная последняя страница на потолке значит,
+    # что каталог, вероятно, больше и снимок цен неполон (спека 2026-08-22).
+    if offset > 50000 and last_page_full:
+        print("⚠️ wb_prices: упёрлись в потолок offset=50000 при полной "
+              "последней странице — возможен недобор каталога", flush=True)
     n = db_pg.upsert_prices_many(rows)
     print(f"[wb_prices] записано {n} цен → tenant.wb_prices", flush=True)
     print(f"##OBS rows={n}", flush=True)

@@ -24,6 +24,8 @@ REQUEST_PAUSE_SEC = 1.0  # ≥1 с между страницами пагина�
 
 ACCRUAL_MAX_PAGES = 200  # потолок страниц/день: выше — что-то не так с курсором
 
+DEPTH_WARN_PAGES = 30  # аномальная глубина offset-пагинации — предупреждаем, не роняем
+
 SELLER_HOST = "https://api-seller.ozon.ru"
 # ВНИМАНИЕ: api-analytics.ozon.ru НЕ резолвится с нашего сервера (проверено в Фазе 2,
 # 2026-06-17). Все методы, которые раньше шли на analytics_host
@@ -303,6 +305,9 @@ class OzonClient:
                 yield r
             if len(rows) < limit:
                 break
+            if offset // limit + 1 == DEPTH_WARN_PAGES:
+                print(f"⚠️ iter_stock: пагинация глубже {DEPTH_WARN_PAGES} страниц "
+                      f"(offset={offset}) — проверить лимиты API", flush=True)
             offset += limit
 
     # --- АНАЛИТИКА: Rating Report (метрики по товарам/дням) ---
@@ -362,6 +367,9 @@ class OzonClient:
                 yield r
             if len(rows) < limit:
                 break
+            if offset // limit + 1 == DEPTH_WARN_PAGES:
+                print(f"⚠️ iter_analytics: пагинация глубже {DEPTH_WARN_PAGES} страниц "
+                      f"(offset={offset}) — проверить лимиты API", flush=True)
             offset += limit
 
     # --- ФИНАНСЫ: операции ---
@@ -411,7 +419,7 @@ class OzonClient:
         Защита от зацикливания (урок iter_postings 2026-07-02: API может
         игнорировать курсор и отдавать ту же страницу): повтор last_id или
         больше ACCRUAL_MAX_PAGES страниц → RuntimeError; вызывающий сборщик
-        обрабатывает это как partial, окно НЕ записывается — громкий отказ
+        обрабатывает это как failed (exit 1), окно НЕ записывается — громкий отказ
         вместо молчаливо неполного дня (принцип check_single_page, который
         этот цикл заменяет)."""
         accruals = []
