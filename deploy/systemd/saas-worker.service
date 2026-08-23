@@ -10,6 +10,12 @@ User=root
 Group=root
 # 14 сборщиков (без остатков), период: сегодня−2 .. сегодня.
 # Логирует в /opt/agentsDB/logs/saas_worker.log (через сам скрипт).
+# Таймаут одного сборщика поднят 900→1500с (2026-08-23): ozon_sku_ad на
+# кабинете 1 в дневной пик очереди отчётов Озона не влезал в 15 минут
+# (6 async-отчётов × до 10 мин ожидания каждого) — два утренних timeout
+# подряд. 1500с × худший случай всё ещё с запасом внутри TimeoutStartSec=1h
+# всего тика. Структурное решение (свой ритм/реактивный поллинг) — в очереди.
+Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
 ExecStart=/opt/agents/saas/worker/run_saas_collect.sh main
 StandardOutput=journal
 StandardError=journal
