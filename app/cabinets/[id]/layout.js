@@ -347,7 +347,7 @@ export default async function CabinetLayout({ children, params }) {
         <div key={i} style={{
           padding: "8px 16px", textAlign: "center", fontSize: 13,
           background: b.tone === "neg" ? soft("neg", 12) : soft("warn", 12),
-          color: b.tone === "neg" ? "var(--neg, #ff6b6b)" : "var(--warn, #d9a400)",
+          color: b.tone === "neg" ? "var(--neg)" : "var(--warn)",
           borderBottom: "1px solid var(--border)",
         }}>
           {b.text}{" "}

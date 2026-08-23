@@ -518,13 +518,13 @@ const LIFECYCLE_LABEL = {
   shipped: "Отгружен", in_transit: "В пути", arrived: "Прибыл", in_stock: "На складе",
 };
 const LIFECYCLE_COLOR = {
-  planned: { bg: "rgba(120,130,140,0.18)", fg: "#9ca6b0" },
-  ordered: { bg: "rgba(33,150,243,0.18)", fg: "#64b5f6" },
-  in_production: { bg: "rgba(33,150,243,0.18)", fg: "#64b5f6" },
+  planned: { bg: soft("muted", 18), fg: C.muted },
+  ordered: { bg: soft("accent", 18), fg: C.accent },
+  in_production: { bg: soft("accent", 18), fg: C.accent },
   shipped: { bg: soft("warn", 18), fg: C.warn },
   in_transit: { bg: soft("warn", 18), fg: C.warn },
-  arrived: { bg: "rgba(76,175,80,0.18)", fg: "#7ee08a" },
-  in_stock: { bg: "rgba(76,175,80,0.30)", fg: "#a5d6a7" },
+  arrived: { bg: soft("pos", 18), fg: C.pos },
+  in_stock: { bg: soft("pos", 30), fg: C.pos }, // выше alpha подложки — финальная стадия заметнее, чем «arrived»
 };
 
 function LifecycleBadge({ status }) {
@@ -723,7 +723,7 @@ function PurchaseDetailPanel({ it, cabinetId, reload }) {
                   <td style={payTdR}>{pp.ratio != null ? (pp.ratio * 100).toFixed(0) + "%" : "—"}</td>
                   <td style={{ padding: "6px 8px" }}>
                     {pp.status === "paid" ? (
-                      <span style={{ ...badgeStyle, background: "rgba(76,175,80,0.18)", color: C.pos }}>✓ оплачен</span>
+                      <span style={{ ...badgeStyle, background: soft("pos", 18), color: C.pos }}>✓ оплачен</span>
                     ) : (
                       <span style={{ ...badgeStyle, background: soft("warn", 15), color: C.warn }}>план</span>
                     )}

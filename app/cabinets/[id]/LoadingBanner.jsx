@@ -43,7 +43,7 @@ export default function LoadingBanner({ cabinetId }) {
       <div style={{
         padding: "8px 16px", textAlign: "center", fontSize: 13,
         background: soft("neg", 12),
-        color: "var(--neg, #ff6b6b)",
+        color: "var(--neg)",
         borderBottom: "1px solid var(--border)",
       }}>
         Не получилось загрузить историю заказов — сбой на нашей стороне, не в ваших ключах. Мы уже знаем о проблеме и разбираемся.
@@ -57,7 +57,7 @@ export default function LoadingBanner({ cabinetId }) {
     <div style={{
       padding: "8px 16px", textAlign: "center", fontSize: 13,
       background: soft("warn", 12),
-      color: "var(--warn, #d9a400)",
+      color: "var(--warn)",
       borderBottom: "1px solid var(--border)",
     }}>
       Загружаем историю за {BACKFILL_DAYS} дней — обычно это занимает несколько минут. Данные появятся автоматически.

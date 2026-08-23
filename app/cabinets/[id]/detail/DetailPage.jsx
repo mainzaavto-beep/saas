@@ -372,22 +372,34 @@ const OZ_CONV_ROWS = [
 //  Detail — разворот: МиниКПИ + график + конверсии + матрица + локации.
 // =====================================================================
 
+// Производные тона для декоративных серий графиков (было — точечные hex).
+// Блендим базовые токены через color-mix, чтобы серии внутри ОДНОГО графика
+// оставались взаимно различимы и при этом реагировали на смену темы, как и
+// остальная палитра (soft() уже делает это для alpha-подложек).
+const TINT_ACCENT = soft("accent", 65);  // пастельный accent            (было #C4B5FD)
+const TINT_POS = soft("pos", 65);        // пастельный pos               (было #86EFAC)
+const MIX_CYAN = "color-mix(in srgb, var(--accent) 50%, var(--accent2) 50%)";   // accent×accent2 (было #7DD3FC)
+const MIX_PLUM = "color-mix(in srgb, var(--pink) 55%, var(--accent) 45%)";      // pink×accent    (было #A78BFA)
+const MIX_ORANGE = "color-mix(in srgb, var(--warn) 60%, var(--neg) 40%)";       // warn×neg       (было #FB923C)
+const MIX_DARKRED = "color-mix(in srgb, var(--neg) 70%, black 30%)";            // тёмный neg     (было #EF4444)
+const MIX_GOLD = "color-mix(in srgb, var(--warn) 70%, white 30%)";              // светлый warn   (было #EAB308)
+
 const CHART_LINES_WB = [
   { key: "orders",   label: "Заказы",   axis: "L", color: C.accent },
   { key: "sales",    label: "Продажи",  axis: "L", color: C.pos },
   { key: "stock",    label: "Остатки",  axis: "L", color: C.warn },
-  { key: "wh_count", label: "Склады",   axis: "L", color: "#C4B5FD" },
-  { key: "clicks",   label: "Клики",    axis: "L", color: "#7DD3FC" },
-  { key: "cart",     label: "Корзины",  axis: "L", color: "#86EFAC" },
+  { key: "wh_count", label: "Склады",   axis: "L", color: TINT_ACCENT },
+  { key: "clicks",   label: "Клики",    axis: "L", color: MIX_CYAN },
+  { key: "cart",     label: "Корзины",  axis: "L", color: TINT_POS },
   { key: "ad",       label: "Реклама ₽", axis: "R", color: C.accent2 },
-  { key: "price",    label: "Цена",     axis: "L", color: "#A78BFA" },
-  { key: "rating_nm",  label: "Рейтинг карточки", axis: "L", color: "#F472B6" },
-  { key: "rating_imt", label: "Рейтинг склейки",  axis: "L", color: "#FB7185" },
+  { key: "price",    label: "Цена",     axis: "L", color: MIX_PLUM },
+  { key: "rating_nm",  label: "Рейтинг карточки", axis: "L", color: C.pink },
+  { key: "rating_imt", label: "Рейтинг склейки",  axis: "L", color: C.neg },
 ];
 const CHART_LINES_OZ = [
   { key: "orders", label: "Заказы",    axis: "L", color: C.accent },
-  { key: "clicks", label: "Клики",     axis: "L", color: "#7DD3FC" },
-  { key: "cart",   label: "Корзины",   axis: "L", color: "#86EFAC" },
+  { key: "clicks", label: "Клики",     axis: "L", color: MIX_CYAN },
+  { key: "cart",   label: "Корзины",   axis: "L", color: TINT_POS },
   { key: "ad",     label: "Реклама ₽", axis: "R", color: C.accent2 },
   { key: "price",  label: "Цена",      axis: "L", color: C.warn },
   { key: "profit", label: "Прибыль ₽", axis: "R", color: C.pos },
@@ -469,26 +481,26 @@ function Detail({ data, platform }) {
   // type: bar (столбцы, количества) | line (линии, % и ₽). Oсь: L (кол-ва/%) | R (₽).
   const AD_SERIES = isWb ? [
     { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
-    { key: "clicks", label: "Клики",     type: "bar",  color: "#7DD3FC" },
-    { key: "atbs",   label: "В корзину", type: "bar",  color: "#86EFAC" },
+    { key: "clicks", label: "Клики",     type: "bar",  color: MIX_CYAN },
+    { key: "atbs",   label: "В корзину", type: "bar",  color: TINT_POS },
     { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
-    { key: "ctr",    label: "CTR %",     type: "line", color: "#A78BFA" },
-    { key: "cr",     label: "CR %",      type: "line", color: "#F472B6" },
+    { key: "ctr",    label: "CTR %",     type: "line", color: MIX_PLUM },
+    { key: "cr",     label: "CR %",      type: "line", color: C.pink },
     { key: "drr",    label: "ДРР %",     type: "line", color: C.accent2 },
     { key: "spend",      label: "Расходы ₽",  type: "line", color: C.neg, axis: "R" },
-    { key: "cpc",        label: "CPC ₽",      type: "line", color: "#FB923C", axis: "R" },
-    { key: "cpa",        label: "CPA ₽",      type: "line", color: "#EF4444", axis: "R" },
-    { key: "cpm",        label: "CPM ₽",      type: "line", color: "#EAB308", axis: "R" },
+    { key: "cpc",        label: "CPC ₽",      type: "line", color: MIX_ORANGE, axis: "R" },
+    { key: "cpa",        label: "CPA ₽",      type: "line", color: MIX_DARKRED, axis: "R" },
+    { key: "cpm",        label: "CPM ₽",      type: "line", color: MIX_GOLD, axis: "R" },
     { key: "orders_sum", label: "Сумма ₽",    type: "line", color: C.pos, axis: "R" },
   ] : [
     { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
-    { key: "clicks", label: "Клики",     type: "bar",  color: "#7DD3FC" },
+    { key: "clicks", label: "Клики",     type: "bar",  color: MIX_CYAN },
     { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
-    { key: "ctr",    label: "CTR %",     type: "line", color: "#A78BFA" },
+    { key: "ctr",    label: "CTR %",     type: "line", color: MIX_PLUM },
     { key: "spend",      label: "Расходы ₽",  type: "line", color: C.neg, axis: "R" },
-    { key: "cpc",        label: "CPC ₽",      type: "line", color: "#FB923C", axis: "R" },
-    { key: "cpa",        label: "CPA ₽",      type: "line", color: "#EF4444", axis: "R" },
-    { key: "cpm",        label: "CPM ₽",      type: "line", color: "#EAB308", axis: "R" },
+    { key: "cpc",        label: "CPC ₽",      type: "line", color: MIX_ORANGE, axis: "R" },
+    { key: "cpa",        label: "CPA ₽",      type: "line", color: MIX_DARKRED, axis: "R" },
+    { key: "cpm",        label: "CPM ₽",      type: "line", color: MIX_GOLD, axis: "R" },
   ];
 
   // Σ/последнее по строке метрики (для колонки ИТОГО матрицы).
