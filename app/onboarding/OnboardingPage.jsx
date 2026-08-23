@@ -165,7 +165,7 @@ export default function OnboardingPage() {
               {warnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}
             </ul>
             <button type="button" onClick={goToCabinet} style={{
-              padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff",
+              padding: "8px 16px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
               border: "none", cursor: "pointer", fontWeight: 700, fontFamily: "inherit", fontSize: 13,
             }}>Перейти к проекту →</button>
           </div>
@@ -240,7 +240,7 @@ export default function OnboardingPage() {
         </div>
 
         <button type="submit" disabled={busy} style={{
-          width: "100%", padding: "14px", borderRadius: 10, background: C.accent, color: "#fff",
+          width: "100%", padding: "14px", borderRadius: 10, background: C.accent, color: "var(--accentInk)",
           border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 16, fontFamily: "inherit",
         }}>{busy ? "Создаём проект…" : "Создать проект →"}</button>
         <p style={{ textAlign: "center", color: C.faint, fontSize: 12, marginTop: 12 }}>🔑 Ключи хранятся зашифрованными. Сбор данных начнётся автоматически.</p>

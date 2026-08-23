@@ -30,7 +30,7 @@ function VerifyInner() {
         {state === 'ok' && (<>
           <h1 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 8px" }}>Почта подтверждена</h1>
           <p style={{ color: C.muted, fontSize: 14, margin: "0 0 20px" }}>Теперь доступны подключение магазинов и приглашения сотрудников.</p>
-          <a href="/" style={{ display: "block", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", fontWeight: 700, textDecoration: "none" }}>В панель</a>
+          <a href="/" className="btn" style={{ display: "block", textDecoration: "none" }}>В панель</a>
         </>)}
         {state === 'error' && (<>
           <h1 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 8px" }}>Не получилось</h1>

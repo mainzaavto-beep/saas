@@ -57,7 +57,7 @@ function ProfileHub() {
               onClick={() => router.push(`/cabinets/${cabinetId}`)}
               style={{
                 padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600,
-                background: C.accent, color: "#fff", border: "none", cursor: "pointer",
+                background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer",
                 fontFamily: "inherit",
               }}
             >← К проекту</button>
@@ -210,7 +210,7 @@ function MainTab() {
             Почта <b>{data.email}</b> не подтверждена. Без подтверждения нельзя подключать API-ключи маркетплейсов и приглашать сотрудников.
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button type="button" onClick={resendVerify} disabled={verifyBusy} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: verifyBusy ? "default" : "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>
+            <button type="button" onClick={resendVerify} disabled={verifyBusy} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: verifyBusy ? "default" : "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>
               {verifyBusy ? "Отправляем…" : "Выслать письмо ещё раз"}
             </button>
             {verifyMsg && <span style={{ fontSize: 13, color: verifyMsg.ok ? C.pos : C.neg }}>{verifyMsg.text}</span>}
@@ -238,7 +238,7 @@ function MainTab() {
           </label>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={save} disabled={saving} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>{saving ? "Сохранение…" : "Сохранить"}</button>
+          <button onClick={save} disabled={saving} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>{saving ? "Сохранение…" : "Сохранить"}</button>
           {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
         </div>
       </div>
@@ -257,7 +257,7 @@ function MainTab() {
           </label>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={changePass} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Сменить пароль</button>
+          <button onClick={changePass} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Сменить пароль</button>
           {passMsg && <span style={{ fontSize: 14, color: passMsg.startsWith("✅") ? C.pos : C.neg }}>{passMsg}</span>}
         </div>
       </div>
@@ -311,7 +311,7 @@ function SettingsTab({ cabinetId }) {
         </label>
         {canManage && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
             {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
           </div>
         )}
@@ -350,7 +350,7 @@ function SettingsTab({ cabinetId }) {
         </label>
         {canManage && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+            <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
           </div>
         )}
       </div>
@@ -362,7 +362,7 @@ function NoProject() {
   return (
     <div style={{ background: C.surface, border: `1px dashed ${C.line}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.muted }}>
       <p>Нет активного проекта.</p>
-      <a href="/onboarding" style={{ display: "inline-block", marginTop: 12, padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", textDecoration: "none", fontWeight: 600 }}>Создать проект →</a>
+      <a href="/onboarding" style={{ display: "inline-block", marginTop: 12, padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", textDecoration: "none", fontWeight: 600 }}>Создать проект →</a>
     </div>
   );
 }
@@ -453,7 +453,7 @@ function ShopRow({ shop, cabinetId, canManage, onSaved }) {
                   <option value={7}>7%</option>
                 </select>
               </label>
-              <button onClick={saveTax} disabled={saving} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13 }}>Сохранить</button>
+              <button onClick={saveTax} disabled={saving} style={{ padding: "8px 16px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13 }}>Сохранить</button>
             </div>
           </div>
           <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
@@ -466,7 +466,7 @@ function ShopRow({ shop, cabinetId, canManage, onSaved }) {
               ))}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
-              <button onClick={saveCreds} disabled={saving} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13 }}>{saving ? "Сохранение…" : "Сохранить ключи"}</button>
+              <button onClick={saveCreds} disabled={saving} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13 }}>{saving ? "Сохранение…" : "Сохранить ключи"}</button>
             </div>
           </div>
           {msg && <div style={{ fontSize: 13, color: msg.startsWith("✅") ? C.pos : C.neg, marginTop: 10 }}>{msg}</div>}
@@ -530,7 +530,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
       <div style={{ marginTop: 16 }}>
         <button onClick={() => setOpen(true)} disabled={disabled} style={{
           padding: "8px 18px", borderRadius: 8,
-          background: disabled ? C.surfaceAlt : C.accent, color: disabled ? C.faint : "#fff",
+          background: disabled ? C.surfaceAlt : C.accent, color: disabled ? C.faint : "var(--accentInk)",
           border: `1px solid ${C.line}`, cursor: disabled ? "not-allowed" : "pointer",
           fontWeight: 600, fontFamily: "inherit", fontSize: 13, opacity: disabled ? 0.6 : 1,
         }}>+ Добавить магазин</button>
@@ -591,7 +591,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
       {err && <div style={{ color: C.neg, fontSize: 13, marginTop: 10 }}>{err}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button onClick={submit} disabled={saving} style={{
-          padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
+          padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
           border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
         }}>{saving ? "Сохранение…" : "Добавить магазин"}</button>
         <span style={{ fontSize: 12, color: C.faint, alignSelf: "center" }}>Начнётся backfill за 75 дней</span>

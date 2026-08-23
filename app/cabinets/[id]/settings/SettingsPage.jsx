@@ -42,7 +42,7 @@ export default function SettingsPage({ cabinetId }) {
           <input value={data.display_name || ""} onChange={e => setData({ ...data, display_name: e.target.value })} style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
         </label>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
           {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
         </div>
       </div>
@@ -83,7 +83,7 @@ export default function SettingsPage({ cabinetId }) {
           <input type="password" value={data.mpstats_token || ""} onChange={e => setData({ ...data, mpstats_token: e.target.value })} placeholder="Для сбора позиций по поисковым запросам" style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
         </label>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
+          <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
         </div>
       </div>
     </div>
@@ -226,7 +226,7 @@ function ShopRow({ shop, cabinetId, onSaved }) {
                 </select>
               </label>
               <button onClick={saveTax} disabled={saving} style={{
-                padding: "8px 16px", borderRadius: 8, background: C.accent, color: "#fff",
+                padding: "8px 16px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
                 border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
               }}>Сохранить налоги</button>
             </div>
@@ -258,7 +258,7 @@ function ShopRow({ shop, cabinetId, onSaved }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
               <button onClick={saveCreds} disabled={saving} style={{
-                padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
+                padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
                 border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
               }}>{saving ? "Сохранение…" : "Сохранить ключи"}</button>
             </div>
@@ -335,7 +335,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
           onClick={() => setOpen(true)} disabled={disabled}
           style={{
             padding: "8px 18px", borderRadius: 8,
-            background: disabled ? C.surfaceAlt : C.accent, color: disabled ? C.faint : "#fff",
+            background: disabled ? C.surfaceAlt : C.accent, color: disabled ? C.faint : "var(--accentInk)",
             border: `1px solid ${C.line}`, cursor: disabled ? "not-allowed" : "pointer",
             fontWeight: 600, fontFamily: "inherit", fontSize: 13, opacity: disabled ? 0.6 : 1,
           }}
@@ -416,7 +416,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button onClick={submit} disabled={saving} style={{
-          padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff",
+          padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
           border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 13,
         }}>{saving ? "Сохранение…" : "Добавить магазин"}</button>
         <span style={{ fontSize: 12, color: C.faint, alignSelf: "center" }}>Начнётся backfill за 75 дней</span>

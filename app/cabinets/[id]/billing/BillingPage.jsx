@@ -92,7 +92,7 @@ export default function BillingPage({ cabinetId }) {
               <div style={{ fontSize: 24, fontWeight: 800, margin: "8px 0" }}>{fmtMoney(p.price_rub)}</div>
               {benefit(p) && <div style={{ fontSize: 12, color: C.pos, marginBottom: 8 }}>{benefit(p)}</div>}
               <button onClick={() => pay(p.code)} disabled={!!busy} style={{
-                width: "100%", padding: "10px", borderRadius: 8, background: C.accent, color: "#fff",
+                width: "100%", padding: "10px", borderRadius: 8, background: C.accent, color: "var(--accentInk)",
                 border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontFamily: "inherit", fontSize: 14,
               }}>{busy === p.code ? "Создаём платёж…" : "Оплатить"}</button>
             </div>

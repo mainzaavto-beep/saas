@@ -108,7 +108,7 @@ function RegisterInner() {
             <span style={{ display: "block", color: C.neg, fontSize: 12, marginTop: 4 }}>Пароли не совпадают</span>
           )}
         </div>
-        <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit" }}>
+        <button type="submit" className="btn" disabled={busy}>
           {busy ? "Создаём…" : "Создать аккаунт"}
         </button>
         <div style={{ textAlign: "center", marginTop: 16, fontSize: 14, color: C.muted }}>

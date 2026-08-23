@@ -112,7 +112,7 @@ export default function TeamPage({ cabinetId, embedded = false }) {
                 <option value="manager">Менеджер</option>
                 <option value="viewer">Наблюдатель</option>
               </select>
-              <button onClick={createInvite} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать ссылку</button>
+              <button onClick={createInvite} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать ссылку</button>
             </div>
             {inviteUrl && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 14px", background: C.surfaceAlt, borderRadius: 8, marginBottom: 8 }}>

@@ -45,7 +45,7 @@ function ResetInner() {
           <label style={{ fontSize: 13, color: C.muted }}>Повторите пароль</label>
           <input type="password" value={password2} onChange={e => setPassword2(e.target.value)} required minLength={8} style={{ ...input, border: `1px solid ${password2 && password2 !== password ? C.neg : C.line}` }} />
         </div>
-        <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit" }}>
+        <button type="submit" className="btn" disabled={busy}>
           {busy ? "Сохраняем…" : "Сохранить пароль"}
         </button>
       </form>

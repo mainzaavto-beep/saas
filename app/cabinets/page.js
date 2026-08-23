@@ -66,7 +66,7 @@ export default async function CabinetsPage() {
           <p>Проектов пока нет.</p>
           <Link href="/onboarding" style={{
             display: 'inline-block', marginTop: 12, padding: '10px 24px',
-            borderRadius: 8, background: 'var(--accent)', color: '#fff',
+            borderRadius: 8, background: 'var(--accent)', color: 'var(--accentInk)',
             textDecoration: 'none', fontWeight: 600,
           }}>Создать первый →</Link>
         </div>

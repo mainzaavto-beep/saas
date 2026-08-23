@@ -30,7 +30,7 @@ export default async function LandingPage() {
           }}>Войти</Link>
           <Link href="/register" style={{
             padding: '8px 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
-            background: 'var(--accent)', color: '#fff', textDecoration: 'none',
+            background: 'var(--accent)', color: 'var(--accentInk)', textDecoration: 'none',
           }}>Начать бесплатно</Link>
         </div>
       </header>
@@ -60,7 +60,7 @@ export default async function LandingPage() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
           <Link href="/register" style={{
             padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 700,
-            background: 'var(--accent)', color: '#fff', textDecoration: 'none',
+            background: 'var(--accent)', color: 'var(--accentInk)', textDecoration: 'none',
           }}>Попробовать бесплатно →</Link>
           <Link href="/login" style={{
             padding: '14px 32px', borderRadius: 10, fontSize: 16, fontWeight: 600,

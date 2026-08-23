@@ -45,7 +45,7 @@ export default function ForgotPage() {
           <label style={{ fontSize: 13, color: C.muted }}>Email</label>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />
         </div>
-        <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit" }}>
+        <button type="submit" className="btn" disabled={busy}>
           {busy ? "Отправляем…" : "Прислать ссылку"}
         </button>
         <div style={{ textAlign: "center", marginTop: 16, fontSize: 14, color: C.muted }}>

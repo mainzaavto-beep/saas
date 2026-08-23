@@ -56,7 +56,7 @@ export default function InvitePage({ params }) {
     <p style={{ color: C.faint, fontSize: 13 }}>Попросите у пригласившего новую ссылку.</p>
   </>);
 
-  const btn = { display: "block", width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "#fff", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit", textDecoration: "none", boxSizing: "border-box" };
+  const btn = { display: "block", width: "100%", padding: "12px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 15, fontFamily: "inherit", textDecoration: "none", boxSizing: "border-box" };
   const btnGhost = { ...btn, background: "transparent", color: C.accent, border: `1px solid ${C.accent}`, marginTop: 10 };
 
   return box(<>
