@@ -33,7 +33,9 @@ export default function OpsAlertsBanner() {
       position: 'sticky', top: 0, zIndex: 1000,
       padding: '8px 16px', fontSize: 13,
       background: isRed ? soft('neg', 12) : soft('warn', 12),
-      color: isRed ? C.neg : C.warn,
+      // тёмный сдвиг к ink держит AA (>=4.5:1) на soft(...,12)-подложке в обеих
+      // темах: в light ink тёмный — текст темнеет, в dark ink светлый — светлеет.
+      color: `color-mix(in srgb, ${isRed ? 'var(--neg)' : 'var(--warn)'} 78%, var(--ink))`,
       border: `1px solid ${isRed ? soft('neg', 35) : soft('warn', 35)}`,
       borderBottom: '1px solid var(--border)',
     }}>
