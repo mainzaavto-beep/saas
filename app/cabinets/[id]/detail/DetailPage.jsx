@@ -633,7 +633,7 @@ function Detail({ data, platform }) {
             <button key={l.key} onClick={() => toggle(l.key)} style={{
               padding: "5px 12px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontFamily: "inherit",
               fontWeight: 600, border: `1px solid ${show[l.key] ? l.color : C.line}`,
-              background: show[l.key] ? `${l.color}1A` : "transparent",
+              background: show[l.key] ? `color-mix(in srgb, ${l.color} 10%, transparent)` : "transparent",
               color: show[l.key] ? l.color : C.muted,
             }}>
               <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: l.color, marginRight: 6, opacity: show[l.key] ? 1 : 0.3 }} />
@@ -754,7 +754,7 @@ function Detail({ data, platform }) {
             <button key={s.key} onClick={() => setShowAd((v) => ({ ...v, [s.key]: !v[s.key] }))} style={{
               padding: "4px 10px", borderRadius: 7, cursor: "pointer", fontSize: 11, fontFamily: "inherit",
               fontWeight: 600, border: `1px solid ${showAd[s.key] ? s.color : C.line}`,
-              background: showAd[s.key] ? `${s.color}1A` : "transparent",
+              background: showAd[s.key] ? `color-mix(in srgb, ${s.color} 10%, transparent)` : "transparent",
               color: showAd[s.key] ? s.color : C.muted,
             }}>
               <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: s.type === "bar" ? 1 : 4, background: s.color, marginRight: 5, opacity: showAd[s.key] ? 1 : 0.3 }} />
@@ -1116,7 +1116,7 @@ function KeyPositionsBlock({ days, keywords }) {
                       {kw.positions.map((p, i) => (
                         <td key={i} style={{
                           ...tdMat, textAlign: "center",
-                          background: p == null ? "transparent" : `${color}22`,
+                          background: p == null ? "transparent" : `color-mix(in srgb, ${color} 13%, transparent)`,
                           color: p == null ? C.faint : color,
                           fontWeight: p != null ? 700 : 400,
                         }}>

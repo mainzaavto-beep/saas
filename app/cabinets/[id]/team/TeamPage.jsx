@@ -87,7 +87,7 @@ export default function TeamPage({ cabinetId, embedded = false }) {
               {m.email && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{m.email}</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700, color: roleColor[m.role], background: `${roleColor[m.role]}22` }}>{roleLabel[m.role]}</span>
+              <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700, color: roleColor[m.role], background: `color-mix(in srgb, ${roleColor[m.role]} 13%, transparent)` }}>{roleLabel[m.role]}</span>
               {canManage && m.role !== "owner" && (
                 <>
                   <select value={m.role} onChange={e => changeRole(m.user_id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 12 }}>

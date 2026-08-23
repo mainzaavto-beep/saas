@@ -386,7 +386,7 @@ function StatusBadge({ group, label }) {
   return (
     <span style={{
       padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700,
-      color, border: `1px solid ${color}55`, background: `${color}18`, whiteSpace: "nowrap",
+      color, border: `1px solid color-mix(in srgb, ${color} 33%, transparent)`, background: `color-mix(in srgb, ${color} 9%, transparent)`, whiteSpace: "nowrap",
     }}>{label}</span>
   );
 }
