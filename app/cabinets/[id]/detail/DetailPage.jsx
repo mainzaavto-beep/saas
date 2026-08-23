@@ -375,7 +375,7 @@ const OZ_CONV_ROWS = [
 const CHART_LINES_WB = [
   { key: "orders",   label: "Заказы",   axis: "L", color: C.accent },
   { key: "sales",    label: "Продажи",  axis: "L", color: C.pos },
-  { key: "stock",    label: "Остатки",  axis: "L", color: "#FBBF24" },
+  { key: "stock",    label: "Остатки",  axis: "L", color: C.warn },
   { key: "wh_count", label: "Склады",   axis: "L", color: "#C4B5FD" },
   { key: "clicks",   label: "Клики",    axis: "L", color: "#7DD3FC" },
   { key: "cart",     label: "Корзины",  axis: "L", color: "#86EFAC" },
@@ -389,7 +389,7 @@ const CHART_LINES_OZ = [
   { key: "clicks", label: "Клики",     axis: "L", color: "#7DD3FC" },
   { key: "cart",   label: "Корзины",   axis: "L", color: "#86EFAC" },
   { key: "ad",     label: "Реклама ₽", axis: "R", color: C.accent2 },
-  { key: "price",  label: "Цена",      axis: "L", color: "#FBBF24" },
+  { key: "price",  label: "Цена",      axis: "L", color: C.warn },
   { key: "profit", label: "Прибыль ₽", axis: "R", color: C.pos },
 ];
 
@@ -468,7 +468,7 @@ function Detail({ data, platform }) {
   // Конфигурация серий графика рекламы — все 12 метрик (как в KPI-плашках).
   // type: bar (столбцы, количества) | line (линии, % и ₽). Oсь: L (кол-ва/%) | R (₽).
   const AD_SERIES = isWb ? [
-    { key: "views",  label: "Показы",    type: "bar",  color: "#FBBF24" },
+    { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
     { key: "clicks", label: "Клики",     type: "bar",  color: "#7DD3FC" },
     { key: "atbs",   label: "В корзину", type: "bar",  color: "#86EFAC" },
     { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
@@ -481,7 +481,7 @@ function Detail({ data, platform }) {
     { key: "cpm",        label: "CPM ₽",      type: "line", color: "#EAB308", axis: "R" },
     { key: "orders_sum", label: "Сумма ₽",    type: "line", color: C.pos, axis: "R" },
   ] : [
-    { key: "views",  label: "Показы",    type: "bar",  color: "#FBBF24" },
+    { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
     { key: "clicks", label: "Клики",     type: "bar",  color: "#7DD3FC" },
     { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
     { key: "ctr",    label: "CTR %",     type: "line", color: "#A78BFA" },
@@ -1101,7 +1101,7 @@ function KeyPositionsBlock({ days, keywords }) {
                 )}
                 {sorted.map((kw) => {
                   const last = kw.last_position;
-                  const color = last == null ? C.faint : last <= 10 ? C.pos : last <= 30 ? "#FBBF24" : C.neg;
+                  const color = last == null ? C.faint : last <= 10 ? C.pos : last <= 30 ? C.warn : C.neg;
                   return (
                     <tr key={kw.keyword} style={{ borderBottom: `1px solid ${soft("line", 13)}` }}>
                       <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }} title={kw.keyword}>

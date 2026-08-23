@@ -1,5 +1,5 @@
 "use client";
-import { C, soft } from "@/lib/palette.js";
+import { C, soft, SERIES } from "@/lib/palette.js";
 import { ALERT } from "@/lib/callout.js";
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -86,7 +86,7 @@ const postToDds = async (opts) => {
 };
 
 const DOMAIN_FILTERS = ["all", ...DOMAINS]; // «Все» + 3 домена
-const PIE_PALETTE = ["#00E5FF", "#D9B08C", "#4ADE80", "#F87171", "#A78BFA", "#FBBF24", "#60A5FA", "#34D399"];
+const PIE_PALETTE = SERIES;
 
 // Поддержка Web Speech API в браузере (Chrome). SSR-безопасно.
 function getSpeechRecognition() {

@@ -360,7 +360,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
             style={{
               padding: "6px 14px", borderRadius: 6,
               border: `1px solid ${mpCode === code ? C.accent : C.line}`,
-              background: mpCode === code ? "rgba(79,140,255,0.15)" : "transparent",
+              background: mpCode === code ? soft("accent", 15) : "transparent",
               color: mpCode === code ? C.accent : C.ink, cursor: "pointer",
               fontSize: 13, fontFamily: "inherit", fontWeight: 600,
             }}>{c.label}</button>

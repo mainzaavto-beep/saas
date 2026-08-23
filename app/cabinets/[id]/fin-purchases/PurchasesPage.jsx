@@ -496,7 +496,7 @@ function ProductCell({ it, edit, setEdit, setText, text, onCommit, onSupplierCom
             style={{ ...cellInput, fontSize: 11, width: "100%", marginTop: 2 }} placeholder="категория (напр. Экшн-камеры)" />
         ) : (
           <button onClick={() => { setText(String(it.category ?? "")); setEdit("category"); }}
-            style={{ ...badgeStyle, cursor: "pointer", marginTop: 2, background: it.category ? "rgba(79,140,255,0.14)" : "transparent",
+            style={{ ...badgeStyle, cursor: "pointer", marginTop: 2, background: it.category ? soft("accent", 14) : "transparent",
                      border: it.category ? "none" : `1px dashed ${C.line}`, color: it.category ? C.accent : C.faint,
                      fontSize: 10, padding: "1px 7px", textAlign: "left" }}
             title="Кликни чтобы задать категорию">

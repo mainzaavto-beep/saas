@@ -96,7 +96,7 @@ export default async function LandingPage() {
       {/* Футер */}
       <footer style={{
         padding: '20px 32px', borderTop: '1px solid var(--border)',
-        textAlign: 'center', color: '#6b7a8f', fontSize: 13,
+        textAlign: 'center', color: 'var(--faint)', fontSize: 13,
       }}>
         © 2026 SySell · Сервис оцифровки продаж на маркетплейсах
       </footer>

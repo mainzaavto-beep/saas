@@ -1,5 +1,5 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 
 // /cabinets/[id]/unit — Юнит-экономика (WB+Ozon) с what-if прикидкой.
 // Полный перенос эталона data-presenter/app/finance/UnitTable.jsx с адаптацией:
@@ -317,7 +317,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
       </tr>
 
       {/* Строка 2: ПРИКИДКА */}
-      <tr style={{ background: "rgba(79,140,255,0.05)" }}>
+      <tr style={{ background: soft("accent", 5) }}>
         {cols.map((c, idx) => {
           if (idx === 0) {
             return (
