@@ -17,6 +17,7 @@
   --accent2: #3FA796;
   --danger: #E5636A;
   --border: #2A2B30;
+  --accentInk: #131417;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
   /* Алиасы для inline-палитры lib/palette.js (C.surface = var(--surface) …) */
@@ -43,6 +44,7 @@
   --accent2: #0F766E;
   --danger: #C6373C;
   --border: #E7E6E3;
+  --accentInk: #FFFFFF;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(28,29,33,.05), 0 4px 16px rgba(28,29,33,.04);
   --surface: var(--panel);
@@ -52,7 +54,7 @@
   --line: var(--border);
   --pos: #177E4D;
   --neg: #C6373C;
-  --warn: #B7791F;
+  --warn: #8F5B12;
   --pink: #B45341;
   --blue: var(--accent);
 }
@@ -75,7 +77,7 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; }
 .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
 .btn { width: 100%; padding: 12px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
-  cursor: pointer; background: var(--accent); color: #fff; transition: opacity .15s; }
+  cursor: pointer; background: var(--accent); color: var(--accentInk); transition: opacity .15s; }
 .btn:hover { opacity: .9; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.secondary { background: var(--panel2); border: 1px solid var(--border); }
@@ -118,7 +120,7 @@ a:hover { text-decoration: underline; }
   white-space: nowrap; transition: all 0.12s;
 }
 .topnav-link:hover { background: var(--panel2); color: var(--text); text-decoration: none; }
-.topnav-link.active { background: var(--accent); color: #fff; }
+.topnav-link.active { background: var(--accent); color: var(--accentInk); }
 .topnav-link .topnav-icon { font-size: 14px; }
 
 /* Группы навигации (dropdown по hover) */
@@ -159,7 +161,7 @@ a:hover { text-decoration: underline; }
 /* Аватар-кружок (профиль) */
 .avatar-btn {
   width: 34px; height: 34px; border-radius: 50%;
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--accentInk);
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 700; cursor: pointer;
   border: none; flex-shrink: 0; transition: opacity 0.12s;
