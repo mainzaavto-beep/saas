@@ -298,7 +298,6 @@ export default function SummaryPage({ cabinetId }) {
 
       {/* KPI-плитки */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <Kpi label="Выручка" value={money(ft.salesRub)} />
         <Kpi
           label="Прибыль"
           value={money(ft.profit)}
@@ -306,20 +305,20 @@ export default function SummaryPage({ cabinetId }) {
           title={hasProductFilter
             ? "По выбранным товарам, включая их рекламу; нераспределённая кабинетная реклама (корректировки, кампании без товарной разбивки) не вычитается"
             : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный)"}
+          primary
         />
-        <Kpi label="Средняя маржа" value={pct(ft.margin)} />
-        <Kpi label="Заказано, шт" value={num(ft.ordered)} />
+        <Kpi label="Выручка" value={money(ft.salesRub)} />
+        <Kpi
+          label="Реклама, ₽"
+          value={money(t.adSpend)}
+          title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы"
+        />
         <Kpi label="Продано, шт" value={num(ft.sold)} />
         <Kpi label="% выкупа" value={pct(ft.buyoutPct)} />
         <Kpi
           label="ДРР (общий)"
           value={t.salesRub ? pct(100 * (t.adSpend || 0) / t.salesRub) : "—"}
           title="Реклама и выручка — по всему кабинету целиком, фильтрами не меняется"
-        />
-        <Kpi
-          label="Реклама, ₽"
-          value={money(t.adSpend)}
-          title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы"
         />
         <Kpi
           label="Кабинетные расходы, ₽"
@@ -683,14 +682,15 @@ function Td({ children, right, left, mono, title, style }) {
 const tdFootL = { padding: "10px 8px", fontSize: 12.5, fontWeight: 800, color: C.ink, textAlign: "left", whiteSpace: "nowrap" };
 const tdFootR = { padding: "10px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
-function Kpi({ label, value, color, title }) {
+function Kpi({ label, value, color, title, primary }) {
   return (
     <div style={{
       padding: "12px 16px", borderRadius: 10, background: C.surface,
       border: `1px solid ${C.line}`, minWidth: 130,
+      ...(primary ? { flex: 1.6 } : {}),
     }} title={title}>
       <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: primary ? 30 : 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
     </div>
   );
 }

@@ -233,9 +233,9 @@ export default function OverviewClient({ cabinetId }) {
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 3fr)", gap: 20, marginBottom: 22, alignItems: "start" }}>
             {/* Левая колонка — KPI-плашки */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+              <Kpi label="Чистая прибыль" value={money(data.kpi.grossProfit)} pos={data.kpi.grossProfit >= 0} primary />
               <Kpi label="Заказы, ₽" value={money(data.kpi.orderRub)} />
               <Kpi label="Выручка (продажи)" value={money(data.kpi.revenue)} accent />
-              <Kpi label="Чистая прибыль" value={money(data.kpi.grossProfit)} pos={data.kpi.grossProfit >= 0} />
               <Kpi label="Маржа" value={pct(data.kpi.margin)} pos={data.kpi.margin >= 0} />
               <Kpi label="К перечислению" value={money(data.kpi.netPay)} />
               <Kpi label="Отмена заказов" value={pct(data.kpi.cancelRate)} pos={data.kpi.cancelRate < 20} />
@@ -333,11 +333,14 @@ function NavBtn({ children, onClick, title }) {
     }}>{children}</button>
   );
 }
-function Kpi({ label, value, accent, pos }) {
+function Kpi({ label, value, accent, pos, primary }) {
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 18px" }}>
+    <div style={{
+      background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 18px",
+      ...(primary ? { gridColumn: "1 / -1" } : {}),
+    }}>
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 800, color: accent ? C.accent : pos === true ? C.pos : pos === false ? C.neg : C.ink }}>{value}</div>
+      <div style={{ fontSize: primary ? 30 : 24, fontWeight: 800, color: accent ? C.accent : pos === true ? C.pos : pos === false ? C.neg : C.ink }}>{value}</div>
     </div>
   );
 }
