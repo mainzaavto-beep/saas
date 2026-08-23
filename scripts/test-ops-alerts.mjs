@@ -10,7 +10,7 @@ const ago = (h) => new Date(NOW.getTime() - h * HOUR).toISOString();
 const minAgo = (m) => new Date(NOW.getTime() - m * 60 * 1000).toISOString();
 
 let passed = 0;
-const total = 16;
+const total = 18;
 function check(name, fn) {
   try {
     fn();
@@ -112,12 +112,13 @@ check('timeout,failed → red', () => {
   assert.equal(alerts[0].level, 'red');
 });
 
-// (и) unit-fail + failed-строка сборщика через 5 мин → red, текст содержит
+// (и) unit-fail (известный юнит saas-worker.service → kind:'main') + failed
+// строка сборщика ТОГО ЖЕ kind через 5 мин → red, текст содержит
 // «виновники:» и имя сборщика.
 check('unit-fail + failed рядом → red с виновниками', () => {
   const rows = [
-    { cabinet_id: null, collector: 'unit:wb-collector.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: minAgo(115) },
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: minAgo(115) },
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 1);
@@ -126,11 +127,12 @@ check('unit-fail + failed рядом → red с виновниками', () => {
   assert.match(alerts[0].text, /wb_orders/);
 });
 
-// (к) unit-fail + только partial рядом → yellow, текст содержит «троттлинг».
+// (к) unit-fail (saas-worker.service → kind:'main') + только partial того же
+// kind рядом → yellow, текст содержит «троттлинг».
 check('unit-fail + partial рядом → yellow троттлинг', () => {
   const rows = [
-    { cabinet_id: null, collector: 'unit:wb-collector.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'partial', started_at: minAgo(115) },
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'partial', started_at: minAgo(115) },
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 1);
@@ -138,12 +140,15 @@ check('unit-fail + partial рядом → yellow троттлинг', () => {
   assert.match(alerts[0].text, /троттлинг/);
 });
 
-// (л) unit-fail без объясняющих (ближайший сбой сборщика в 2 часах от unit-фейла,
-// вне окна ±30 мин) → red, текст БЕЗ «виновники:».
+// (л) unit-fail (saas-worker.service → kind:'main') без объясняющих —
+// ближайший сбой сборщика ТОГО ЖЕ kind в 2 часах от unit-фейла, вне окна
+// −90/+5 мин → red, текст БЕЗ «виновники:» (причина отсутствия — временное
+// окно, run_kind совпадает намеренно, чтобы не смешивать с проверкой
+// атрибуции по kind).
 check('unit-fail без объясняющих → red без виновников', () => {
   const rows = [
-    { cabinet_id: null, collector: 'unit:wb-collector.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(4) },
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: ago(4) },
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 1);
@@ -197,12 +202,44 @@ check('failed,failed main 15ч назад → пусто (гаснет по 14ч
   assert.equal(alerts.length, 0);
 });
 
-// (р) unit-fail + failed-строка сборщика за 45 мин ДО него (в пределах
-// асимметричного окна −90/+5 мин) → red с «виновники:».
+// (р) unit-fail (saas-worker.service → kind:'main') + failed-строка того же
+// kind за 45 мин ДО него (в пределах асимметричного окна −90/+5 мин) →
+// red с «виновники:».
 check('unit-fail + failed за 45мин до него → red с виновниками', () => {
   const rows = [
-    { cabinet_id: null, collector: 'unit:wb-collector.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: minAgo(165) },
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: minAgo(165) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].level, 'red');
+  assert.match(alerts[0].text, /виновники:/);
+});
+
+// (с) unit-fail (saas-worker.service → kind:'main') + failed backfill-строка
+// ЧУЖОГО кабинета (kind:'backfill') за 80 мин до него, внутри временного
+// окна, но чужого run_kind → red БЕЗ «виновники:» (регресс-тест на брешь
+// атрибуции: saas-backfill.timer тикает раз в 5 мин, кандидат почти всегда
+// найдётся по времени — фильтр по kind должен его отсечь).
+check('unit-fail(main) + failed backfill чужого кабинета → red без виновников', () => {
+  const rows = [
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 7, collector: 'ozon_backfill', run_kind: 'backfill', status: 'failed', started_at: minAgo(200) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].level, 'red');
+  assert.doesNotMatch(alerts[0].text, /виновники:/);
+});
+
+// (т) unit-fail (saas-worker.service → kind:'main') + failed-строка ТОГО ЖЕ
+// kind:'main' за 80 мин до него → red С «виновники:» (тот же временной
+// сдвиг, что и (с), но kind совпадает — контрольная пара, доказывающая, что
+// фильтр режет именно по несовпадению kind, а не по времени).
+check('unit-fail(main) + failed main за 80мин до него → red с виновниками', () => {
+  const rows = [
+    { cabinet_id: null, collector: 'unit:saas-worker.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: minAgo(200) },
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 1);
