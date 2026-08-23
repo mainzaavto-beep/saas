@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import ThemeToggle from "@/app/ThemeToggle.jsx";
+import { soft } from "@/lib/palette.js";
 import { cabinetAccess } from "@/lib/billing.js";
 import { classifyOnboarding } from "@/lib/onboardingStatus.js";
 import LoadingBanner from "./LoadingBanner.jsx";
@@ -345,7 +346,7 @@ export default async function CabinetLayout({ children, params }) {
       {banners.map((b, i) => (
         <div key={i} style={{
           padding: "8px 16px", textAlign: "center", fontSize: 13,
-          background: b.tone === "neg" ? "rgba(255,107,107,.12)" : "rgba(255,193,7,.12)",
+          background: b.tone === "neg" ? soft("neg", 12) : soft("warn", 12),
           color: b.tone === "neg" ? "var(--neg, #ff6b6b)" : "var(--warn, #d9a400)",
           borderBottom: "1px solid var(--border)",
         }}>

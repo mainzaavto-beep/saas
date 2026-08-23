@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -12,9 +13,6 @@ import { useEffect, useMemo, useState } from "react";
 // =====================================================================
 
 
-const ALERT = {
-  info: { background: "rgba(79, 140, 255, 0.10)", border: "1px solid rgba(79, 140, 255, 0.35)", color: "#4f8cff" },
-};
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 
 const r2 = (v) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 100) / 100);

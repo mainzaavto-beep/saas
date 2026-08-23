@@ -1,15 +1,11 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Line, ComposedChart,
 } from "recharts";
-
-const ALERT = {
-  warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
-  info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
-};
 
 // =====================================================================
 //  /items/move — «Перемещения между складами WB» (Этап 1, контракт realloc

@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
@@ -72,11 +73,6 @@ function dayLabel(iso) {
 }
 
 // Тема (совпадает с соседними страницами кабинета).
-
-const ALERT = {
-  warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
-  info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
-};
 
 // Запись OPEX-строки в ДДС (фиксация движения денег). Паттерн из соседних страниц.
 const postToDds = async (opts) => {

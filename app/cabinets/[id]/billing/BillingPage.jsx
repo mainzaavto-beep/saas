@@ -1,5 +1,5 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 // /cabinets/[id]/billing — единственная страница про деньги: состояние
 // подписки, тарифы, история платежей.
 import { useEffect, useState } from "react";
@@ -67,7 +67,7 @@ export default function BillingPage({ cabinetId }) {
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>💳 Подписка</h1>
 
       <div style={{
-        background: data.state === "locked" || data.state === "grace" ? "rgba(255,107,107,.12)" : C.surface,
+        background: data.state === "locked" || data.state === "grace" ? soft("neg", 12) : C.surface,
         border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, fontSize: 15,
       }}>
         {STATE_TEXT[data.state](data)}
@@ -78,7 +78,7 @@ export default function BillingPage({ cabinetId }) {
           Платёж обрабатывается — страница обновится сама, когда банк подтвердит оплату.
         </div>
       )}
-      {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>{err}</div>}
+      {err && <div className="err">{err}</div>}
 
       {!data.plans.length ? (
         <div style={{ color: C.muted, fontSize: 14, marginBottom: 20 }}>Тарифы не настроены — напишите в поддержку.</div>

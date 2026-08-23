@@ -79,7 +79,7 @@ function RegisterInner() {
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>
           {inviteInfo ? `Приглашение в «${inviteInfo.cabinet_name}» (${inviteInfo.role === "manager" ? "Менеджер" : "Наблюдатель"})` : "Создайте аккаунт для доступа к сервису"}
         </p>
-        {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {err && <div className="err">{err}</div>}
         {emailTaken && (
           <div style={{ fontSize: 14, marginBottom: 16 }}>
             <a href={`/login${inviteToken ? `?next=${encodeURIComponent(`/invite/${inviteToken}`)}` : ''}`} style={{ color: C.accent }}>Войти в существующий аккаунт</a>

@@ -157,7 +157,7 @@ export default function OnboardingPage() {
       <form onSubmit={submit} style={{ width: "100%", maxWidth: 640 }}>
         <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 4px" }}>Создание проекта</h1>
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Подключите магазины — мы начнём собирать аналитику автоматически</p>
-        {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {err && <div className="err">{err}</div>}
         {warnings.length > 0 && (
           <div style={{ background: "rgba(255,193,7,.12)", color: C.warn, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>Проект создан, но обратите внимание:</div>

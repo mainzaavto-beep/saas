@@ -6,6 +6,7 @@
 // пропасть: клиенту нужно узнать, что случился сбой, а не ждать бесконечно.
 import { useEffect, useState } from 'react';
 import { BACKFILL_DAYS } from '@/lib/mpConfig.js';
+import { soft } from '@/lib/palette.js';
 
 export default function LoadingBanner({ cabinetId }) {
   // 'loading' — показываем полосу (стартовое состояние: компонент рендерится
@@ -41,7 +42,7 @@ export default function LoadingBanner({ cabinetId }) {
     return (
       <div style={{
         padding: "8px 16px", textAlign: "center", fontSize: 13,
-        background: "rgba(255,107,107,.12)",
+        background: soft("neg", 12),
         color: "var(--neg, #ff6b6b)",
         borderBottom: "1px solid var(--border)",
       }}>

@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -9,11 +10,6 @@ import {
   ComposedChart, Bar,
 } from "recharts";
 // Палитра SAAS (тёмно-синяя)
-
-const ALERT = {
-  warn: { background:"rgba(251,191,36,0.10)", border:"1px solid rgba(251,191,36,0.35)", color:"#fbbf24" },
-  info: { background:"rgba(79,140,255,0.10)", border:"1px solid rgba(79,140,255,0.35)", color:"#4f8cff" },
-};
 
 // =====================================================================
 //  /products/detail — ЕДИНАЯ детальная сводка по ОДНОМУ товару (WB или Ozon).

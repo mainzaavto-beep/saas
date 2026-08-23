@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,13 +8,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // Внутренние компоненты (Kpi/Th/Td/ProductCell/...) обращаются к C.*,
 // поэтому держим объект C здесь — не тянем старую палитру из lib/theme.
 
-const ALERT = {
-  info: {
-    background: "rgba(79, 140, 255, 0.10)",
-    border: "1px solid rgba(79, 140, 255, 0.35)",
-    color: "#4f8cff",
-  },
-};
 
 // =====================================================================
 //  /cabinets/[id]/summary — Сводка по товарам (SaaS, WB+Ozon).

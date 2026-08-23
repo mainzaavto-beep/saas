@@ -1,12 +1,8 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 
 import { useEffect, useMemo, useState } from "react";
-
-const ALERT = {
-  warn: { background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" },
-  info: { background: "rgba(79,140,255,0.10)", border: "1px solid rgba(79,140,255,0.35)", color: "#4f8cff" },
-};
 
 // =====================================================================
 //  /finance/self-buyouts — самовыкупы (контракт №34, редактируемый с 2026-06-26).

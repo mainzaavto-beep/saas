@@ -36,7 +36,7 @@ function ResetInner() {
       <form onSubmit={submit} style={{ width: "100%", maxWidth: 400, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16, padding: 32 }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: "0 0 4px" }}>Новый пароль</h1>
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Придумайте пароль — не короче 8 символов</p>
-        {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {err && <div className="err">{err}</div>}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Пароль</label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} autoFocus style={input} />

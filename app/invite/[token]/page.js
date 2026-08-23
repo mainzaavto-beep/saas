@@ -65,7 +65,7 @@ export default function InvitePage({ params }) {
       {invite.inviter_name ? `${invite.inviter_name} приглашает вас` : "Вас приглашают"} в кабинет
       {" "}«{invite.cabinet_name}» с ролью «{ROLE_LABEL[invite.role] || invite.role}»
     </p>
-    {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+    {err && <div className="err">{err}</div>}
     {me ? (
       <button onClick={accept} disabled={busy} style={btn}>{busy ? "Принимаем…" : "Принять приглашение"}</button>
     ) : (

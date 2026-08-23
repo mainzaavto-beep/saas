@@ -75,7 +75,7 @@ export default function TeamPage({ cabinetId, embedded = false }) {
       ? { width: "100%", fontFamily: FONT, color: C.ink }
       : { width: "100%", maxWidth: 700, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
       {!embedded && <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>👥 Команда</h1>}
-      {error && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{error}</div>}
+      {error && <div className="err">{error}</div>}
 
       {/* Сотрудники */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>

@@ -40,7 +40,7 @@ export default function ForgotPage() {
       <form onSubmit={submit} style={card}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: "0 0 4px" }}>Забыли пароль?</h1>
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Укажите email — пришлём ссылку для смены пароля</p>
-        {err && <div style={{ background: "rgba(255,107,107,.12)", color: C.neg, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>{err}</div>}
+        {err && <div className="err">{err}</div>}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: C.muted }}>Email</label>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus style={{ width: "100%", padding: "10px 12px", background: C.surfaceAlt, border: `1px solid ${C.line}`, borderRadius: 8, color: C.ink, fontSize: 15, marginTop: 4 }} />

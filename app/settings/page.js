@@ -1,5 +1,5 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 // /settings — профиль пользователя: хаб с вкладками.
 // Вкладки: Основное (личные данные + пароль), Настройки (проект), Команда.
 import { useEffect, useState, Suspense } from "react";
@@ -419,7 +419,7 @@ function ShopRow({ shop, cabinetId, canManage, onSaved }) {
       <div onClick={() => setExpanded(!expanded)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", cursor: "pointer" }}>
         <div>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{shop.shop_name || `Магазин #${shop.shop_id}`}</span>
-          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: shop.mp_code === "wb" ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)", color: shop.mp_code === "wb" ? C.accent : "#f97316" }}>{shop.mp_code.toUpperCase()}</span>
+          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: shop.mp_code === "wb" ? soft("accent", 12) : "rgba(249,115,22,0.15)", color: shop.mp_code === "wb" ? C.accent : "#f97316" }}>{shop.mp_code.toUpperCase()}</span>
           {shop.legal_name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{shop.legal_name}</span>}
           {shop.has_creds ? <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span> : <span style={{ marginLeft: 8, fontSize: 11, color: C.neg }}>⚠ Нет ключей</span>}
           <span style={{ marginLeft: 8, fontSize: 11, color: C.muted }}>{tax.type === "usn_income_expenses" ? "УСН Д−Р" : "УСН Доходы"} {tax.rate}%{tax.vat ? ` + НДС ${tax.vat}%` : ""}</span>
