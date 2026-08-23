@@ -446,7 +446,7 @@ class OzonClient:
                 raise RuntimeError(
                     f"accrual_by_day({_date_iso(date)}): {pages} страниц — "
                     f"превышен потолок ACCRUAL_MAX_PAGES")
-            time.sleep(1.0)  # межстраничная пауза: проба 2026-08-11 ловила code 8
+            time.sleep(REQUEST_PAUSE_SEC)  # межстраничная пауза: проба 2026-08-11 ловила code 8
         return {"accruals": accruals, "pages": pages}
 
     def accrual_types(self) -> list[dict]:

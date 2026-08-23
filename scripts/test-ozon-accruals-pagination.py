@@ -64,4 +64,19 @@ r = cli.accrual_by_day("2026-08-01")
 assert r["pages"] == 1 and len(calls["bodies"]) == 1, (r, calls)
 ok += 1
 
-print(f"OK {ok}/4")
+# 5) Потолок страниц: 4 страницы, ACCRUAL_MAX_PAGES=3 → RuntimeError "потолок".
+oc.ACCRUAL_MAX_PAGES = 3
+cli, _ = make_client([
+    {"accruals": [{"id": 1}], "last_id": "p1"},
+    {"accruals": [{"id": 2}], "last_id": "p2"},
+    {"accruals": [{"id": 3}], "last_id": "p3"},
+    {"accruals": [{"id": 4}], "last_id": ""},
+])
+try:
+    cli.accrual_by_day("2026-08-01")
+    raise AssertionError("ожидали RuntimeError на превышении потолка")
+except RuntimeError as e:
+    assert "потолок ACCRUAL_MAX_PAGES" in str(e), e
+ok += 1
+
+print(f"OK {ok}/5")
