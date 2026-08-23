@@ -16,6 +16,11 @@ Group=root
 # подряд. 1500с × худший случай всё ещё с запасом внутри TimeoutStartSec=1h
 # всего тика. Структурное решение (свой ритм/реактивный поллинг) — в очереди.
 Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
+# Симметрия с остальными юнитами (billing-reconcile/ozon-recon/web/notify-keys):
+# явный TZ защищает окно MSK ozon_sku_ad (SKIP_WINDOW_MSK, 2026-08-23) от
+# переезда сервера на другой часовой пояс — сейчас совпадает с системным
+# Europe/Moscow, но сборщик полагается на datetime.now() = MSK неявно.
+Environment=TZ=Europe/Moscow
 ExecStart=/opt/agents/saas/worker/run_saas_collect.sh main
 StandardOutput=journal
 StandardError=journal

@@ -52,9 +52,13 @@ POLL_MAX = 120
 # алерт впустую. Сервер работает в TZ=Europe/Moscow — datetime.now() уже даёт
 # MSK (как и `yesterday` ниже в collect()), отдельного перевода не нужно.
 SKIP_WINDOW_MSK = (4, 16)   # [4:00, 16:00) MSK — дневное окно медленной очереди
-STALE_FALLBACK_H = 26       # свежий ok старше этого — собираем несмотря на
-                             # день (страховка от вечных пропусков, если
-                             # вечерний тик сам сорвётся или кабинет новый)
+STALE_FALLBACK_H = 26       # свежий РЕАЛЬНЫЙ ok старше этого — собираем несмотря
+                             # на день. Страховка от вечных пропусков держится
+                             # ТОЛЬКО если сам soft-skip не засчитывается себе же
+                             # за «свежий ok» — см. rows_written IS NOT NULL в
+                             # запросе ниже (без него, если вечерний тик тоже
+                             # сорвётся, skip-прогон бесконечно продлевает себя
+                             # самого — баг вскрыт ревью 2026-08-23, не запускался в проде)
 _TOTAL_ROWS = ("всего", "итого")
 _CORRECTION = "корректировка"
 _DATE_DMY = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})$")
@@ -235,9 +239,15 @@ def collect(since=None, to=None):
     now_msk = datetime.now()
     if SKIP_WINDOW_MSK[0] <= now_msk.hour < SKIP_WINDOW_MSK[1]:
         cid = db_pg._cabinet_id()
+        # rows_written IS NOT NULL — отсекает сам soft-skip: реальный сбор всегда
+        # печатает ##OBS (rows_written заполняется оркестратором из маркера),
+        # skip-прогон ##OBS не печатает → rows_written NULL. Без этого фильтра
+        # soft-skip засчитывал бы себя за «свежий ok» и продлевал сам себя
+        # бесконечно, если вечерний тик тоже сорвётся.
         rows = db_pg.query(
             "SELECT max(finished_at) AS t FROM jobs.collector_runs "
-            "WHERE collector = 'ozon_sku_ad' AND status = 'ok' AND cabinet_id = %s",
+            "WHERE collector = 'ozon_sku_ad' AND status = 'ok' "
+            "AND rows_written IS NOT NULL AND cabinet_id = %s",
             (cid,))
         last_ok = rows[0]["t"] if rows else None
         if last_ok is not None:
