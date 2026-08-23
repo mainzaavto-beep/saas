@@ -380,9 +380,30 @@ const TINT_ACCENT = soft("accent", 65);  // пастельный accent         
 const TINT_POS = soft("pos", 65);        // пастельный pos               (было #86EFAC)
 const MIX_CYAN = "color-mix(in srgb, var(--accent) 50%, var(--accent2) 50%)";   // accent×accent2 (было #7DD3FC)
 const MIX_PLUM = "color-mix(in srgb, var(--pink) 55%, var(--accent) 45%)";      // pink×accent    (было #A78BFA)
-const MIX_ORANGE = "color-mix(in srgb, var(--warn) 60%, var(--neg) 40%)";       // warn×neg       (было #FB923C)
-const MIX_DARKRED = "color-mix(in srgb, var(--neg) 70%, black 30%)";            // тёмный neg     (было #EF4444)
-const MIX_GOLD = "color-mix(in srgb, var(--warn) 70%, white 30%)";              // светлый warn   (было #EAB308)
+
+// AD_* — отдельная палитра ТОЛЬКО для AD_SERIES (график «Статистика рекламы»,
+// ниже). Раунд-2 ревью нашёл регрессию: warn/MIX_ORANGE/neg/MIX_DARKRED —
+// все производные двух соседних тёплых токенов (warn+neg) — попарно давали
+// 29-47 ед. RGB-дистанции при пороге ~60, в светлой теме cpc≈cpa визуально.
+// Прежние точечные hex такого не допускали. Причина: 3 из 7 базовых токенов
+// сами по себе слишком близки (neg↔pink 33-57, warn↔pink 40-48,
+// accent2↔pos 33-35 — см. таблицу в task-3-report.md), поэтому блендить
+// «тёплое с тёплым» без разноса по светлоте — гарантированно схлопнуть пару.
+// Решение: 12 цветов подобраны перебором (все C(2) пары ≥60 RGB-дистанции
+// В ОБЕИХ темах, композит поверх var(--panel)) — вперемешку светлотные
+// сдвиги (+black/+white) одних и тех же 6 токенов (без pink — он и есть
+// источник конфликта), чтобы хватило разноса по всему графику из 12 рядов
+// одновременно. Точные числа — task-3-report.md.
+const AD_VIEWS = "color-mix(in srgb, var(--muted) 70%, white 30%)";   // нейтральный светло-серый
+const AD_CLICKS = "color-mix(in srgb, var(--pink) 70%, white 30%)";   // светлый лосось
+const AD_ATBS = "color-mix(in srgb, var(--pos) 80%, white 20%)";      // мятный
+const AD_ORDERS = "color-mix(in srgb, var(--accent) 80%, black 20%)"; // тёмно-синий
+const AD_CTR = "color-mix(in srgb, var(--warn) 40%, white 60%)";      // светлый кремовый
+const AD_CR = "color-mix(in srgb, var(--muted) 70%, black 30%)";      // тёмно-серый
+const AD_CPC = "color-mix(in srgb, var(--accent) 30%, white 70%)";    // бледно-голубой (холодный от accent)
+const AD_CPA = "color-mix(in srgb, var(--neg) 70%, black 30%)";       // тёмно-кирпичный
+const AD_CPM = "color-mix(in srgb, var(--warn) 50%, black 50%)";      // тёмно-золотой
+const AD_ORDERS_SUM = "color-mix(in srgb, var(--pos) 40%, black 60%)"; // тёмно-зелёный
 
 const CHART_LINES_WB = [
   { key: "orders",   label: "Заказы",   axis: "L", color: C.accent },
@@ -480,27 +501,27 @@ function Detail({ data, platform }) {
   // Конфигурация серий графика рекламы — все 12 метрик (как в KPI-плашках).
   // type: bar (столбцы, количества) | line (линии, % и ₽). Oсь: L (кол-ва/%) | R (₽).
   const AD_SERIES = isWb ? [
-    { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
-    { key: "clicks", label: "Клики",     type: "bar",  color: MIX_CYAN },
-    { key: "atbs",   label: "В корзину", type: "bar",  color: TINT_POS },
-    { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
-    { key: "ctr",    label: "CTR %",     type: "line", color: MIX_PLUM },
-    { key: "cr",     label: "CR %",      type: "line", color: C.pink },
+    { key: "views",  label: "Показы",    type: "bar",  color: AD_VIEWS },
+    { key: "clicks", label: "Клики",     type: "bar",  color: AD_CLICKS },
+    { key: "atbs",   label: "В корзину", type: "bar",  color: AD_ATBS },
+    { key: "orders", label: "Заказов",   type: "bar",  color: AD_ORDERS },
+    { key: "ctr",    label: "CTR %",     type: "line", color: AD_CTR },
+    { key: "cr",     label: "CR %",      type: "line", color: AD_CR },
     { key: "drr",    label: "ДРР %",     type: "line", color: C.accent2 },
     { key: "spend",      label: "Расходы ₽",  type: "line", color: C.neg, axis: "R" },
-    { key: "cpc",        label: "CPC ₽",      type: "line", color: MIX_ORANGE, axis: "R" },
-    { key: "cpa",        label: "CPA ₽",      type: "line", color: MIX_DARKRED, axis: "R" },
-    { key: "cpm",        label: "CPM ₽",      type: "line", color: MIX_GOLD, axis: "R" },
-    { key: "orders_sum", label: "Сумма ₽",    type: "line", color: C.pos, axis: "R" },
+    { key: "cpc",        label: "CPC ₽",      type: "line", color: AD_CPC, axis: "R" },
+    { key: "cpa",        label: "CPA ₽",      type: "line", color: AD_CPA, axis: "R" },
+    { key: "cpm",        label: "CPM ₽",      type: "line", color: AD_CPM, axis: "R" },
+    { key: "orders_sum", label: "Сумма ₽",    type: "line", color: AD_ORDERS_SUM, axis: "R" },
   ] : [
-    { key: "views",  label: "Показы",    type: "bar",  color: C.warn },
-    { key: "clicks", label: "Клики",     type: "bar",  color: MIX_CYAN },
-    { key: "orders", label: "Заказов",   type: "bar",  color: C.accent },
-    { key: "ctr",    label: "CTR %",     type: "line", color: MIX_PLUM },
+    { key: "views",  label: "Показы",    type: "bar",  color: AD_VIEWS },
+    { key: "clicks", label: "Клики",     type: "bar",  color: AD_CLICKS },
+    { key: "orders", label: "Заказов",   type: "bar",  color: AD_ORDERS },
+    { key: "ctr",    label: "CTR %",     type: "line", color: AD_CTR },
     { key: "spend",      label: "Расходы ₽",  type: "line", color: C.neg, axis: "R" },
-    { key: "cpc",        label: "CPC ₽",      type: "line", color: MIX_ORANGE, axis: "R" },
-    { key: "cpa",        label: "CPA ₽",      type: "line", color: MIX_DARKRED, axis: "R" },
-    { key: "cpm",        label: "CPM ₽",      type: "line", color: MIX_GOLD, axis: "R" },
+    { key: "cpc",        label: "CPC ₽",      type: "line", color: AD_CPC, axis: "R" },
+    { key: "cpa",        label: "CPA ₽",      type: "line", color: AD_CPA, axis: "R" },
+    { key: "cpm",        label: "CPM ₽",      type: "line", color: AD_CPM, axis: "R" },
   ];
 
   // Σ/последнее по строке метрики (для колонки ИТОГО матрицы).
