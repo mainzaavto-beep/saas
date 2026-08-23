@@ -325,7 +325,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: C.accent, textTransform: "uppercase" }}>прикидка</span>
                   {hasOverride ? (
-                    <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 7px", borderRadius: 6, background: pos ? "rgba(74,222,128,0.14)" : "rgba(248,113,113,0.14)", color: pos ? C.pos : C.neg, whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 7px", borderRadius: 6, background: pos ? soft("pos", 14) : soft("neg", 14), color: pos ? C.pos : C.neg, whiteSpace: "nowrap" }}>
                       Δ {pos ? "+" : ""}{Math.round(dProfit)}₽ · {pos ? "+" : ""}{dMargin.toFixed(1)}%
                     </span>
                   ) : null}

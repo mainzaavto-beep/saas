@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { ALERT } from "@/lib/callout.js";
 import { useState, useMemo, useEffect } from "react";
 
 // ShipmentFormModal — многострочная форма создания отгрузки (документа).
@@ -184,8 +185,8 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
           style={{ ...inputStyle, width: "100%", marginTop: 4 }} />
 
         <div style={{
-          fontSize: 11, color: C.faint, marginTop: 10, padding: "8px 10px",
-          background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 6,
+          fontSize: 11, marginTop: 10, padding: "8px 10px",
+          background: ALERT.warn.background, border: ALERT.warn.border, color: ALERT.warn.color, borderRadius: 6,
         }}>
           ⚠️ Отгрузка формируется <strong>по факту отгрузки товара на маркетплейс и приёмки</strong>.
           Количество по всем строкам списывается с остатка склада/ФФ. Если на какой-то позиции не хватит остатка — документ не создастся.
