@@ -6,6 +6,7 @@
 // роут отвечает 401/403, и баннер рендерит null — обычный пользователь его
 // не видит.
 import { useEffect, useState } from 'react';
+import { C } from '@/lib/palette.js';
 
 export default function OpsAlertsBanner() {
   const [alerts, setAlerts] = useState([]);
@@ -31,7 +32,7 @@ export default function OpsAlertsBanner() {
     <div style={{
       position: 'sticky', top: 0, zIndex: 1000,
       padding: '8px 16px', fontSize: 13,
-      background: isRed ? '#ff6b6b' : '#d9a400',
+      background: isRed ? C.neg : C.warn,
       color: '#1a1a1a',
       borderBottom: '1px solid var(--border)',
     }}>

@@ -1,5 +1,5 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 // /cabinets/[id]/settings — настройки проекта (название, магазины с налогами, API).
 import { useEffect, useState } from "react";
 import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
@@ -166,9 +166,7 @@ function ShopRow({ shop, cabinetId, onSaved }) {
       >
         <div>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{shop.shop_name || `Магазин #${shop.shop_id}`}</span>
-          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700,
-            background: shop.mp_code === "wb" ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)",
-            color: shop.mp_code === "wb" ? C.accent : "#f97316" }}>{shop.mp_code.toUpperCase()}</span>
+          <span className={`mp-badge ${shop.mp_code === "wb" ? "mp-wb" : "mp-ozon"}`} style={{ marginLeft: 8 }}>{shop.mp_code.toUpperCase()}</span>
           {shop.legal_name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{shop.legal_name}</span>}
           {shop.has_creds
             ? <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span>
@@ -408,7 +406,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
 
       {err && <div style={{ color: C.neg, fontSize: 13, marginTop: 10 }}>{err}</div>}
       {warn && (
-        <div style={{ background: "rgba(255,193,7,.12)", color: C.warn, padding: "8px 12px", borderRadius: 8, fontSize: 13, marginTop: 10 }}>
+        <div style={{ background: soft("warn", 12), color: C.warn, padding: "8px 12px", borderRadius: 8, fontSize: 13, marginTop: 10 }}>
           <div>⚠️ Магазин добавлен. {warn}</div>
           <button type="button" onClick={() => { reset(); setOpen(false); }} style={{
             marginTop: 8, padding: "4px 12px", borderRadius: 6, border: `1px solid ${C.line}`,

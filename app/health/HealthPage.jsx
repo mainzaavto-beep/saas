@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
+import { C } from "@/lib/palette.js";
 
 // Матрица «сборщик × день» по кабинетам + лента ошибок (спек п.6).
 const COLORS = {
@@ -134,7 +135,7 @@ export default function HealthPage() {
       )}
       {Array.isArray(data.payments_mismatch) && data.payments_mismatch.length > 0 && (
         <div style={{ marginTop: 24 }}>
-          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: "#ff6b6b" }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: C.neg }}>
             Платежи с несошедшейся суммой ({data.payments_mismatch.length})
           </h2>
           <div style={{ fontSize: 13 }}>
@@ -149,7 +150,7 @@ export default function HealthPage() {
       )}
       {Array.isArray(data.shops_auth) && data.shops_auth.length > 0 && (
         <div style={{ marginTop: 24 }}>
-          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: "#ff6b6b" }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: C.neg }}>
             Магазины со сломанными ключами ({data.shops_auth.length})
           </h2>
           <div style={{ fontSize: 13 }}>

@@ -521,8 +521,8 @@ const LIFECYCLE_COLOR = {
   planned: { bg: "rgba(120,130,140,0.18)", fg: "#9ca6b0" },
   ordered: { bg: "rgba(33,150,243,0.18)", fg: "#64b5f6" },
   in_production: { bg: "rgba(33,150,243,0.18)", fg: "#64b5f6" },
-  shipped: { bg: "rgba(255,193,7,0.18)", fg: "#ffd54f" },
-  in_transit: { bg: "rgba(255,193,7,0.18)", fg: "#ffd54f" },
+  shipped: { bg: soft("warn", 18), fg: C.warn },
+  in_transit: { bg: soft("warn", 18), fg: C.warn },
   arrived: { bg: "rgba(76,175,80,0.18)", fg: "#7ee08a" },
   in_stock: { bg: "rgba(76,175,80,0.30)", fg: "#a5d6a7" },
 };
@@ -725,7 +725,7 @@ function PurchaseDetailPanel({ it, cabinetId, reload }) {
                     {pp.status === "paid" ? (
                       <span style={{ ...badgeStyle, background: "rgba(76,175,80,0.18)", color: C.pos }}>✓ оплачен</span>
                     ) : (
-                      <span style={{ ...badgeStyle, background: "rgba(255,193,7,0.15)", color: "#ffd54f" }}>план</span>
+                      <span style={{ ...badgeStyle, background: soft("warn", 15), color: C.warn }}>план</span>
                     )}
                   </td>
                   <td style={{ padding: "6px 8px", color: C.faint }}>{pp.paid_dt || "—"}</td>

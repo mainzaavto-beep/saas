@@ -580,13 +580,7 @@ function itemKey(it) { return `${it.platform}|${it.nm_id || 0}|${it.product_id |
 
 function MpBadge({ platform }) {
   const isWb = platform === "wb";
-  return (
-    <span style={{
-      fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 6,
-      background: isWb ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)",
-      color: isWb ? C.accent : C.pink,
-    }}>{isWb ? "WB" : "OZON"}</span>
-  );
+  return <span className={`mp-badge ${isWb ? "mp-wb" : "mp-ozon"}`}>{isWb ? "WB" : "OZON"}</span>;
 }
 
 function ActiveDot({ hasSales, status }) {

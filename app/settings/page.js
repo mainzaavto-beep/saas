@@ -205,7 +205,7 @@ function MainTab() {
   return (
     <div style={{ display: "grid", gap: 20 }}>
       {data && !data.email_verified_at && (
-        <div style={{ background: "rgba(255,193,7,.12)", border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, display: "grid", gap: 10 }}>
+        <div style={{ background: soft("warn", 12), border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, display: "grid", gap: 10 }}>
           <div style={{ fontSize: 14 }}>
             Почта <b>{data.email}</b> не подтверждена. Без подтверждения нельзя подключать API-ключи маркетплейсов и приглашать сотрудников.
           </div>
@@ -419,7 +419,8 @@ function ShopRow({ shop, cabinetId, canManage, onSaved }) {
       <div onClick={() => setExpanded(!expanded)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", cursor: "pointer" }}>
         <div>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{shop.shop_name || `Магазин #${shop.shop_id}`}</span>
-          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: shop.mp_code === "wb" ? soft("accent", 12) : "rgba(249,115,22,0.15)", color: shop.mp_code === "wb" ? C.accent : "#f97316" }}>{shop.mp_code.toUpperCase()}</span>
+          {/* cabinet.css (классы .mp-badge/.mp-ozon) здесь не подключён — эта страница вне /cabinets/[id]/, поэтому бейдж инлайн */}
+          <span style={{ marginLeft: 8, padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: shop.mp_code === "wb" ? soft("accent", 12) : soft("pink", 12), color: shop.mp_code === "wb" ? C.accent : C.pink }}>{shop.mp_code.toUpperCase()}</span>
           {shop.legal_name && <span style={{ marginLeft: 8, fontSize: 12, color: C.faint }}>{shop.legal_name}</span>}
           {shop.has_creds ? <span style={{ marginLeft: 8, fontSize: 11, color: C.pos }}>🔑 Ключи есть</span> : <span style={{ marginLeft: 8, fontSize: 11, color: C.neg }}>⚠ Нет ключей</span>}
           <span style={{ marginLeft: 8, fontSize: 11, color: C.muted }}>{tax.type === "usn_income_expenses" ? "УСН Д−Р" : "УСН Доходы"} {tax.rate}%{tax.vat ? ` + НДС ${tax.vat}%` : ""}</span>
@@ -551,7 +552,7 @@ function AddShopForm({ cabinetId, disabled, onAdded }) {
             style={{
               padding: "6px 14px", borderRadius: 6,
               border: `1px solid ${mpCode === code ? C.accent : C.line}`,
-              background: mpCode === code ? "rgba(79,140,255,0.15)" : "transparent",
+              background: mpCode === code ? soft("accent", 15) : "transparent",
               color: mpCode === code ? C.accent : C.ink, cursor: "pointer",
               fontSize: 13, fontFamily: "inherit", fontWeight: 600,
             }}>{c.label}</button>

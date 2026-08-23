@@ -890,7 +890,7 @@ function LocationsManager({ cabinetId, locations, reload }) {
           <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: C.surfaceAlt, borderRadius: 7 }}>
             <span style={{
               fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 6,
-              background: l.loc_type === "ff" ? "rgba(249,115,22,0.15)" : "rgba(74,222,128,0.15)",
+              background: l.loc_type === "ff" ? soft("pink", 12) : soft("pos", 12),
               color: l.loc_type === "ff" ? C.pink : C.pos,
             }}>{l.loc_type === "ff" ? "ФФ" : "СКЛАД"}</span>
             <span style={{ fontSize: 13, fontWeight: 600 }}>{l.name}</span>
@@ -931,13 +931,7 @@ function Kpi({ label, value, accent, pos, color }) {
 }
 function MpBadge({ platform }) {
   const isWb = platform === "wb";
-  return (
-    <span style={{
-      fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 6,
-      background: isWb ? "rgba(79,140,255,0.15)" : "rgba(249,115,22,0.15)",
-      color: isWb ? C.accent : C.pink,
-    }}>{isWb ? "WB" : "OZON"}</span>
-  );
+  return <span className={`mp-badge ${isWb ? "mp-wb" : "mp-ozon"}`}>{isWb ? "WB" : "OZON"}</span>;
 }
 function Field({ label, children }) {
   return <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: C.muted }}>{label}{children}</label>;

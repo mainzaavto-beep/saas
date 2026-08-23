@@ -43,5 +43,5 @@ function VerifyInner() {
 }
 
 export default function VerifyPage() {
-  return <Suspense fallback={<div style={{ padding: 40, color: "#8a99b8" }}>Загрузка…</div>}><VerifyInner /></Suspense>;
+  return <Suspense fallback={<div style={{ padding: 40, color: C.muted }}>Загрузка…</div>}><VerifyInner /></Suspense>;
 }

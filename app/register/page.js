@@ -7,7 +7,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function RegisterPageWrapper() {
-  return <Suspense fallback={<div style={{ padding: 40, color: "#8a99b8" }}>Загрузка…</div>}><RegisterInner /></Suspense>;
+  return <Suspense fallback={<div style={{ padding: 40, color: C.muted }}>Загрузка…</div>}><RegisterInner /></Suspense>;
 }
 
 function RegisterInner() {

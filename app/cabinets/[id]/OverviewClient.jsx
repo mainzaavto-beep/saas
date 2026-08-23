@@ -169,7 +169,7 @@ export default function OverviewClient({ cabinetId }) {
                 border: "none", padding: "6px 14px", borderRadius: 8, cursor: "pointer",
                 fontFamily: "inherit", fontSize: 13, fontWeight: 600,
                 background: gran === g.id ? C.accent : "transparent",
-                color: gran === g.id ? "#0b1220" : C.muted,
+                color: gran === g.id ? "var(--accentInk)" : C.muted,
               }}
             >
               {g.label}
@@ -215,7 +215,7 @@ export default function OverviewClient({ cabinetId }) {
                 border: "none", padding: "6px 14px", borderRadius: 8,
                 fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer",
                 background: mp === m.id ? C.accent : "transparent",
-                color: mp === m.id ? "#0b1220" : C.muted,
+                color: mp === m.id ? "var(--accentInk)" : C.muted,
               }}
             >
               {m.label}

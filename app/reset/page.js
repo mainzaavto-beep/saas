@@ -54,5 +54,5 @@ function ResetInner() {
 }
 
 export default function ResetPage() {
-  return <Suspense fallback={<div style={{ padding: 40, color: "#8a99b8" }}>Загрузка…</div>}><ResetInner /></Suspense>;
+  return <Suspense fallback={<div style={{ padding: 40, color: C.muted }}>Загрузка…</div>}><ResetInner /></Suspense>;
 }

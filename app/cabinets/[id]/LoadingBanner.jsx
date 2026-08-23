@@ -56,7 +56,7 @@ export default function LoadingBanner({ cabinetId }) {
   return (
     <div style={{
       padding: "8px 16px", textAlign: "center", fontSize: 13,
-      background: "rgba(255,193,7,.12)",
+      background: soft("warn", 12),
       color: "var(--warn, #d9a400)",
       borderBottom: "1px solid var(--border)",
     }}>

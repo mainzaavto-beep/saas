@@ -1,5 +1,5 @@
 'use client';
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 // /onboarding — создание проекта с несколькими магазинами.
 // Поддержка: до 4 магазинов всего (любая комбинация WB/Ozon), разные юрлица, налоги per shop.
 import { useRef, useState } from 'react';
@@ -159,7 +159,7 @@ export default function OnboardingPage() {
         <p style={{ color: C.muted, fontSize: 14, margin: "0 0 24px" }}>Подключите магазины — мы начнём собирать аналитику автоматически</p>
         {err && <div className="err">{err}</div>}
         {warnings.length > 0 && (
-          <div style={{ background: "rgba(255,193,7,.12)", color: C.warn, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>
+          <div style={{ background: soft("warn", 12), color: C.warn, padding: "10px 14px", borderRadius: 8, fontSize: 14, marginBottom: 16 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>Проект создан, но обратите внимание:</div>
             <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
               {warnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}

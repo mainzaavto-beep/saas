@@ -376,7 +376,7 @@ export default function SelfBuyoutsPage({ cabinetId }) {
                 <CellTd it={it} field="buyout_price" editKey={editKey} editText={editText}
                   setEditKey={setEditKey} setEditText={setEditText} startCell={startCell} saveCell={saveCell}
                   render={(v) => money(v)} right />
-                <Td right><span style={{ color: ALERT?.warn?.text }}>{money(it.buyout_total)}</span></Td>
+                <Td right><span style={{ color: ALERT?.warn?.color }}>{money(it.buyout_total)}</span></Td>
                 {/* tax_pct редактируется, tax_total — нет */}
                 <Td right>{money(it.tax_total)}</Td>
                 <Td right><strong style={{ color: C.neg }}>{money(it.total)}</strong></Td>
@@ -401,7 +401,7 @@ export default function SelfBuyoutsPage({ cabinetId }) {
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{num(totals.qty)}</td>
                 <td style={tdFootR} colSpan={9}>
-                  cash-out: <span style={{ color: ALERT?.warn?.text }}>{money(totals.buyoutTotal)}</span>
+                  cash-out: <span style={{ color: ALERT?.warn?.color }}>{money(totals.buyoutTotal)}</span>
                 </td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}><span style={{ color: C.neg }}>{money(totals.total)}</span></td>
@@ -634,7 +634,7 @@ const tdLeftFoot = { padding: "10px", textAlign: "left" };
 const tdFootR = { padding: "10px", textAlign: "right", fontVariantNumeric: "tabular-nums" };
 const alertStyle = {
   padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-  background: ALERT?.bg || "rgba(255,193,7,0.08)",
-  border: `1px solid ${ALERT?.line || "rgba(255,193,7,0.3)"}`,
-  color: ALERT?.text || C.ink,
+  background: ALERT.warn.background,
+  border: ALERT.warn.border,
+  color: ALERT.warn.color,
 };

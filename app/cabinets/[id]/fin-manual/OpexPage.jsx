@@ -436,7 +436,7 @@ export default function OpexPage({ cabinetId }) {
       </div>
 
       {voiceErr && (
-        <div style={{ padding: "8px 12px", margin: "0 0 12px", borderRadius: 8, fontSize: 13, background: ALERT.warn.bg, border: `1px solid ${ALERT.warn.border}`, color: ALERT.warn.text }}>
+        <div style={{ padding: "8px 12px", margin: "0 0 12px", borderRadius: 8, fontSize: 13, background: ALERT.warn.background, border: ALERT.warn.border, color: ALERT.warn.color }}>
           ⚠ {voiceErr}
         </div>
       )}
@@ -801,7 +801,7 @@ function PreviewCard({ preview, domain, onChange, onConfirm, onCancel, busy }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <strong style={{ color: C.accent }}>🎤 Распознано — проверьте и сохраните</strong>
         {preview._fallback && (
-          <span style={{ ...badgeStyle, background: ALERT.warn.bg, color: ALERT.warn.text, border: `1px solid ${ALERT.warn.border}` }}>
+          <span style={{ ...badgeStyle, background: ALERT.warn.background, color: ALERT.warn.color, border: ALERT.warn.border }}>
             ⚠ часть полей — оценка
           </span>
         )}
@@ -849,7 +849,7 @@ function PreviewCard({ preview, domain, onChange, onConfirm, onCancel, busy }) {
         </div>
       </div>
       {preview._parse_warning && (
-        <div style={{ marginTop: 8, fontSize: 12, color: ALERT.warn.text }}>⚠ {preview._parse_warning}</div>
+        <div style={{ marginTop: 8, fontSize: 12, color: ALERT.warn.color }}>⚠ {preview._parse_warning}</div>
       )}
     </div>
   );

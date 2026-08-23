@@ -190,7 +190,7 @@ export default function UnitPage({ cabinetId }) {
               border: "none", padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
               fontSize: 13, fontWeight: 600,
               background: platform === o.v ? C.accent : "transparent",
-              color: platform === o.v ? "#0b1220" : C.muted,
+              color: platform === o.v ? "var(--accentInk)" : C.muted,
             }}>{o.l}</button>
           ))}
         </div>

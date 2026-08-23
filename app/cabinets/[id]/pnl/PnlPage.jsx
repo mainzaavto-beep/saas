@@ -318,7 +318,7 @@ function SegBtn({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{
       padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none",
-      background: active ? C.accent : C.surfaceAlt, color: active ? "#0b1220" : C.ink,
+      background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink,
       fontFamily: "inherit",
     }}>{children}</button>
   );

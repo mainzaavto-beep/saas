@@ -13,10 +13,12 @@ import { useState, useEffect } from "react";
 
 const FONT = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 
+// ALERT.<tone> = { background, border ("1px solid …"), color } — см. lib/callout.js.
+// Раньше здесь читались несуществующие поля .bg/.text (плашки были без цвета).
 const LEVEL = {
-  crit: { bg: ALERT.critical.bg, border: ALERT.critical.border, text: ALERT.critical.text, icon: "🚨", label: "критично" },
-  warn: { bg: ALERT.warn.bg, border: ALERT.warn.border, text: ALERT.warn.text, icon: "⚠️", label: "внимание" },
-  info: { bg: ALERT.info.bg, border: ALERT.info.border, text: ALERT.info.text, icon: "ℹ️", label: "инфо" },
+  crit: { ...ALERT.critical, icon: "🚨", label: "критично" },
+  warn: { ...ALERT.warn, icon: "⚠️", label: "внимание" },
+  info: { ...ALERT.info, icon: "ℹ️", label: "инфо" },
 };
 
 const FILTERS = [
@@ -83,7 +85,7 @@ export default function AlertsPage({ cabinetId }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>Оповещения</h1>
         {unreadCount > 0 && (
-          <span style={{ background: ALERT.critical.bg, color: ALERT.critical.text, fontWeight: 700, fontSize: 13, padding: "4px 11px", borderRadius: 8 }}>
+          <span style={{ background: ALERT.critical.background, color: ALERT.critical.color, fontWeight: 700, fontSize: 13, padding: "4px 11px", borderRadius: 8 }}>
             {unreadCount} новых
           </span>
         )}
@@ -111,7 +113,7 @@ export default function AlertsPage({ cabinetId }) {
       </div>
 
       {loading && <div style={{ color: C.muted, fontSize: 14 }}>Загрузка…</div>}
-      {error && <div style={{ color: ALERT.critical.text, fontSize: 13 }}>Ошибка: {error}</div>}
+      {error && <div style={{ color: ALERT.critical.color, fontSize: 13 }}>Ошибка: {error}</div>}
 
       {!loading && filtered.length === 0 && (
         <Card>
@@ -126,15 +128,15 @@ export default function AlertsPage({ cabinetId }) {
           const lv = LEVEL[n.level] || LEVEL.info;
           return (
             <div key={n.id} style={{
-              background: n.read ? C.surface : lv.bg,
-              border: `1px solid ${n.read ? C.line : lv.border}`,
-              borderLeft: !n.read ? `4px solid ${lv.text}` : `1px solid ${n.read ? C.line : lv.border}`,
+              background: n.read ? C.surface : lv.background,
+              border: n.read ? `1px solid ${C.line}` : lv.border,
+              borderLeft: !n.read ? `4px solid ${lv.color}` : (n.read ? `1px solid ${C.line}` : lv.border),
               borderRadius: 10, padding: "12px 14px",
               opacity: n.read ? 0.75 : 1,
             }}>
               <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 16 }}>{lv.icon}</span>
-                <span style={{ fontSize: 10, fontWeight: 800, color: lv.text, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: lv.color, textTransform: "uppercase", letterSpacing: 0.5 }}>
                   {lv.label}
                 </span>
                 {n.category && (

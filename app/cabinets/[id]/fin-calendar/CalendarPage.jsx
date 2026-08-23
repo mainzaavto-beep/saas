@@ -148,7 +148,7 @@ export default function CalendarPage({ cabinetId }) {
               return (
               <tr key={w.week} style={{
                 borderBottom: `1px solid ${soft("line", 20)}`,
-                background: w.at_risk ? "rgba(255,193,7,0.08)" : "transparent",
+                background: w.at_risk ? soft("warn", 8) : "transparent",
               }}>
                 <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
                   {fmtWeek(w.week)}{w.at_risk ? <span title="кассовый разрыв"> ⚠️</span> : null}

@@ -74,7 +74,7 @@ export default function BillingPage({ cabinetId }) {
       </div>
 
       {justPaid && data.state !== "active" && (
-        <div style={{ background: "rgba(255,193,7,.12)", borderRadius: 12, padding: 16, marginBottom: 20, fontSize: 14 }}>
+        <div style={{ background: soft("warn", 12), borderRadius: 12, padding: 16, marginBottom: 20, fontSize: 14 }}>
           Платёж обрабатывается — страница обновится сама, когда банк подтвердит оплату.
         </div>
       )}
