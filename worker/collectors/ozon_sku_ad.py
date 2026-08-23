@@ -44,6 +44,17 @@ POLL_SLEEP = 5.0
 # юнита — при ~6 чанках на кабинет 10 минут на отчёт уже впритык, выше не
 # поднимать без пересмотра таймаута юнита.
 POLL_MAX = 120
+# «Умный ритм»: наблюдения 2026-08-23 — дневные тики (05:15/09:00/12:00 MSK)
+# стабильно упираются в таймаут воркера из-за структурно медленной дневной
+# очереди async-отчётов Ozon (900с×2, потом даже 1500с), тогда как вечерний
+# тик 17:00 проходит за ~10 мин (очередь к вечеру освобождается). Данные не
+# теряются (lookback 14 дней), но каждый дневной тик жжёт ~25 минут и красит
+# алерт впустую. Сервер работает в TZ=Europe/Moscow — datetime.now() уже даёт
+# MSK (как и `yesterday` ниже в collect()), отдельного перевода не нужно.
+SKIP_WINDOW_MSK = (4, 16)   # [4:00, 16:00) MSK — дневное окно медленной очереди
+STALE_FALLBACK_H = 26       # свежий ok старше этого — собираем несмотря на
+                             # день (страховка от вечных пропусков, если
+                             # вечерний тик сам сорвётся или кабинет новый)
 _TOTAL_ROWS = ("всего", "итого")
 _CORRECTION = "корректировка"
 _DATE_DMY = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})$")
@@ -219,6 +230,24 @@ def _sku_map():
 def collect(since=None, to=None):
     print("[ozon_sku_ad] реклама Ozon по товарам", flush=True)
     db_pg.init()
+    # «Умный ритм» (см. константы выше): в дневном окне и при свежем успешном
+    # прогоне — мягкий skip, вечерний тик и так соберёт актуальные данные.
+    now_msk = datetime.now()
+    if SKIP_WINDOW_MSK[0] <= now_msk.hour < SKIP_WINDOW_MSK[1]:
+        cid = db_pg._cabinet_id()
+        rows = db_pg.query(
+            "SELECT max(finished_at) AS t FROM jobs.collector_runs "
+            "WHERE collector = 'ozon_sku_ad' AND status = 'ok' AND cabinet_id = %s",
+            (cid,))
+        last_ok = rows[0]["t"] if rows else None
+        if last_ok is not None:
+            age_h = (datetime.now(timezone.utc) - last_ok).total_seconds() / 3600
+            if age_h < STALE_FALLBACK_H:
+                msk_tz = timezone(timedelta(hours=3))
+                when = last_ok.astimezone(msk_tz).strftime("%Y-%m-%d %H:%M MSK")
+                print(f"[ozon_sku_ad] дневное окно очереди Ozon и свежий ok "
+                      f"({when}) — пропуск тика (вечерний соберёт)", flush=True)
+                return 0
     yesterday = datetime.now() - timedelta(days=1)
     if to is None or to > yesterday:
         to = yesterday          # текущий день не пишем — растёт внутри дня
