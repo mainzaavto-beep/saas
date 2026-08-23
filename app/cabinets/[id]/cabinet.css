@@ -85,7 +85,9 @@
   cursor: pointer;
   font-size: 13px;
 }
-.btn-small.active { background: var(--accent); border-color: var(--accent); }
+/* Активное состояние — акцентная подложка ⇒ текст по правилу accentInk
+   (симметрия с .btn; дыра найдена пост-ревью хотфикса c982788). */
+.btn-small.active { background: var(--accent); border-color: var(--accent); color: var(--accentInk); }
 
 /* Фото товара */
 .thumb {
