@@ -80,7 +80,10 @@ a:hover { text-decoration: underline; }
   cursor: pointer; background: var(--accent); color: var(--accentInk); transition: opacity .15s; }
 .btn:hover { opacity: .9; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.secondary { background: var(--panel2); border: 1px solid var(--border); }
+/* Вторичная кнопка: подложка панельная (не акцент) — цвет текста обязан быть
+   обычным текстовым, а не accentInk (иначе в тёмной теме тёмное-на-тёмном;
+   найдено владельцем 2026-08-23). */
+.btn.secondary { background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
 .err { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); padding: 10px 12px; border-radius: 8px;
   font-size: 14px; margin-bottom: 16px; }
 .foot { margin-top: 18px; text-align: center; font-size: 14px; color: var(--muted); }
