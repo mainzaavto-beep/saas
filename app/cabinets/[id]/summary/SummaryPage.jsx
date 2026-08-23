@@ -315,6 +315,8 @@ export default function SummaryPage({ cabinetId }) {
         />
         <Kpi label="Продано, шт" value={num(ft.sold)} />
         <Kpi label="% выкупа" value={pct(ft.buyoutPct)} />
+        <Kpi label="Средняя маржа" value={pct(ft.margin)} />
+        <Kpi label="Заказано, шт" value={num(ft.ordered)} />
         <Kpi
           label="ДРР (общий)"
           value={t.salesRub ? pct(100 * (t.adSpend || 0) / t.salesRub) : "—"}
