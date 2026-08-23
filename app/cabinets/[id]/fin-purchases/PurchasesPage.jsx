@@ -222,7 +222,7 @@ export default function PurchasesPage({ cabinetId }) {
           архивные
         </label>
         <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setVendor(""); setStatus(""); setCategory(""); setQ(""); setArchived(false); }} style={resetBtnStyle}>Сбросить</button>
-        <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}>
+        <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить партию"}
         </button>
       </div>
@@ -900,7 +900,7 @@ const resetBtnStyle = {
 };
 const addBtnStyle = {
   padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const miniBtn = {
   padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer",
@@ -936,7 +936,7 @@ const expandBtnStyle = {
 };
 const advanceBtn = {
   padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const payFormCard = {
   background: C.bg, border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 12px",

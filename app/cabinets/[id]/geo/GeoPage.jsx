@@ -231,7 +231,7 @@ function Seg({ children }) {
 }
 function SegBtn({ active, onClick, children }) {
   return (
-    <button onClick={onClick} style={{ padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "#0A1A1C" : C.ink, fontFamily: "inherit" }}>{children}</button>
+    <button onClick={onClick} style={{ padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink, fontFamily: "inherit" }}>{children}</button>
   );
 }
 function Field({ label, children }) {

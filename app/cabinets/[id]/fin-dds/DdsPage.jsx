@@ -536,7 +536,7 @@ const resetBtnStyle = {
 };
 const addBtnStyle = {
   padding: "8px 18px", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const draftBtnStyle = {
   padding: "7px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",

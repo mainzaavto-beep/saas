@@ -620,7 +620,7 @@ async function deleteRequest(id, flash, reload) {
 // ===================== UI primitives =====================
 const btnAccent = {
   padding: "8px 16px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600,
-  border: "none", background: C.accent, color: "#0A1A1C", fontFamily: "inherit",
+  border: "none", background: C.accent, color: "var(--accentInk)", fontFamily: "inherit",
 };
 const btnGhost = {
   padding: "8px 16px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600,

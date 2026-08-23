@@ -541,7 +541,7 @@ const inputStyle = {
 };
 const primaryBtn = {
   padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", fontWeight: 600,
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const miniBtn = {
   padding: "4px 8px", borderRadius: 6, fontSize: 13, cursor: "pointer",

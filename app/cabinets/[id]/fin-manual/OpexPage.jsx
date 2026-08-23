@@ -762,7 +762,7 @@ function Segmented({ value, options, onChange }) {
             border: "none", padding: "6px 14px", borderRadius: 8,
             fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer",
             background: value === o.id ? C.accent : "transparent",
-            color: value === o.id ? "#0A1A1C" : C.muted,
+            color: value === o.id ? "var(--accentInk)" : C.muted,
           }}
         >
           {o.label}
@@ -905,7 +905,7 @@ const inputStyle = {
 };
 const addBtnStyle = {
   padding: "8px 18px", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const miniBtn = {
   padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer",

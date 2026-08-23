@@ -486,7 +486,7 @@ const cellBtn = {
 };
 const draftBtnStyle = {
   padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const modalOverlay = {
   position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex",
@@ -503,7 +503,7 @@ const resetBtnStyle = {
 };
 const addBtnStyle = {
   padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const miniBtn = {
   padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer",

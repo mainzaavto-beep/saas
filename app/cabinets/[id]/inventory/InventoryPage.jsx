@@ -153,7 +153,7 @@ export default function InventoryPage({ cabinetId }) {
           {showLocs ? "✕ Места" : "📍 Места"}
         </button>
         <button onClick={() => setShowAdd((v) => !v)}
-          style={{ ...primaryBtn, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}>
+          style={{ ...primaryBtn, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить товар"}
         </button>
         <button onClick={() => { setShipPreset(null); setShowShip(true); }}
@@ -939,7 +939,7 @@ function Field({ label, children }) {
 
 // ---------------- Стили ----------------
 const inputStyle = { padding: "6px 10px", borderRadius: 6, fontSize: 13, background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120 };
-const primaryBtn = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", fontWeight: 600, background: C.accent, color: "#0A1A1C", border: "none" };
+const primaryBtn = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", fontWeight: 600, background: C.accent, color: "var(--accentInk)", border: "none" };
 const resetBtnStyle = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };
 const miniBtn = { padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };
 const editBtn = { border: "none", background: "transparent", cursor: "pointer", padding: "2px 4px", fontVariantNumeric: "tabular-nums", color: C.ink };

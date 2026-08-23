@@ -161,7 +161,7 @@ export default function MpStockPage({ cabinetId }) {
               style={{
                 padding: "9px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none",
                 background: mp === opt.v ? C.accent : C.surfaceAlt,
-                color: mp === opt.v ? "#0A1A1C" : C.ink,
+                color: mp === opt.v ? "var(--accentInk)" : C.ink,
                 transition: "background 0.15s",
               }}
             >
@@ -337,7 +337,7 @@ function TabBtn({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{
       padding: "7px 16px", borderRadius: 9, border: `1px solid ${active ? C.accent : C.line}`,
-      background: active ? C.accent : "transparent", color: active ? "#0A1A1C" : C.muted,
+      background: active ? C.accent : "transparent", color: active ? "var(--accentInk)" : C.muted,
       cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600,
     }}>{children}</button>
   );

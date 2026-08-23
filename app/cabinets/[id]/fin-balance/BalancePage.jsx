@@ -542,7 +542,7 @@ function ReceivablesCard({ receivables, setReceivables, loading }) {
           />
           <button
             onClick={() => { addRow(newSource); setNewSource(""); setAdding(false); }}
-            style={{ ...miniBtnStyle, background: C.accent, color: "#0A1A1C" }}
+            style={{ ...miniBtnStyle, background: C.accent, color: "var(--accentInk)" }}
           >✓</button>
           <button onClick={() => { setNewSource(""); setAdding(false); }} style={miniBtnStyle}>✕</button>
         </div>
@@ -628,7 +628,7 @@ function AccountGroup({ subjectKey, subjectLabel, group, groupTotal, setAccountA
           />
           <button
             onClick={() => { onAdd(subjectKey, newName); setNewName(""); setAdding(false); }}
-            style={{ ...miniBtnStyle, background: C.accent, color: "#0A1A1C" }}
+            style={{ ...miniBtnStyle, background: C.accent, color: "var(--accentInk)" }}
           >✓</button>
           <button onClick={() => { setNewName(""); setAdding(false); }} style={miniBtnStyle}>✕</button>
         </div>
@@ -657,7 +657,7 @@ function AccountRow({ account, setAccountAmount, onRename, onRemove, loading }) 
         />
         <button
           onClick={() => { onRename(account.id, draft); setEditing(false); }}
-          style={{ ...miniBtnStyle, background: C.accent, color: "#0A1A1C" }}
+          style={{ ...miniBtnStyle, background: C.accent, color: "var(--accentInk)" }}
         >✓</button>
         <button onClick={() => { setDraft(account.account_name); setEditing(false); }} style={miniBtnStyle}>✕</button>
       </div>
@@ -881,7 +881,7 @@ const inputStyle = {
 };
 const addBtnStyle = {
   padding: "8px 18px", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none",
+  background: C.accent, color: "var(--accentInk)", border: "none",
 };
 const miniBtnStyle = {
   padding: "4px 10px", borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: "pointer",

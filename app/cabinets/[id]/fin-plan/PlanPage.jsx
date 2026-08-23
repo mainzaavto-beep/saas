@@ -830,7 +830,7 @@ function Seg({ children }) {
   return <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 9, overflow: "hidden" }}>{children}</div>;
 }
 function SegBtn({ active, onClick, children }) {
-  return <button onClick={onClick} style={{ padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "#0A1A1C" : C.ink, fontFamily: "inherit" }}>{children}</button>;
+  return <button onClick={onClick} style={{ padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink, fontFamily: "inherit" }}>{children}</button>;
 }
 function Field({ label, children }) {
   return (
@@ -841,7 +841,7 @@ function Field({ label, children }) {
   );
 }
 const inputStyle = { padding: "7px 10px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 13, fontFamily: "inherit" };
-const resetBtnStyle = { padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, border: `1px solid ${C.accent}`, background: C.accent, color: "#0A1A1C", fontFamily: "inherit" };
+const resetBtnStyle = { padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, border: `1px solid ${C.accent}`, background: C.accent, color: "var(--accentInk)", fontFamily: "inherit" };
 const miniBtnStyle = { padding: "4px 8px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontFamily: "inherit" };
 
 function Centered({ children }) {

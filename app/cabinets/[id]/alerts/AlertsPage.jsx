@@ -104,7 +104,7 @@ export default function AlertsPage({ cabinetId }) {
             style={{
               ...chipBtn,
               background: filter === f.id ? C.accent : C.surfaceAlt,
-              color: filter === f.id ? "#0A1A1C" : C.muted,
+              color: filter === f.id ? "var(--accentInk)" : C.muted,
               fontWeight: filter === f.id ? 700 : 500,
             }}>
             {f.label}

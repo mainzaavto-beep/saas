@@ -328,7 +328,7 @@ function Seg({ children }) {
 }
 function SegBtn({ active, onClick, children }) {
   return (
-    <button onClick={onClick} style={{ padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "#0A1A1C" : C.ink, fontFamily: "inherit" }}>{children}</button>
+    <button onClick={onClick} style={{ padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none", background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink, fontFamily: "inherit" }}>{children}</button>
   );
 }
 function Field({ label, children }) {
@@ -344,7 +344,7 @@ function Chip({ active, onClick, children }) {
     <button onClick={onClick} style={{
       padding: "6px 12px", cursor: "pointer", fontSize: 13, fontWeight: 600,
       border: `1px solid ${active ? C.accent : C.line}`, borderRadius: 8,
-      background: active ? C.accent : C.surfaceAlt, color: active ? "#0A1A1C" : C.ink,
+      background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink,
       fontFamily: "inherit",
     }}>{children}</button>
   );

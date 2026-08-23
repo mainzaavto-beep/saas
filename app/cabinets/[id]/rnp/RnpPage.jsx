@@ -209,7 +209,7 @@ export default function RnpPage({ cabinetId }) {
             padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontFamily: "inherit",
             border: `1px solid ${pageSize === n ? C.accent : C.line}`,
             background: pageSize === n ? C.accent : "transparent",
-            color: pageSize === n ? "#0A1A1C" : C.muted, fontWeight: 600,
+            color: pageSize === n ? "var(--accentInk)" : C.muted, fontWeight: 600,
           }}>{n === 0 ? "все" : n}</button>
         ))}
         <span style={{ marginLeft: "auto" }}>
@@ -403,7 +403,7 @@ function PagerBtn({ children, onClick, disabled }) {
     <button onClick={onClick} disabled={disabled} style={{
       padding: "6px 12px", borderRadius: 7, cursor: disabled ? "default" : "pointer", fontFamily: "inherit",
       border: `1px solid ${disabled ? C.line : C.accent}`, background: disabled ? "transparent" : C.accent,
-      color: disabled ? C.faint : "#0A1A1C", fontWeight: 700, fontSize: 13,
+      color: disabled ? C.faint : "var(--accentInk)", fontWeight: 700, fontSize: 13,
     }}>{children}</button>
   );
 }
@@ -432,7 +432,7 @@ function SegBtn({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{
       padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, border: "none",
-      background: active ? C.accent : C.surfaceAlt, color: active ? "#0A1A1C" : C.ink, fontFamily: "inherit",
+      background: active ? C.accent : C.surfaceAlt, color: active ? "var(--accentInk)" : C.ink, fontFamily: "inherit",
     }}>{children}</button>
   );
 }

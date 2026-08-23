@@ -258,7 +258,7 @@ export default function SelfBuyoutsPage({ cabinetId }) {
         </button>
         <button
           onClick={() => setShowAdd((v) => !v)}
-          style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "#0A1A1C" }}
+          style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}
         >
           {showAdd ? "✕ Закрыть" : "+ Добавить"}
         </button>
@@ -608,7 +608,7 @@ const resetBtnStyle = {
 };
 const addBtnStyle = {
   padding: "7px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
-  background: C.accent, color: "#0A1A1C", border: "none", fontWeight: 600,
+  background: C.accent, color: "var(--accentInk)", border: "none", fontWeight: 600,
 };
 const delBtn = {
   background: "transparent", border: "none", cursor: "pointer", fontSize: 15,

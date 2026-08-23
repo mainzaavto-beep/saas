@@ -869,7 +869,7 @@ function Segmented({ value, onChange, options }) {
           style={{
             padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600,
             background: value === o.v ? C.accent : C.surface,
-            color: value === o.v ? "#0A1A1C" : C.muted,
+            color: value === o.v ? "var(--accentInk)" : C.muted,
             border: "none", borderRight: `1px solid ${C.line}`,
           }}>
           {o.l}

@@ -75,7 +75,7 @@ export default function BriefingPage({ cabinetId }) {
             border: "none", padding: "6px 14px", borderRadius: 8, cursor: "pointer",
             fontFamily: "inherit", fontSize: 13, fontWeight: 600,
             background: mp === m.id ? C.accent : "transparent",
-            color: mp === m.id ? "#0A1A1C" : C.muted,
+            color: mp === m.id ? "var(--accentInk)" : C.muted,
           }}>{m.label}</button>
         ))}
       </div>

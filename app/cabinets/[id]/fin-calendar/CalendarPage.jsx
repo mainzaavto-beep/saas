@@ -77,7 +77,7 @@ export default function CalendarPage({ cabinetId }) {
               <button key={h} onClick={() => setHorizon(h)}
                 style={{
                   padding: "6px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-                  background: horizon === h ? C.accent : C.bg, color: horizon === h ? "#0A1A1C" : C.muted,
+                  background: horizon === h ? C.accent : C.bg, color: horizon === h ? "var(--accentInk)" : C.muted,
                   border: "none",
                 }}>
                 {h}

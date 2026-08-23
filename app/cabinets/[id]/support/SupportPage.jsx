@@ -198,7 +198,7 @@ export default function SupportPage({ cabinetId }) {
           style={{
             padding: "10px 18px", borderRadius: 10, cursor: sending ? "default" : "pointer",
             border: "none", background: sending ? C.surfaceAlt : C.accent,
-            color: sending ? C.faint : "#0A1A1C", fontWeight: 700, fontSize: 14, fontFamily: "inherit",
+            color: sending ? C.faint : "var(--accentInk)", fontWeight: 700, fontSize: 14, fontFamily: "inherit",
             whiteSpace: "nowrap",
           }}
         >Отправить</button>
@@ -217,7 +217,7 @@ function MessageBubble({ m }) {
       <div style={{
         maxWidth: "78%", padding: "9px 13px", borderRadius: 14,
         background: isUser ? C.accent : (m.by_ai ? soft("accent", 8) : soft("warn", 10)),
-        color: isUser ? "#0A1A1C" : C.ink,
+        color: isUser ? "var(--accentInk)" : C.ink,
         fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
         borderBottomRightRadius: isUser ? 4 : 14,
         borderBottomLeftRadius: isUser ? 14 : 4,
@@ -230,7 +230,7 @@ function MessageBubble({ m }) {
         )}
         {m.content}
         {m.ts && (
-          <div style={{ fontSize: 10, color: isUser ? "#0A1A1C" : C.faint, opacity: 0.6, marginTop: 4, textAlign: "right" }}>
+          <div style={{ fontSize: 10, color: isUser ? "var(--accentInk)" : C.faint, opacity: 0.6, marginTop: 4, textAlign: "right" }}>
             {fmtTs(m.ts)}
           </div>
         )}
