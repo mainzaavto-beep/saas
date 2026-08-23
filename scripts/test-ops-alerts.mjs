@@ -10,7 +10,7 @@ const ago = (h) => new Date(NOW.getTime() - h * HOUR).toISOString();
 const minAgo = (m) => new Date(NOW.getTime() - m * 60 * 1000).toISOString();
 
 let passed = 0;
-const total = 13;
+const total = 16;
 function check(name, fn) {
   try {
     fn();
@@ -151,12 +151,12 @@ check('unit-fail без объясняющих → red без виновнико
   assert.doesNotMatch(alerts[0].text, /виновники:/);
 });
 
-// (м) failed×2, runs[0].started_at 13 часов назад → пусто (серия устарела,
-// граница свежести 12 ч).
-check('failed,failed 13ч назад → пусто (устарела)', () => {
+// (м) failed×2, runs[0].started_at 15 часов назад → пусто (серия устарела,
+// run_kind:'cron' не входит в SERIES_FRESH_BY_KIND → дефолтная граница 14 ч).
+check('failed,failed 15ч назад → пусто (устарела)', () => {
   const rows = [
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(13) },
-    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(14) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(15) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: ago(16) },
   ];
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 0);
@@ -172,6 +172,42 @@ check('failed,failed 11ч назад → red (внутри границы)', () 
   const alerts = classifyRuns(rows, NOW);
   assert.equal(alerts.length, 1);
   assert.equal(alerts[0].level, 'red');
+});
+
+// (о) failed×2, run_kind:'stocks', свежесть 20ч → red (переживает per-kind
+// порог stocks=30ч, где дефолт 14ч уже погасил бы серию).
+check('failed,failed stocks 20ч назад → red (переживает per-kind порог)', () => {
+  const rows = [
+    { cabinet_id: 1, collector: 'ozon_stocks', run_kind: 'stocks', status: 'failed', started_at: ago(20) },
+    { cabinet_id: 1, collector: 'ozon_stocks', run_kind: 'stocks', status: 'failed', started_at: ago(21) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].level, 'red');
+});
+
+// (п) failed×2, run_kind:'main', свежесть 15ч → пусто (main гаснет по
+// собственному порогу 14ч — ночной разрыв 12ч15м + запас, а не по дефолту).
+check('failed,failed main 15ч назад → пусто (гаснет по 14ч)', () => {
+  const rows = [
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: ago(15) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'main', status: 'failed', started_at: ago(16) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 0);
+});
+
+// (р) unit-fail + failed-строка сборщика за 45 мин ДО него (в пределах
+// асимметричного окна −90/+5 мин) → red с «виновники:».
+check('unit-fail + failed за 45мин до него → red с виновниками', () => {
+  const rows = [
+    { cabinet_id: null, collector: 'unit:wb-collector.service', run_kind: 'systemd', status: 'failed', started_at: ago(2) },
+    { cabinet_id: 1, collector: 'wb_orders', run_kind: 'cron', status: 'failed', started_at: minAgo(165) },
+  ];
+  const alerts = classifyRuns(rows, NOW);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].level, 'red');
+  assert.match(alerts[0].text, /виновники:/);
 });
 
 console.log(`OK ${passed}/${total}`);
