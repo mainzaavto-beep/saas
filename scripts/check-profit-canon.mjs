@@ -206,6 +206,13 @@ const TO = args.to;
 const TOL = 0.01; // ₽ — тот же допуск, что и «инвариант периода» check-ozon-profit-invariant.mjs
 const PRODUCT_SUM_TOL = 0.05; // ₽ — допуск для Σ по товарам/nm (много round2 подряд)
 
+// Допуск №7 (Σ дней vs скаляр): до 3 округлений/день (VAT, УСН, profit —
+// см. ozDayProfit) по ≤0,005 ₽ + подневное округление Σ. На месячном окне
+// ≈ прежние 0,05-0,6 ₽; на квартале растёт линейно — фиксированный допуск
+// давал бы ложный FAIL. Пол 0,05 ₽ — короткие окна.
+const dailySumTol = (days) => Math.max(0.05, 0.02 * days);
+const periodDays = Math.round((new Date(TO) - new Date(FROM)) / 86400000) + 1;
+
 const fmtRub = (n) => Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (v) => (v === null || v === undefined ? 0 : Number(v));
 
@@ -532,14 +539,14 @@ async function runOzonChecks() {
     let allOk = true;
     for (const { id, scalarProfit, sumDaily } of canon.dailyChecks) {
       const diff = Math.abs(sumDaily - scalarProfit);
-      if (diff > PRODUCT_SUM_TOL) allOk = false;
+      if (diff > dailySumTol(periodDays)) allOk = false;
       if (diff >= worstDiff) { worstDiff = diff; worstId = id; }
       console.log(`  product_id=${id}: скаляр=${fmtRub(scalarProfit)}, Σ дней=${fmtRub(sumDaily)}, Δ=${fmtRub(sumDaily - scalarProfit)}`);
     }
     verdict(
       'дневной канон: Σ profit(день) [ozRawProfitByDay + ads(день) + tax(день)] = ozProfitProduct(period, id).profit',
       allOk,
-      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}${worstId != null ? ` (product_id=${worstId})` : ''}`
+      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}, допуск ${fmtRub(dailySumTol(periodDays))}${worstId != null ? ` (product_id=${worstId})` : ''}`
     );
   }
   console.log('');
@@ -852,14 +859,14 @@ async function runWbChecks() {
     let allOk = true;
     for (const { id, scalarProfit, sumDaily } of canon.dailyChecks) {
       const diff = Math.abs(sumDaily - scalarProfit);
-      if (diff > PRODUCT_SUM_TOL) allOk = false;
+      if (diff > dailySumTol(periodDays)) allOk = false;
       if (diff >= worstDiff) { worstDiff = diff; worstId = id; }
       console.log(`  nm_id=${id}: скаляр=${fmtRub(scalarProfit)}, Σ дней=${fmtRub(sumDaily)}, Δ=${fmtRub(sumDaily - scalarProfit)}`);
     }
     verdict(
       'дневной канон: Σ profit(день) [wbRawProfitByDay + ads(день) + tax(день)] = wbProfitProduct(period, nm_id).profit',
       allOk,
-      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}${worstId != null ? ` (nm_id=${worstId})` : ''}`
+      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}, допуск ${fmtRub(dailySumTol(periodDays))}${worstId != null ? ` (nm_id=${worstId})` : ''}`
     );
   }
   console.log('');
