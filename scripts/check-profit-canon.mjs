@@ -278,6 +278,9 @@ async function runOzonChecks() {
            AND product_id IS NULL`
       )
       .get(FROM, TO);
+    const qtyRow = await db
+      .prepare(`SELECT COUNT(*) AS n FROM order_costs WHERE qty IS NOT NULL AND qty <> 1`)
+      .get();
 
     let sumByProduct = 0;
     let sumByProductAds = 0;
@@ -335,6 +338,7 @@ async function runOzonChecks() {
       profitProduct, profitCabinet,
       productCount: productRows.length,
       nullProductRows: Number(nullProductRow?.n) || 0,
+      qtyAnomalies: Number(qtyRow?.n) || 0,
       sumByProduct: Math.round(sumByProduct * 100) / 100,
       sumByProductAds: Math.round(sumByProductAds * 100) / 100,
       productIds: productRows.map((r) => r.product_id),
@@ -538,6 +542,17 @@ async function runOzonChecks() {
       `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}${worstId != null ? ` (product_id=${worstId})` : ''}`
     );
   }
+  console.log('');
+
+  // ── Проверка №8: инвариант qty ≡ 1 (ozon_order_costs). Канон читает
+  // revenue как SUM(cost_value_retail) БЕЗ умножения на qty (скаляр, batch,
+  // by-day — все три). Пока сборщик пишет строку на юнит (qty всегда 1) —
+  // это верно; появись qty>1, выручка канона молча занизится. ──
+  verdict(
+    'инвариант qty ≡ 1: строк ozon_order_costs с qty∉{NULL,1} нет',
+    canon.qtyAnomalies === 0,
+    `строк с qty≠1: ${canon.qtyAnomalies}`
+  );
   console.log('');
 }
 
