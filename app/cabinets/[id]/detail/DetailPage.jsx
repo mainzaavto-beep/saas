@@ -777,7 +777,7 @@ function Detail({ data, platform }) {
                   ? renderProfitGroup(days, rowTotal, expandProfit, setExpandProfit)
                   : row.ratingGroup
                     ? renderRatingGroup(days, data.product, expandRating, setExpandRating)
-                    : renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit, setExpandSplit)
+                    : renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit, setExpandSplit, data.servicesBreakdown)
             )}
             {/* Разделитель + конверсии по дням */}
             <tr>
@@ -1228,7 +1228,10 @@ function renderAdGroup(days, rowTotal, expandAdGroup, setExpandAdGroup, expandAd
 }
 
 // Рендер одной строки матрицы (с опц. разворотом: группы orders/clicks/cart или модели рекламы).
-function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit, setExpandSplit) {
+// servicesBreakdown — расшифровка «Сборов Ozon» (задача 2 плана «расшифровка
+// Сборов Ozon», 2026-08-25), используется только строкой row.key==="services"
+// (Ozon-матрица); для остальных строк/WB — undefined, тултипы не строятся.
+function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit, setExpandSplit, servicesBreakdown) {
   const splitGroup = SPLIT_SUB[row.group] ? row.group : null;
   const isAd = !!row.group && !splitGroup;
   const muted = !!row.muted;
@@ -1237,6 +1240,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
     ? () => setExpandSplit((s) => ({ ...s, [splitGroup]: !s[splitGroup] }))
     : isAd ? () => setExpandAd((s) => ({ ...s, [row.group]: !s[row.group] })) : undefined;
   const total = rowTotal(row);
+  const isServices = row.key === "services";
 
   // Недоступная метрика (row.na) — вся строка приглушённая, ячейки = «—», подпись-примечание.
   // Применяется к корзинам Ozon (hits_to_cart отбрасывается API — ограничение подписки).
@@ -1263,9 +1267,11 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
         {muted && <span style={{ fontSize: 9, color: C.faint, marginLeft: 6 }}>(нет данных — связи склеек нет в БД)</span>}
       </td>
       {days.map((d) => (
-        <td key={d.date} style={{ ...tdMat, textAlign: "right", color: muted ? C.faint : undefined }}>{fmtCell(d[row.key], row.kind)}</td>
+        <td key={d.date} title={isServices ? servicesTooltip(servicesBreakdown?.byDay?.[d.date]) : undefined}
+          style={{ ...tdMat, textAlign: "right", color: muted ? C.faint : undefined }}>{fmtCell(d[row.key], row.kind)}</td>
       ))}
-      <td style={{ ...tdMat, textAlign: "right", position: "sticky", right: 0, background: C.surface, zIndex: 1, fontWeight: 700, color: muted ? C.faint : undefined }}>
+      <td title={isServices ? servicesTooltip(servicesBreakdown?.period) : undefined}
+        style={{ ...tdMat, textAlign: "right", position: "sticky", right: 0, background: C.surface, zIndex: 1, fontWeight: 700, color: muted ? C.faint : undefined }}>
         {fmtSum(total, row.kind)}
       </td>
     </tr>,
@@ -1363,6 +1369,18 @@ function renderConvRow(row, days, t, expandConv, setExpandConv) {
     }
   }
   return rows;
+}
+
+// Многострочный title-тултип расшифровки «Сборов Ozon» (задача 2 плана
+// «расшифровка Сборов Ozon», 2026-08-25). Один пункт на строку: «label —
+// сумма ₽ (ops)» — period-пункты несут счётчик операций (ops), day-пункты —
+// без него (route.js::servicesBreakdown.byDay не отдаёт ops, только typeId/
+// label/sum). Пусто/нет строк ⇒ undefined (React не рендерит атрибут title —
+// «ячейка без сборов — без тултипа»).
+const moneyFull = (v) => new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v) + " ₽";
+function servicesTooltip(items) {
+  if (!items || items.length === 0) return undefined;
+  return items.map((it) => `${it.label} — ${moneyFull(it.sum)}${it.ops != null ? ` (${it.ops})` : ""}`).join("\n");
 }
 
 function fmtCell(v, kind) {
