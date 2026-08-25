@@ -134,7 +134,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // wbRawProfitCabinetByDay, lib/ozonMetrics.js, lib/wbMetrics.js). Реклама
     // по дням — ТЕ ЖЕ таблицы, что fullAd внутри buildTotals (WB: daily_metrics
     // GROUP BY date; Ozon: ozon_daily_efficiency, уже один ряд в день) —
-    // держит равенство Σ profitSpark ≈ totals-канон ads (сверяется приёмкой).
+    // те же слагаемые, что видит totals.adSpend (fullAd) и кабинетная
+    // ozAdSpend(groupByProduct:false). Σ profitSpark по построению равна
+    // (Σ rawProfit периода − Σ ads периода), сверенным ЭТИМИ ЖЕ helpers'ами
+    // без GROUP BY (арифметическая сверка группировки с собой, приёмка
+    // задачи 1 плана) — это НЕ независимая проверка против totals.profit
+    // (тот канон — после-налоговый, с per-SKU рекламой внутри item.profit
+    // и довычетом остатка, другая формула, контракт §15.2).
     // profit(день) = round2(rawWb(день) + rawOz(день) − ad(день)); дни без
     // движения = 0 (ряд идёт по ВСЕМ датам окна, не только по дням с активностью).
     let profitSpark = [];
