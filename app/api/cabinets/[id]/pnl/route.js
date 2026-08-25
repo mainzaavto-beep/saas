@@ -29,7 +29,7 @@ const round2 = (v) => Math.round(((v || 0) + Number.EPSILON) * 100) / 100;
 // отдельное число рядом, не замена. У Ozon revenue уже валовая
 // (см. докстроку lib/ozonMetrics.js) — поле не добавляется (undefined,
 // TOTAL_NUM_KEYS суммирует как 0).
-function mpBlock(c, isWb, revenueGross) {
+function mpBlock(c, isWb, revenueGross, platform) {
   return {
     revenue: c.revenue,
     ...(isWb ? { revenueGross } : {}),
@@ -43,8 +43,9 @@ function mpBlock(c, isWb, revenueGross) {
     tax: c.tax,
     // costType (accrual_<N> у Ozon) — технический ключ канона, наружу не отдаём
     // (Global Constraint плана: «accrual_<N> не должен показываться сырым нигде
-    // после задачи 4») — только русский label + знаковая сумма.
-    cabinetCosts: c.cabinetCosts.map((x) => ({ label: x.label, amount: x.amount })),
+    // после задачи 4») — только русский label + знаковая сумма. platform
+    // ('wb'|'ozon') — помета площадки для фильтрации и группировки.
+    cabinetCosts: c.cabinetCosts.map((x) => ({ label: x.label, amount: x.amount, platform })),
     cabinetCostsTotal: round2(c.cabinetCosts.reduce((acc, x) => acc + x.amount, 0)),
     unknownCostTypes: c.unknownCostTypes,
     profit: c.profit,
@@ -77,11 +78,11 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
     // AsyncLocalStorage (lib/db.js), конкурентные запросы на нём не гарантия.
     const c = await wbProfitCabinet(db, wbTax, { from, to });
     const revenueGross = await wbRevenueGross(db, { from, to });
-    wb = mpBlock(c, true, revenueGross);
+    wb = mpBlock(c, true, revenueGross, "wb");
   }
   if (mps.includes("ozon")) {
     const db = new DatabaseSync("ozon", { readOnly: true });
-    ozon = mpBlock(await ozProfitCabinet(db, ozonTax, { from, to }), false);
+    ozon = mpBlock(await ozProfitCabinet(db, ozonTax, { from, to }), false, undefined, "ozon");
   }
 
   // Объединение WB + Ozon.
