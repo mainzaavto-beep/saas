@@ -15,6 +15,7 @@ import {
 import { ozProfitProduct, ozRawProfitByDay, ozDayProfit } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode, describeTaxMode } from "@/lib/tax.js";
 import { ZERO_RAW_AGG } from "@/lib/profitForms.js";
+import { isServiceRow, serviceLabel } from "@/lib/ozonServiceTypes.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -534,6 +535,69 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     orderSumByDay.set(r.d, Math.round((r.s || 0) * 100) / 100);
   }
 
+  // servicesBreakdown — расшифровка статьи «Сборы Ozon» по типам операций
+  // (план «расшифровка Сборов Ozon», 2026-08-25, задача 1). Датировка —
+  // COALESCE(oc.sale_dt, oc.return_dt) (день отправления), НЕ a.date — иначе
+  // тултип дня не сойдётся с ячейкой services (та считается из order_costs
+  // by-day, см. ozRawProfitByDay). Фильтрация сервисных строк — в JS
+  // (isServiceRow, зеркало classify_row из ozon_profit_map.py); tenant.ozon_accruals
+  // указан схемо-квалифицированно — таблицы нет в маппинге lib/db.js (convertSql
+  // трогает только неоднозначные sqlite-имена), order_costs штатно маппится в
+  // tenant.ozon_order_costs через db.prepare/convertSql.
+  //
+  // ⚠️ Известный остаточный зазор (найден приёмочным скриптом задачи 1,
+  // task-1-report.md): JOIN по точному a.unit_number = oc.src_unit_number
+  // не видит деньги «слитых сиблингов» — worker/collectors/ozon_order_costs.py
+  // ::merge_unit_siblings иногда объединяет строки НЕСКОЛЬКИХ сырых
+  // unit_number (в редком случае — даже разных product_id одной физической
+  // посылки, когда commission пришёл только под ОДНИМ из них) в одну строку
+  // order_costs с ОДНИМ src_unit_number — начисления слитых-прочь сиблингов
+  // остаются недостижимы этим JOIN'ом. Тот же зазор уже присущ canon-числам
+  // самой order_costs (revenue/commission/logistics той строки — тоже
+  // результат склейки), не специфичен для services. Замер кабинета 1
+  // (2026-08-25): 1 строка из 7886 с services≠0, ₽15 из ₽53 991.52
+  // суммарных services (0,03%) — кабинет 1008 не затронут (0 из 2435).
+  // Точный фикс требует переноса merge_unit_siblings/_family_key в JS — вне
+  // объёма задачи 1 (см. концерн в отчёте задачи 1).
+  const svcRows = await db.prepare(
+    `SELECT a.type_id AS type_id, substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) AS d,
+            a.accrued_category AS accrued_category, COUNT(*) AS ops, COALESCE(SUM(-a.accrued),0) AS sum
+     FROM order_costs oc
+     JOIN tenant.ozon_accruals a ON a.unit_number = oc.src_unit_number
+     WHERE oc.product_id = ?
+       AND substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) >= ? AND substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) <= ?
+     GROUP BY a.type_id, d, a.accrued_category`
+  ).all(nm, from, to);
+  const periodByType = new Map(); // typeId -> { ops, sum }
+  const byDayByType = new Map(); // date -> Map(typeId -> sum)
+  for (const r of svcRows) {
+    if (!isServiceRow(r.accrued_category, r.type_id)) continue;
+    const sum = r.sum || 0;
+    if (!sum) continue; // нулевые типы не включать
+    const pt = periodByType.get(r.type_id) || { ops: 0, sum: 0 };
+    pt.ops += r.ops || 0;
+    pt.sum += sum;
+    periodByType.set(r.type_id, pt);
+    if (!byDayByType.has(r.d)) byDayByType.set(r.d, new Map());
+    const dt = byDayByType.get(r.d);
+    dt.set(r.type_id, (dt.get(r.type_id) || 0) + sum);
+  }
+  const servicesBreakdown = {
+    period: [...periodByType.entries()]
+      .map(([typeId, v]) => ({ typeId, label: serviceLabel(typeId), ops: v.ops, sum: Math.round(v.sum * 100) / 100 }))
+      .filter((row) => row.sum !== 0)
+      .sort((a, b) => b.sum - a.sum),
+    byDay: Object.fromEntries(
+      [...byDayByType.entries()].map(([d, m]) => [
+        d,
+        [...m.entries()]
+          .map(([typeId, sum]) => ({ typeId, label: serviceLabel(typeId), sum: Math.round(sum * 100) / 100 }))
+          .filter((row) => row.sum !== 0)
+          .sort((a, b) => b.sum - a.sum),
+      ])
+    ),
+  };
+
   // Сборка days.
   const dateList = wbDateList(from, to);
   const dayMap = new Map(metricRows.map((r) => [r.date, r]));
@@ -648,5 +712,10 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
       returnLogistics: totals.returnLogistics,
       adSpend: totals.ad_spend, tax: totals.tax, profit: totals.profit,
     },
+    // servicesBreakdown — расшифровка «Сборов Ozon» (задача 1 плана
+    // «расшифровка Сборов Ozon», 2026-08-25): period (сортировка по sum
+    // desc) + byDay для тултипов. Инвариант Σ period.sum = fin.services и
+    // Σ byDay[d] = days[d].services проверен приёмочным скриптом задачи 1.
+    servicesBreakdown,
   };
 }

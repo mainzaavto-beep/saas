@@ -119,6 +119,9 @@ KNOWN_CABINET_TYPE_IDS = {
 }
 
 
+# Зеркало (2026-08-25, план «расшифровка Сборов Ozon», задача 1): JS-версия
+# этой классификации — lib/ozonServiceTypes.js::isServiceRow (двустороннее
+# зеркало, наборы синхронизировать вручную при изменении здесь).
 def classify_row(category, type_id, has_unit):
     """-> (bucket, known). bucket: commission|services|logistics|acquiring|loyalty|cabinet|promo.
 
