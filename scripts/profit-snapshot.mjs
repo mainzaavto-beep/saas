@@ -450,7 +450,8 @@ async function runVerify() {
         const ovText = await apiGetText(cookie, `/api/cabinets/${cabinetId}/overview?mp=${mp}&from=${from}&to=${to}`);
         if (/accrual_/.test(ovText)) { console.log(`  FAIL overview: сырой accrual_ в ответе`); allOk = false; }
         const ovJson = JSON.parse(ovText);
-        allOk = assertClose(`overview.kpi.grossProfit(=profit)`, ovJson.kpi?.grossProfit, round2(pnlCanon.profit)) && allOk;
+        // Поле переименовано волной 3 (kpi.profit — полная прибыль); правка синхронна с деплоем.
+        allOk = assertClose(`overview.kpi.profit`, ovJson.kpi?.profit, round2(pnlCanon.profit)) && allOk;
         allOk = assertClose(`overview.kpi.tax`, ovJson.kpi?.tax, round2(pnlCanon.tax)) && allOk;
         allOk = assertClose(`overview.kpi.adSpend`, ovJson.kpi?.adSpend, round2(pnlCanon.ads)) && allOk;
         if (mp === 'wb') {
