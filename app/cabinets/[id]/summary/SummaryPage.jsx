@@ -34,6 +34,16 @@ const money = (v) => {
 const num = (v) => (v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v));
 const pct = (v) => (v == null || !Number.isFinite(v) ? "—" : r2(v) + "%");
 
+// ДРР-пилл: пороги ОТНОСИТЕЛЬНО маржи товара (решение владельца 25.08):
+// ok < margin/2; warn < margin; bad ≥ margin | реклама без продаж | margin≤0.
+function drrPillTone(drr, margin, ads, sold) {
+  if (!ads) return null;                    // рекламы нет — пилла нет
+  if (!sold || margin == null || margin <= 0) return "bad";
+  if (drr < margin / 2) return "ok";
+  if (drr < margin) return "warn";
+  return "bad";
+}
+
 // Дельта к прошлому окну: {text, dir} или null (нет prev/деление на 0).
 // pp=true — в процентных пунктах (для % выкупа), иначе в % отношения.
 // short=true — короткая форма без «к прошлому периоду» (второстепенные плитки).
@@ -506,7 +516,7 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{money(it.avgProfit)}</Td>
                 <Td right><span style={{ color: (it.margin || 0) >= 0 ? C.pos : C.neg, fontWeight: 600 }}>{pct(it.margin)}</span></Td>
                 <Td right>{pct(it.roi)}</Td>
-                <Td right>{pct(it.drr)}</Td>
+                <Td right><DrrPill drr={it.drr} margin={it.margin} ads={it.adSpend} sold={it.sold} /></Td>
                 <Td right>{pct(it.romi)}</Td>
                 <Td right>{money(it.cpa)}</Td>
                 <Td right>{it.turnoverDays != null ? num(it.turnoverDays) + " дн" : "—"}</Td>
@@ -633,32 +643,47 @@ export default function SummaryPage({ cabinetId }) {
   );
 }
 
-// Композитная ячейка «Товар» — схлопывает идентификационные колонки:
-//   фото + имя + (арт.продавца · арт.МП · баркод) + (бренд · группа · магазин · МП).
+// ДРР-пилл: tone==null → голый % (как раньше); иначе цветная подложка
+// (drrPillTone — пороги ОТНОСИТЕЛЬНО маржи, решение владельца 25.08).
+function DrrPill({ drr, margin, ads, sold }) {
+  const tone = drrPillTone(drr, margin, ads, sold);
+  if (tone == null) return pct(drr);
+  const token = tone === "ok" ? "pos" : tone === "warn" ? "warn" : "neg";
+  return (
+    <span style={{
+      display: "inline-block", fontSize: 11.5, fontWeight: 600, borderRadius: 6,
+      padding: "2px 8px", color: C[token], background: soft(token, 13),
+    }}>
+      {sold ? pct(drr) : "—"}
+    </span>
+  );
+}
+
+// Композитная ячейка «Товар» (макет-эталон): имя жирным + вторая строка
+// «Площадка · артикул» (faint) + категория-чип. Бренд/группа/магазин/баркод —
+// в title-подсказке (не теряются, но не загромождают строку — «премиально»).
 function ProductCell({ it }) {
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 280, maxWidth: 380 }}>
       <Thumb url={it.im_url} />
-      <div style={{ minWidth: 0, flex: 1 }}>
+      <div
+        style={{ minWidth: 0, flex: 1 }}
+        title={[it.brand, it.grp, it.shop, it.barcode ? `штрихкод ${it.barcode}` : null].filter(Boolean).join(" · ")}
+      >
         <div style={{
           fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden",
           textOverflow: "ellipsis", maxWidth: 340,
         }} title={it.name}>
           {it.name || "—"}
         </div>
-        <div style={{ fontSize: 11, color: C.faint, whiteSpace: "nowrap" }} title={(it.sa || "—") + " · " + it.nm}>
-          {it.sa || "—"} · {it.nm}{it.barcode ? ` · ${it.barcode}` : ""}
-        </div>
-        <div style={{ fontSize: 11, color: C.muted, whiteSpace: "nowrap", marginTop: 1 }}>
-          {it.brand ? it.brand : "—"}
-          {it.cat ? ` · ${it.cat}` : ""}
-          {it.grp ? ` · ${it.grp}` : ""}
-          {` · ${it.shop}`}
-          <span style={{
-            marginLeft: 6, padding: "1px 6px", borderRadius: 5, fontSize: 10, fontWeight: 700,
-            background: it.platform === "wb" ? `${soft("accent", 13)}` : `${soft("pink", 13)}`,
-            color: it.platform === "wb" ? C.accent : C.pink,
-          }}>{it.platform === "wb" ? "WB" : "Ozon"}</span>
+        <div style={{ fontSize: 12, color: C.faint, whiteSpace: "nowrap", marginTop: 1, display: "flex", alignItems: "center", gap: 6 }}>
+          <span>{it.platform === "wb" ? "WB" : "Ozon"} · {it.sa || it.nm}</span>
+          {it.cat && (
+            <span style={{
+              padding: "1px 6px", borderRadius: 5, fontSize: 11,
+              border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.muted,
+            }}>{it.cat}</span>
+          )}
         </div>
       </div>
     </div>
