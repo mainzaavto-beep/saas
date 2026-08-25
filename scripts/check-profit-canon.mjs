@@ -221,8 +221,11 @@ const num = (v) => (v === null || v === undefined ? 0 : Number(v));
 // покомпонентно совпадать с ozProfitProduct/wbProfitProduct(period, id).
 // Поля сравнения — по брифингу задачи 2 (rawProfit НЕ входит, это служебное
 // поле batch-Map, у скаляра его нет в контракте). ──
+// services добавлено задачей 3 плана «Сборы Ozon» (2026-08-25) — WB-объекты
+// его не пишут, num() в этой же проверке трактует undefined как 0, поэтому
+// WB-секция (общий массив ниже) не ловит ложных расхождений.
 const BATCH_SCALAR_FIELDS = [
-  'revenue', 'cogs', 'commission', 'logistics', 'acquiring', 'loyalty',
+  'revenue', 'cogs', 'commission', 'services', 'logistics', 'acquiring', 'loyalty',
   'ads', 'tax', 'profit', 'profitGross', 'returnLogistics',
 ];
 
@@ -367,6 +370,7 @@ async function runOzonChecks() {
        COALESCE(SUM(cost_value_retail),0) AS revenue,
        COALESCE(SUM(cost),0) AS cogs,
        COALESCE(SUM(commission),0) AS commission,
+       COALESCE(SUM(services),0) AS services,
        COALESCE(SUM(logistics),0) AS logistics,
        COALESCE(SUM(acquiring),0) AS acquiring,
        COALESCE(SUM(loyalty),0) AS loyalty,
@@ -393,12 +397,13 @@ async function runOzonChecks() {
   const indRevenue = num(rawRow.revenue);
   const indCogs = num(rawRow.cogs);
   const indCommission = num(rawRow.commission);
+  const indServices = num(rawRow.services);
   const indLogistics = num(rawRow.logistics);
   const indAcquiring = num(rawRow.acquiring);
   const indLoyalty = num(rawRow.loyalty);
   const indRawProfit = num(rawRow.profit);
   const indAdSpend = num(adRow.s);
-  const indExpenses = indCogs + indCommission + indLogistics + indAcquiring + indLoyalty + indAdSpend;
+  const indExpenses = indCogs + indCommission + indServices + indLogistics + indAcquiring + indLoyalty + indAdSpend;
   const indTax = calcTotalTax(taxMode, indRevenue, indExpenses).total;
   const indProfit = Math.round((indRawProfit - indAdSpend - indTax) * 100) / 100;
   // Знаковая сумма (правильная, после fix-раунда ревью задачи 1) и модульная
@@ -409,7 +414,7 @@ async function runOzonChecks() {
   const positiveRows = cabinetCostRows.filter((r) => num(r.s) > 0);
 
   console.log('Независимый SQL (saas_ro):');
-  console.log(`  revenue=${fmtRub(indRevenue)} cogs=${fmtRub(indCogs)} commission=${fmtRub(indCommission)} logistics=${fmtRub(indLogistics)} acquiring=${fmtRub(indAcquiring)} loyalty=${fmtRub(indLoyalty)}`);
+  console.log(`  revenue=${fmtRub(indRevenue)} cogs=${fmtRub(indCogs)} commission=${fmtRub(indCommission)} services=${fmtRub(indServices)} logistics=${fmtRub(indLogistics)} acquiring=${fmtRub(indAcquiring)} loyalty=${fmtRub(indLoyalty)}`);
   console.log(`  SUM(profit) сырой (все строки, без фильтра is_return) = ${fmtRub(indRawProfit)}`);
   console.log(`  ad_spend = ${fmtRub(indAdSpend)}, налог (calcTotalTax) = ${fmtRub(indTax)}`);
   console.log(`  profit независимый = SUM(profit) − ad_spend − налог = ${fmtRub(indProfit)}`);
@@ -432,12 +437,15 @@ async function runOzonChecks() {
     `канон=${fmtRub(canon.profitProduct.profit)}, независимо=${fmtRub(indProfit)}, разница=${fmtRub(canon.profitProduct.profit - indProfit)}`
   );
 
-  // ── Проверка 2: слагаемые аддитивны (revenue−cogs−commission−logistics−
-  // acquiring−loyalty = сырой SUM(profit), знаковая формула сборщика). ──
+  // ── Проверка 2: слагаемые аддитивны (revenue−cogs−commission−services−
+  // logistics−acquiring−loyalty = сырой SUM(profit), знаковая формула
+  // сборщика — services добавлено задачей 3 плана «Сборы Ozon», см.
+  // worker/collectors/ozon_order_costs.py: comps = cost_value_retail −
+  // commission − services − logistics − acquiring − loyalty ≈ sum_accrued). ──
   const compsProfit = canon.profitProduct.revenue - canon.profitProduct.cogs - canon.profitProduct.commission
-    - canon.profitProduct.logistics - canon.profitProduct.acquiring - canon.profitProduct.loyalty;
+    - canon.profitProduct.services - canon.profitProduct.logistics - canon.profitProduct.acquiring - canon.profitProduct.loyalty;
   verdict(
-    'слагаемые аддитивны: revenue−cogs−commission−logistics−acquiring−loyalty = SUM(order_costs.profit)',
+    'слагаемые аддитивны: revenue−cogs−commission−services−logistics−acquiring−loyalty = SUM(order_costs.profit)',
     Math.abs(compsProfit - indRawProfit) <= TOL,
     `по слагаемым=${fmtRub(compsProfit)}, независимый SUM(profit)=${fmtRub(indRawProfit)}, разница=${fmtRub(compsProfit - indRawProfit)}`
   );
