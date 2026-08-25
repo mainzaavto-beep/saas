@@ -1,13 +1,23 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import { wbAdTotal, wbProfitProduct } from "@/lib/wbMetrics.js";
-import { ozProfitProduct } from "@/lib/ozonMetrics.js";
+import { wbAdTotal, wbProfitProductBatch } from "@/lib/wbMetrics.js";
+import { ozProfitProductBatch } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// «Нулевая форма» канона (задача 3 плана «канон волна 2») — товар есть в
+// списке (карточка/заказы), но продаж и рекламы в периоде нет, поэтому
+// *ProfitProductBatch.get(id) не находит запись. Все поля = 0, набор полей
+// СОВПАДАЕТ с формой значения batch (см. wbProfitProductBatch/
+// ozProfitProductBatch) — иначе .revenue/.cogs/... ниже стали бы undefined.
+const ZERO_PROFIT = {
+  revenue: 0, cogs: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
+  rawProfit: 0, returnLogistics: 0, ads: 0, tax: 0, profit: 0, profitGross: 0,
+};
 
 // =====================================================================
 //  /api/products-summary — сводка по товарам (WB+Ozon) в стиле Mpassistant.
@@ -385,6 +395,9 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   // wbAdTotal groupByNm) — с 2026-08-22 canon.ads при nmId тоже РЕАЛЬНЫЙ
   // расход, не 0 (план «реклама Ozon по товарам», задача 6/7, симметрично
   // Ozon, см. докстроку wbProfitProduct), profit его теперь вычитает.
+  // Один batch-вызов на ВЕСЬ каталог вместо 2×N скалярных (задача 3 плана
+  // «канон волна 2») — SQL-число теперь не растёт с числом товаров.
+  const profitBatch = await wbProfitProductBatch(db, taxMode, { from, to: toEnd.slice(0, 10) });
   const out = [];
   for (const r of rows) {
     const nm = r.nm;
@@ -392,7 +405,7 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     // СВЕЖИЕ штуки из sales (до 20.06). Если sales нет — fallback на order_costs.
     const fr = fresh[nm];
     const sold = fr ? fr.sold : (r.sold || 0);
-    const f = await wbProfitProduct(db, taxMode, { from, to: toEnd.slice(0, 10) }, nm);
+    const f = profitBatch.get(nm) || ZERO_PROFIT;
     // orderRub — сумма ЗАКАЗОВ из orders.price_with_disc (блок 2), НЕ канон.
     const orderRub = o.orderRub || 0;
     const avgStock = stockAvg[nm] ?? 0;
@@ -614,12 +627,15 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
   // 043, план «реклама Ozon по товарам») остаётся информационной колонкой
   // ДЛЯ ДРР/ROI витрины, но с 2026-08-21/22 canon.ads при productId — РЕАЛЬНЫЙ
   // расход (не 0), profit его теперь вычитает.
+  // Один batch-вызов на ВЕСЬ каталог вместо 2×N скалярных (задача 3 плана
+  // «канон волна 2») — SQL-число теперь не растёт с числом товаров.
+  const profitBatch = await ozProfitProductBatch(db, taxMode, { from, to });
   const out = [];
   for (const r of rows) {
     const nm = r.nm;
     const sold = r.sold || 0;
     const returns = r.returns || 0;
-    const f = await ozProfitProduct(db, taxMode, { from, to }, nm);
+    const f = profitBatch.get(nm) || ZERO_PROFIT;
     const adSp = ad[nm] || 0;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
