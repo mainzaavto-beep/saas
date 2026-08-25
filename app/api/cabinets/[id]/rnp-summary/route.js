@@ -5,19 +5,10 @@ import { wbProfitProductBatch } from "@/lib/wbMetrics.js";
 import { ozProfitProductBatch } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { tenantQuery } from "@/lib/db.js";
+import { ZERO_PROFIT } from "@/lib/profitForms.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-// «Нулевая форма» канона (задача 3 плана «канон волна 2») — товар есть в
-// списке (заказы/DM/остатки), но продаж и рекламы в периоде нет, поэтому
-// *ProfitProductBatch.get(id) не находит запись. Все поля = 0, набор полей
-// СОВПАДАЕТ с формой значения batch (см. wbProfitProductBatch/
-// ozProfitProductBatch) — иначе .revenue/.profit ниже стали бы undefined.
-const ZERO_PROFIT = {
-  revenue: 0, cogs: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
-  rawProfit: 0, returnLogistics: 0, ads: 0, tax: 0, profit: 0, profitGross: 0,
-};
 
 // =====================================================================
 //  /api/rnp-summary — «Рука на пульсе» (оперативная сводка по товарам).

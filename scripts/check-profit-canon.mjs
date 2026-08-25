@@ -183,8 +183,9 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 }
 
 const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
-const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch, ozRawProfitByDay } = await import('../lib/ozonMetrics.js');
-const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch, wbRawProfitByDay } = await import('../lib/wbMetrics.js');
+const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch, ozRawProfitByDay, ozDayProfit } = await import('../lib/ozonMetrics.js');
+const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch, wbRawProfitByDay, wbDayProfit } = await import('../lib/wbMetrics.js');
+const { ZERO_RAW_AGG } = await import('../lib/profitForms.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
 function parseArgs(argv) {
@@ -298,11 +299,11 @@ async function runOzonChecks() {
     }
 
     // ── Проверка №7 (задача 6 плана «канон волна 2»): дневной канон Σ =
-    // скаляр — до 3 product_id с продажами (или все, если товаров < 3), та
-    // же композиция, что теперь использует detail-роут (collectOzon):
-    // ozRawProfitByDay(productId) + adDay [daily_metrics.ad_spend по
-    // (product_id,date), ТОТ ЖЕ источник, что суммирует ozAdSpend(productId)]
-    // → profit(день) = rawProfit(день) − ad(день) − calcTotalTax(день).total. ──
+    // скаляр — до 3 product_id с продажами (или все, если товаров < 3). №7
+    // исполняет ТУ ЖЕ ozDayProfit, что и detail-роут — сторожится и формула,
+    // и route-композиция. ⚠️ Σ теперь из ПОДНЕВНО округлённых значений (как
+    // в роуте и как суммирует UI) — осознанное изменение внутренностей
+    // проверки, роут-числа не меняются. ──
     const dailyCheckIds = productRows.slice(0, 3).map((r) => r.product_id);
     const dailyChecks = [];
     for (const productId of dailyCheckIds) {
@@ -320,15 +321,12 @@ async function runOzonChecks() {
       // синхронизирован с order_costs). Итерация только по rawByDay теряла
       // бы ad_spend таких дней целиком — та же находка, что заставила
       // route-код (collectOzon) считать profit БЕЗУСЛОВНО на каждый день.
-      const rawZero = { revenue: 0, cogs: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0, rawProfit: 0 };
       const allDates = new Set([...rawByDay.keys(), ...adByDate.keys()]);
       let sumDaily = 0;
       for (const d of allDates) {
-        const raw = rawByDay.get(d) || rawZero;
+        const raw = rawByDay.get(d) || ZERO_RAW_AGG;
         const adDay = adByDate.get(d) || 0;
-        const expenses = raw.cogs + raw.commission + raw.logistics + raw.acquiring + raw.loyalty + adDay;
-        const taxDay = calcTotalTax(taxMode, raw.revenue, expenses).total;
-        sumDaily += raw.rawProfit - adDay - taxDay;
+        sumDaily += ozDayProfit(raw, adDay, taxMode);
       }
       dailyChecks.push({ id: productId, scalarProfit: scalar.profit, sumDaily: Math.round(sumDaily * 100) / 100 });
     }
@@ -601,11 +599,10 @@ async function runWbChecks() {
 
     // ── Проверка №7 (задача 6 плана «канон волна 2», симметрично Ozon):
     // дневной канон Σ = скаляр — до 3 nm_id с продажами (или все, если nm в
-    // периоде < 3), та же композиция, что теперь использует detail-роут
-    // (collectWB): wbRawProfitByDay(nmId) + adDay [daily_metrics.ad_spend по
-    // (nm_id,date), ТОТ ЖЕ источник, что суммирует wbAdTotal(nmId)] →
-    // profit(день) = rawProfit(день) − ad(день) − calcTotalTax(день,
-    // база=cogs+logistics+ads).total. ──
+    // периоде < 3). №7 исполняет ТУ ЖЕ wbDayProfit, что и detail-роут —
+    // сторожится и формула, и route-композиция. ⚠️ Σ теперь из ПОДНЕВНО
+    // округлённых значений (как в роуте и как суммирует UI) — осознанное
+    // изменение внутренностей проверки, роут-числа не меняются. ──
     const dailyCheckIds = nmRows.slice(0, 3).map((r) => r.nm_id);
     const dailyChecks = [];
     for (const nmId of dailyCheckIds) {
@@ -621,15 +618,12 @@ async function runWbChecks() {
       // ⚠️ Союз дат rawByDay∪adByDate — симметрично Ozon-версии выше (nm_id
       // может рекламироваться в день без продажи, wb_daily_metrics не
       // синхронизирован с order_costs).
-      const rawZero = { revenue: 0, cogs: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, rawProfit: 0 };
       const allDates = new Set([...rawByDay.keys(), ...adByDate.keys()]);
       let sumDaily = 0;
       for (const d of allDates) {
-        const raw = rawByDay.get(d) || rawZero;
+        const raw = rawByDay.get(d) || ZERO_RAW_AGG;
         const adDay = adByDate.get(d) || 0;
-        const expenses = raw.cogs + raw.logistics + adDay;
-        const taxDay = calcTotalTax(taxMode, raw.revenue, expenses).total;
-        sumDaily += raw.rawProfit - adDay - taxDay;
+        sumDaily += wbDayProfit(raw, adDay, taxMode);
       }
       dailyChecks.push({ id: nmId, scalarProfit: scalar.profit, sumDaily: Math.round(sumDaily * 100) / 100 });
     }
