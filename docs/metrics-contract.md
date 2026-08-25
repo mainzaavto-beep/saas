@@ -1705,9 +1705,9 @@ canon.mjs`/`profit-snapshot.mjs --verify` до и после (ALL PASS, числ
 (`from`/`to` в query), не только для дефолтных.
 
 **Построение — СТРОГО тем же кодом.** `buildTotals(cabinet, platform,
-from, to, includeInactive, stat)` (`products-summary/route.js:254-362`) —
+from, to, includeInactive, stat)` (`products-summary/route.js:260-368`) —
 единственная функция, строящая `totals`; `GET` (`products-summary/
-route.js:41-195`) вызывает её дважды — за текущее окно (`totals`, строка
+route.js:41-201`) вызывает её дважды — за текущее окно (`totals`, строка
 89) и за prev-окно (`.totals` результата → `prevTotals`, строки 120-129).
 Это не копия тела «на всякий случай», а буквально одна и та же функция —
 дрейф между формулой `totals` и формулой `prevTotals` структурно
@@ -1727,7 +1727,7 @@ route.js:41-195`) вызывает её дважды — за текущее о�
 при активном товарном фильтре текущая витрина (`ft`, клиентский
 `filteredTotals`) — подмножество товаров, посчитанное ПО ДРУГОЙ формуле
 (без довычета нераспределённого остатка кабинетной рекламы — см.
-`SummaryPage.jsx:179-205`); сравнение «часть по одной формуле» vs «целое
+`SummaryPage.jsx:254-292`); сравнение «часть по одной формуле» vs «целое
 по другой» было бы враньём. Клиент решает проще: `const prevTotals =
 !hasProductFilter ? (data.prevTotals || null) : null` (`SummaryPage.jsx:
 331`) — при активном товарном фильтре дельты просто не показываются
@@ -1744,20 +1744,44 @@ route.js:41-195`) вызывает её дважды — за текущее о�
 `margin` 11,76%, `adSpend` 187 597,82 ₽, `ordered` 889, `buyoutPct`
 69,92%, `commission` 392 928,12 ₽, `logistics` 107 897,52 ₽.
 
+**`prevPeriod` — сверхконтрактное аддитивное поле.** Ответ дополнительно
+несёт `prevPeriod: {from, to}` (`products-summary/route.js:121,128`) —
+границы prev-окна, которые сервер только что вычислил, отданы клиенту
+готовыми (для подписи типа «vs 31 мая — 30 июня»), чтобы фронт не
+пересчитывал ту же дату-арифметику самостоятельно.
+
 ### 15.2 profitSpark — дневной ряд прибыли ДО НАЛОГА
 
 **Формула.** `profit(день) = round2(rawWb(день) + rawOz(день) −
 ad(день))` — ряд идёт по ВСЕМ датам окна (не только по дням с
 активностью), дни без движения дают `0` (`products-summary/route.js:
-171-178`). `rawWb`/`rawOz` — «сырая» прибыль дня (`revenue − cogs −
-commission − services − logistics − acquiring − loyalty`, те же слагаемые,
-что `profitGross` канона, §11.5) — ДО вычета рекламы и ДО налога. Спарклайн
-поэтому вычитает рекламу дня отдельным слагаемым и НЕ является тем же
-числом, что `totals.profit` (канон: после-налоговый, с per-SKU рекламой
-внутри `item.profit` + довычет нераспределённого остатка, §11.1/§8.1) —
-это разные оси, а не два способа посчитать одно и то же. UI обязан
-говорить это честно: заголовок главной плитки — «график — прибыль по дням
-до налога (rawProfit − реклама)» (`SummaryPage.jsx:367-371`).
+177-184`). `rawWb`/`rawOz` — то же `rawProfit`, что уже участвует в
+дневном каноне обеих площадок (§11.5, «Batch-канон и дневной канон»):
+композиция `profit(день) = rawProfit(день) − ads(день) − tax(день)` —
+докстрока `wbRawProfitByDay`/`ozRawProfitByDay`, `lib/wbMetrics.js:489`,
+`lib/ozonMetrics.js:335`. `rawProfit` = `Σ order_costs.profit` за день —
+ДО вычета рекламы и ДО налога в обоих случаях, но состав слагаемых внутри
+`order_costs.profit` у площадок РАЗНЫЙ (§1.1/§11.1): у **Ozon**
+`order_costs.profit` собирается КАК `revenue − cogs − commission −
+services − logistics − acquiring − loyalty` (шапка `lib/ozonMetrics.js:
+17`: «revenue = Σ cost_value_retail; profitGross = Σ order_costs.profit
+(валовая)») — то есть у Ozon `rawProfit` ЧИСЛЕННО РАВЕН `profitGross`
+канона (проверено на данных ниже, июль 2026: оба 51 830,81 ₽). У **WB**
+`order_costs.profit = cost_value_pay − cost − logistics`
+(`lib/wbMetrics.js:369-371`) — `commission`/`acquiring`/`loyalty` УЖЕ
+внутри `cost_value_pay` (WB сам их вычел при расчёте «к перечислению»,
+урок D15), поэтому `rawProfit_WB` их НЕ вычитает повторно, а `profitGross`
+канона (`revenue − cogs − commission − logistics − acquiring − loyalty`,
+§11.5) — вычитает НАМЕРЕННО (историческая формула-дубль `/pnl`, §11.5
+это объясняет отдельно) — у WB `rawProfit ≠ profitGross`, разница ровно
+`commission + acquiring + loyalty` (на данных ниже: 351 207,38 −
+226 498,23 = 124 709,15 ₽). Спарклайн вычитает рекламу дня отдельным
+слагаемым и НЕ является тем же числом, что `totals.profit` (канон:
+после-налоговый, с per-SKU рекламой внутри `item.profit` + довычет
+нераспределённого остатка, §11.1/§8.1) — это разные оси, а не два способа
+посчитать одно и то же. UI обязан говорить это честно: заголовок главной
+плитки — «график — прибыль по дням до налога (rawProfit − реклама)»
+(`SummaryPage.jsx:367-371`).
 
 **Кабинетные by-day источники — перенос, не новая формула.**
 `wbRawProfitCabinetByDay`/`ozRawProfitCabinetByDay` (`lib/wbMetrics.js`,
@@ -1774,7 +1798,7 @@ return_dt),1,10)`), тот же `GROUP BY` по дню. Кабинетные —
 тот же источник, что кабинетный канон.** WB берёт `daily_metrics GROUP BY
 date` — та же таблица, что `fullAd` внутри `buildTotals` (§8). Ozon берёт
 `ozon_daily_efficiency GROUP BY date` (`products-summary/route.js:
-160-169`) — сознательное расхождение с «первым, что напрашивается»
+166-175`) — сознательное расхождение с «первым, что напрашивается»
 (`daily_metrics.ad_spend`, per-SKU): у Ozon этот источник СТРУКТУРНО
 недосчитывает кампании без товарной разбивки (Performance API часть
 кампаний, например «Оплата за заказ — все товары», не отдаёт per-SKU
@@ -1783,7 +1807,7 @@ date` — та же таблица, что `fullAd` внутри `buildTotals` (
 (кабинетный) = 63 947,03 ₽ — покрытие 53,0%. `ozon_daily_efficiency` —
 ТОТ ЖЕ источник, что кабинетная `ozAdSpend(db, {groupByProduct: false})`
 (`lib/ozonMetrics.js:137-160`, ветка `!groupByProduct`) и `fullAd` внутри
-`buildTotals` (`products-summary/route.js:342-346`) — т.е. кабинетный
+`buildTotals` (`products-summary/route.js:348-352`) — т.е. кабинетный
 канон Ozon-рекламы, а не приближение.
 
 **Проверено на данных (кабинет 1, 2026-07-01..07-31, N=31, задача 1,
