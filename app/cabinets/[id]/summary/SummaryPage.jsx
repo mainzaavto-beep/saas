@@ -34,6 +34,44 @@ const money = (v) => {
 const num = (v) => (v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v));
 const pct = (v) => (v == null || !Number.isFinite(v) ? "—" : r2(v) + "%");
 
+// Дельта к прошлому окну: {text, dir} или null (нет prev/деление на 0).
+// pp=true — в процентных пунктах (для % выкупа), иначе в % отношения.
+// short=true — короткая форма без «к прошлому периоду» (второстепенные плитки).
+function delta(cur, prev, { pp = false, short = false } = {}) {
+  if (prev == null || cur == null || !Number.isFinite(cur) || !Number.isFinite(prev)) return null;
+  if (pp) {
+    const d = round2(cur - prev);
+    return { text: `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} п.п.`, dir: d >= 0 ? "up" : "down" };
+  }
+  if (!prev) return null;
+  const d = (cur - prev) / Math.abs(prev) * 100;
+  const tail = short ? "%" : "% к прошлому периоду";
+  return { text: `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} ${tail}`, dir: d >= 0 ? "up" : "down" };
+}
+
+// Спарклайн прибыли (до налога) — line+area+точка на конце, как в макете Сводки.
+function Spark({ series }) {
+  if (!series || series.length < 2) return null;
+  const W = 120, H = 44, PAD = 3;
+  const vals = series.map((p) => p.profit);
+  const min = Math.min(...vals), max = Math.max(...vals), span = max - min;
+  // Плоский ряд (span=0, напр. все дни без движения) — брифовская формула
+  // (v-min)/span с фолбэком span||1 давала бы 0 везде → линия у НИЖНЕГО края
+  // (ratio=1-0=1), а не по центру. Адаптация: при span=0 берём ratio=0.5 —
+  // линия ровно по центру, как того требует self-review.
+  const norm = (v) => (span === 0 ? 0.5 : (v - min) / span);
+  const pts = vals.map((v, i) => [i * (W / (vals.length - 1)), PAD + (H - 2 * PAD) * (1 - norm(v))]);
+  const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const [ex, ey] = pts[pts.length - 1];
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" style={{ flex: `0 0 ${W}px` }}>
+      <path d={`${line} L${W},${H} L0,${H} Z`} fill={soft("accent", 15)} stroke="none" />
+      <path d={line} fill="none" stroke={C.accent} strokeWidth="2" />
+      <circle cx={ex} cy={ey} r="2.6" fill={C.accent} />
+    </svg>
+  );
+}
+
 export default function SummaryPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -273,6 +311,15 @@ export default function SummaryPage({ cabinetId }) {
   const t = data.totals || {};   // серверные итоги по ВСЕМ товарам (для кабинетных плиток — реклама/ДРР).
   const ft = filteredTotals;     // клиентский пересчёт по активным фильтрам (см. useMemo выше).
   const period = data.period || {};
+  // prevTotals (задача 1) — тот же platform/период, что t/ft, но БЕЗ товарного
+  // фильтра (buildTotals не принимает brand/group/cat/shop/search — см. отчёт
+  // задачи 1). Согласованная пара с ft существует, только пока !hasProductFilter
+  // (тогда ft численно равен t — воспроизводит серверный totals.profit 1:1,
+  // см. комментарий у filteredTotals выше). При активном товарном фильтре
+  // сравнивать ft (подмножество) с prevTotals (весь кабинет) было бы враньём —
+  // решение задачи 2: дельты показываем ТОЛЬКО без товарного фильтра.
+  const prevTotals = !hasProductFilter ? (data.prevTotals || null) : null;
+  const profitSpark = data.profitSpark || [];
   // Дата снимка остатков Ozon (грабля #139): показываем последнюю доступную дату,
   // т.к. остаток = снапшот и может не совпадать с концом выбранного периода.
   const ozStockDate = (data.items || []).find((i) => i.platform === "ozon")?.stockDate || null;
@@ -297,37 +344,46 @@ export default function SummaryPage({ cabinetId }) {
         <span>{data.methodology}</span>
       </div>
 
-      {/* KPI-плитки */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+      {/* KPI-плитки — 5 шт. по макету (задача 2 плана «Сводка по макету»,
+          2026-08-25): Прибыль (primary, спарклайн, полная дельта) / Выручка (Δ%)
+          / Реклама (кабинетная, muted-подпись «ДРР N %») / Продано шт (Δ%) /
+          Выкуп (Δ п.п.). Остальные метрики (Маржа/Заказано/Кабинетные расходы
+          и пр.) остались в таблице/отдельной секции ниже — здесь не дублируются. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
         <Kpi
-          label="Прибыль"
+          label="Прибыль за период"
           value={money(ft.profit)}
           color={(ft.profit || 0) >= 0 ? C.pos : C.neg}
-          title={hasProductFilter
-            ? "По выбранным товарам, включая их рекламу; нераспределённая кабинетная реклама (корректировки, кампании без товарной разбивки) не вычитается"
-            : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный)"}
+          title={(hasProductFilter
+            ? "По выбранным товарам, включая их рекламу; нераспределённая кабинетная реклама (корректировки, кампании без товарной разбивки) не вычитается. "
+            : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный). ")
+            + "График — прибыль по дням до налога (rawProfit − реклама), по всему кабинету за период"
+            + (hasProductFilter ? " (не сужается товарным фильтром)" : "")}
+          delta={delta(ft.profit, prevTotals?.profit)}
           primary
+        >
+          <Spark series={profitSpark} />
+        </Kpi>
+        <Kpi
+          label="Выручка"
+          value={money(ft.salesRub)}
+          delta={delta(ft.salesRub, prevTotals?.salesRub)}
         />
-        <Kpi label="Выручка" value={money(ft.salesRub)} />
         <Kpi
           label="Реклама, ₽"
           value={money(t.adSpend)}
-          title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы"
-        />
-        <Kpi label="Продано, шт" value={num(ft.sold)} />
-        <Kpi label="% выкупа" value={pct(ft.buyoutPct)} />
-        <Kpi label="Средняя маржа" value={pct(ft.margin)} />
-        <Kpi label="Заказано, шт" value={num(ft.ordered)} />
-        <Kpi
-          label="ДРР (общий)"
-          value={t.salesRub ? pct(100 * (t.adSpend || 0) / t.salesRub) : "—"}
-          title="Реклама и выручка — по всему кабинету целиком, фильтрами не меняется"
+          sub={t.salesRub ? `ДРР ${pct(100 * (t.adSpend || 0) / t.salesRub)}` : "ДРР —"}
+          title="Вся реклама кабинета за период (= плитка «ДРР (общий)»); товарная часть видна в колонке «Реклама, ₽» таблицы; реклама и выручка — по всему кабинету целиком, фильтрами не меняется"
         />
         <Kpi
-          label="Кабинетные расходы, ₽"
-          value={cab ? money(cab.totals.all) : "…"}
-          color={C.neg}
-          title={cab ? `Без привязки к SKU (№27, вкл. хранение): WB ${money(cab.totals.wb)} · Ozon ${money(cab.totals.ozon)} — не входят в маржу товара, фильтрами не меняется` : undefined}
+          label="Продано, шт"
+          value={num(ft.sold)}
+          delta={delta(ft.sold, prevTotals?.sold)}
+        />
+        <Kpi
+          label="% выкупа"
+          value={pct(ft.buyoutPct)}
+          delta={delta(ft.buyoutPct, prevTotals?.buyoutPct, { pp: true })}
         />
       </div>
 
@@ -692,15 +748,28 @@ function Td({ children, right, left, mono, title, style }) {
 const tdFootL = { padding: "10px 8px", fontSize: 12.5, fontWeight: 800, color: C.ink, textAlign: "left", whiteSpace: "nowrap" };
 const tdFootR = { padding: "10px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
-function Kpi({ label, value, color, title, primary }) {
+// delta — {text, dir} из хелпера delta() выше, или null (нет prev/деление на
+// 0 — просто не рендерим строку, без "NaN"). sub — второстепенная muted-
+// подпись под значением (плитка «Реклама»: «ДРР N %»). children — доп.
+// контент primary-плитки (спарклайн), выравнивается справа от текста.
+function Kpi({ label, value, color, title, primary, delta, sub, children }) {
   return (
     <div style={{
       padding: "12px 16px", borderRadius: 10, background: C.surface,
       border: `1px solid ${C.line}`, minWidth: 130,
-      ...(primary ? { flex: 1.6 } : {}),
+      ...(primary ? { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 } : {}),
     }} title={title}>
-      <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: primary ? 30 : 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+        <div style={{ fontSize: primary ? 30 : 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+        {delta && (
+          <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, color: delta.dir === "up" ? C.pos : C.neg }}>
+            {delta.dir === "up" ? "▲" : "▼"} {delta.text}
+          </div>
+        )}
+        {sub && <div style={{ fontSize: 11, color: C.faint, marginTop: 4 }}>{sub}</div>}
+      </div>
+      {primary && children}
     </div>
   );
 }
