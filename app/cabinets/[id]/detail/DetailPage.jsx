@@ -71,10 +71,14 @@ function DetailInner({ cabinetId }) {
   // владельца 2026-08-25; хелпер defaultMonthPeriod, а не presetToDates
   // ("thisMonth") — та функция используется явной кнопкой пресета «Этот
   // месяц», её менять нельзя: явный выбор Global Constraints не ограничивает).
+  // preset="custom" ("Свободный…"), НЕ "thisMonth": окно автодефолта (по
+  // вчера) не совпадает с тем, что даёт пресет «Этот месяц» (по сегодня) —
+  // ярлык не должен выдавать себя за пресет, который при повторном клике
+  // даст другие даты (пост-ревью задачи 2б).
   useEffect(() => {
     if (!presetReady) {
       const { from: f, to: t } = defaultMonthPeriod();
-      setDateFrom(f); setDateTo(t); setPreset("thisMonth"); setPresetReady(true);
+      setDateFrom(f); setDateTo(t); setPreset("custom"); setPresetReady(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
