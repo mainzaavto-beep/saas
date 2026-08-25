@@ -96,6 +96,16 @@
 //      SUM(ad_spend) (roPool/saas_ro, без RLS) по ТОМУ ЖЕ множеству id из
 //      ozon_daily_metrics/wb_daily_metrics — другой код, другое подключение,
 //      значит бы поймала регресс в самом ozAdSpend/wbAdTotal, допуск 0,05 ₽.
+//   6. Инвариант «batch ≡ скаляр» (задача 2 плана «канон волна 2»):
+//      ozProfitProductBatch(period).get(productId) обязан ПОКОМПОНЕНТНО
+//      совпадать со скалярным ozProfitProduct(period, productId) —
+//      revenue/cogs/commission/logistics/acquiring/loyalty/ads/tax/profit/
+//      profitGross/returnLogistics (rawProfit — служебное поле batch-Map,
+//      в сравнение не входит). Берутся 5 СЛУЧАЙНЫХ product_id из batch-Map
+//      (или все, если товаров в периоде < 5), допуск 0,01 ₽ — обе формулы
+//      исполняют один и тот же SQL-агрегат (скаляр — WHERE product_id = ?,
+//      batch — GROUP BY product_id), расхождение возможно только при
+//      разъехавшейся реализации (регресс), не при округлении.
 //
 // ═══════════════════════ WB-СЕКЦИЯ (задача 2) ═══════════════════════
 // Симметричные проверки против lib/wbMetrics.js::wbProfitProduct/
@@ -130,10 +140,14 @@
 //      подставляется в ads(nm), но часть ad_spend «осиротела» на nm без
 //      строк order_costs в периоде — 7 077,17 ₽ на кабинете 1 за июль-2026 —
 //      этот остаток вычитается только на кабинетном вызове, допуск 0,05 ₽.
-//   6. ⚠️ is_return НЕ фильтруется — независимая проверка №1 явно НЕ
-//      добавляет "AND is_return=0"; отдельно выводится информационная
-//      строка «что было бы, если» (см. WB_IS_RETURN_FILTER_LOSS ниже) —
-//      это находка задачи 2 (брифинг явно просил её зафиксировать), не
+//   6. Инвариант «batch ≡ скаляр» — симметрично Ozon п.6 выше:
+//      wbProfitProductBatch(period).get(nm_id) покомпонентно = wbProfitProduct
+//      (period, nm_id) на 5 случайных nm_id (или всех, если nm < 5), допуск
+//      0,01 ₽.
+//   ℹ️ (не пронумерованная проверка, только информационная строка): is_return
+//      НЕ фильтруется — независимая проверка №1 явно НЕ добавляет "AND
+//      is_return=0"; отдельно выводится строка «что было бы, если» — это
+//      находка задачи 2 (брифинг явно просил её зафиксировать), не
 //      обязательная проверка (нечего регрессировать — фильтра никогда не
 //      было в этом каноне).
 //
@@ -150,8 +164,8 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 }
 
 const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
-const { ozProfitProduct, ozProfitCabinet } = await import('../lib/ozonMetrics.js');
-const { wbProfitProduct, wbProfitCabinet } = await import('../lib/wbMetrics.js');
+const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch } = await import('../lib/ozonMetrics.js');
+const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
 function parseArgs(argv) {
@@ -174,6 +188,27 @@ const PRODUCT_SUM_TOL = 0.05; // ₽ — допуск для Σ по товар�
 
 const fmtRub = (n) => Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const num = (v) => (v === null || v === undefined ? 0 : Number(v));
+
+// ── Проверка №6 (задача 2 плана «канон волна 2»): инвариант batch ≡ скаляр —
+// ozProfitProductBatch/wbProfitProductBatch(period).get(id) обязан
+// покомпонентно совпадать с ozProfitProduct/wbProfitProduct(period, id).
+// Поля сравнения — по брифингу задачи 2 (rawProfit НЕ входит, это служебное
+// поле batch-Map, у скаляра его нет в контракте). ──
+const BATCH_SCALAR_FIELDS = [
+  'revenue', 'cogs', 'commission', 'logistics', 'acquiring', 'loyalty',
+  'ads', 'tax', 'profit', 'profitGross', 'returnLogistics',
+];
+
+// Fisher–Yates по копии массива, берём первые n — случайный отбор id для
+// проверки №6 (5 или все, если товаров/nm в периоде меньше 5).
+function pickRandomIds(ids, n) {
+  const arr = [...ids];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, n);
+}
 
 let failures = 0;
 function verdict(name, ok, detail) {
@@ -232,6 +267,17 @@ async function runOzonChecks() {
       sumByProductAds += pp.ads;
     }
 
+    // ── Проверка №6: инвариант batch ≡ скаляр — 5 случайных product_id (или
+    // все, если товаров < 5) из ozProfitProductBatch, сравнить покомпонентно
+    // со скалярным ozProfitProduct(..., id). ──
+    const batchMap = await ozProfitProductBatch(db, taxMode, { from: FROM, to: TO });
+    const batchIds = pickRandomIds([...batchMap.keys()], Math.min(5, batchMap.size));
+    const batchVsScalar = [];
+    for (const id of batchIds) {
+      const scalar = await ozProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, id);
+      batchVsScalar.push({ id, batch: batchMap.get(id), scalar });
+    }
+
     return {
       profitProduct, profitCabinet,
       productCount: productRows.length,
@@ -239,6 +285,7 @@ async function runOzonChecks() {
       sumByProduct: Math.round(sumByProduct * 100) / 100,
       sumByProductAds: Math.round(sumByProductAds * 100) / 100,
       productIds: productRows.map((r) => r.product_id),
+      batchVsScalar,
     };
   });
 
@@ -393,6 +440,30 @@ async function runOzonChecks() {
     `Σ ads(товар) канон=${fmtRub(canon.sumByProductAds)}, независимый SQL=${fmtRub(indSumByProductAds)}, разница=${fmtRub(canon.sumByProductAds - indSumByProductAds)}`
   );
   console.log('');
+
+  // ── Проверка №6 (задача 2 плана «канон волна 2»): инвариант batch ≡
+  // скаляр — ozProfitProductBatch(period).get(id) обязан покомпонентно
+  // совпадать с ozProfitProduct(period, id) на СЛУЧАЙНОЙ выборке id (5 или
+  // все, если товаров < 5 — см. canon.batchVsScalar выше). ──
+  {
+    let worstField = null;
+    let worstDiff = 0;
+    let worstId = null;
+    let allOk = true;
+    for (const { id, batch, scalar } of canon.batchVsScalar) {
+      for (const field of BATCH_SCALAR_FIELDS) {
+        const diff = Math.abs(num(batch[field]) - num(scalar[field]));
+        if (diff > TOL) allOk = false;
+        if (diff >= worstDiff) { worstDiff = diff; worstField = field; worstId = id; }
+      }
+    }
+    verdict(
+      'инвариант batch ≡ скаляр: ozProfitProductBatch(period).get(id) = ozProfitProduct(period, id) покомпонентно',
+      allOk,
+      `проверено ${canon.batchVsScalar.length} товаров, макс |Δ| по полю ${worstField ?? '—'} = ${fmtRub(worstDiff)}${worstId != null ? ` (product_id=${worstId})` : ''}`
+    );
+  }
+  console.log('');
 }
 
 // ═════════════════════════════ WB ═════════════════════════════
@@ -440,6 +511,17 @@ async function runWbChecks() {
       sumByNmAds += pp.ads;
     }
 
+    // ── Проверка №6 (симметрично Ozon): 5 случайных nm_id (или все, если
+    // nm в периоде < 5) из wbProfitProductBatch, сравнить покомпонентно со
+    // скалярным wbProfitProduct(..., nm_id). ──
+    const batchMap = await wbProfitProductBatch(db, taxMode, { from: FROM, to: TO });
+    const batchIds = pickRandomIds([...batchMap.keys()], Math.min(5, batchMap.size));
+    const batchVsScalar = [];
+    for (const id of batchIds) {
+      const scalar = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, id);
+      batchVsScalar.push({ id, batch: batchMap.get(id), scalar });
+    }
+
     return {
       profitProduct, profitCabinet,
       nmCount: nmRows.length,
@@ -447,6 +529,7 @@ async function runWbChecks() {
       sumByNm: Math.round(sumByNm * 100) / 100,
       sumByNmAds: Math.round(sumByNmAds * 100) / 100,
       nmIds: nmRows.map((r) => r.nm_id),
+      batchVsScalar,
     };
   });
 
@@ -611,6 +694,31 @@ async function runWbChecks() {
     Math.abs(canon.sumByNmAds - indSumByNmAds) <= PRODUCT_SUM_TOL,
     `Σ ads(nm) канон=${fmtRub(canon.sumByNmAds)}, независимый SQL=${fmtRub(indSumByNmAds)}, разница=${fmtRub(canon.sumByNmAds - indSumByNmAds)}`
   );
+  console.log('');
+
+  // ── Проверка №6 (задача 2 плана «канон волна 2», симметрично Ozon):
+  // инвариант batch ≡ скаляр — wbProfitProductBatch(period).get(nm_id)
+  // обязан покомпонентно совпадать с wbProfitProduct(period, nm_id) на
+  // СЛУЧАЙНОЙ выборке nm_id (5 или все, если nm < 5 — см. canon.
+  // batchVsScalar выше). ──
+  {
+    let worstField = null;
+    let worstDiff = 0;
+    let worstId = null;
+    let allOk = true;
+    for (const { id, batch, scalar } of canon.batchVsScalar) {
+      for (const field of BATCH_SCALAR_FIELDS) {
+        const diff = Math.abs(num(batch[field]) - num(scalar[field]));
+        if (diff > TOL) allOk = false;
+        if (diff >= worstDiff) { worstDiff = diff; worstField = field; worstId = id; }
+      }
+    }
+    verdict(
+      'инвариант batch ≡ скаляр: wbProfitProductBatch(period).get(nm_id) = wbProfitProduct(period, nm_id) покомпонентно',
+      allOk,
+      `проверено ${canon.batchVsScalar.length} товаров, макс |Δ| по полю ${worstField ?? '—'} = ${fmtRub(worstDiff)}${worstId != null ? ` (nm_id=${worstId})` : ''}`
+    );
+  }
   console.log('');
 }
 

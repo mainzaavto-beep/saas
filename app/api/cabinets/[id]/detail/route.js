@@ -17,8 +17,6 @@ import { calcTotalTax, normalizeTaxMode, describeTaxMode } from "@/lib/tax.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const round2 = (v) => Math.round(((v || 0) + Number.EPSILON) * 100) / 100;
-
 const RU_WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 function weekdayOf(dateStr) {
   const d = new Date(dateStr + "T00:00:00");
@@ -533,14 +531,9 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // Сборка days.
   const dateList = wbDateList(from, to);
   const dayMap = new Map(metricRows.map((r) => [r.date, r]));
-  // profitGross — справочная валовая прибыль (выручка минус прямые расходы
-  // уровня заказа, ДО рекламы/налога), тот же смысл, что grossProfit в
-  // pnl/mpBlock (задача 4) — канон не отдаёт это поле напрямую, считаем из
-  // его слагаемых.
-  const ozGrossProfit = round2(
-    finPeriod.revenue - finPeriod.cogs - finPeriod.commission - finPeriod.logistics
-    - finPeriod.acquiring - finPeriod.loyalty
-  );
+  // profitGross — из канона (ozProfitProduct.profitGross), задача 2 плана
+  // «канон волна 2»; локальная формула-дубль удалена.
+  const ozGrossProfit = finPeriod.profitGross;
   const totals = {
     orders: 0, clicks: 0, cart: 0, ad_spend: 0, ad_views: 0, ad_clicks: 0, ad_orders: 0,
     orders_sum: 0, revenue: finPeriod.revenue,

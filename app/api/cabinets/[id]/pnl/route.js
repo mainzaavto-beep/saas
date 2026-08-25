@@ -48,7 +48,11 @@ function mpBlock(c, isWb, revenueGross) {
     cabinetCostsTotal: round2(c.cabinetCosts.reduce((acc, x) => acc + x.amount, 0)),
     unknownCostTypes: c.unknownCostTypes,
     profit: c.profit,
-    grossProfit: round2(c.revenue - c.cogs - c.commission - c.logistics - c.acquiring - c.loyalty),
+    // grossProfit — из канона (ozProfitCabinet/wbProfitCabinet наследуют
+    // profitGross от ozProfitProduct/wbProfitProduct через `...base`,
+    // см. lib/ozonMetrics.js/lib/wbMetrics.js), задача 2 плана «канон
+    // волна 2»; локальная формула-дубль удалена.
+    grossProfit: c.profitGross,
     forPay: isWb ? c.revenue : 0,
   };
 }

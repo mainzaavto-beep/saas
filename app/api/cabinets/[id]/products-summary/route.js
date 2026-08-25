@@ -623,11 +623,9 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
     const adSp = ad[nm] || 0;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
-    // profitGross — справочная валовая прибыль (см. коммент у detail/route.js),
-    // канон её напрямую не отдаёт — считаем из слагаемых.
-    const profitGross = round2(
-      f.revenue - f.cogs - f.commission - f.logistics - f.acquiring - f.loyalty
-    );
+    // profitGross — из канона (ozProfitProduct.profitGross), задача 2 плана
+    // «канон волна 2»; локальная формула-дубль удалена.
+    const profitGross = f.profitGross;
     // orderRub и ordered/cancelled — из таблицы orders (фикс #137). orderRub = сумма
     // ЗАКАЗОВ (симметрично WB), НЕ равен salesRub (который из order_costs = доставки).
     // Ограничение: у Ozon orders покрывают только последние ~2 недели — orderRub за
