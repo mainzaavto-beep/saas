@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
+import { defaultMonthPeriod } from "@/lib/period.js";
 import { ozProfitCabinet } from "@/lib/ozonMetrics.js";
 import { wbProfitCabinet, wbRevenueGross } from "@/lib/wbMetrics.js";
 
@@ -162,10 +163,16 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const periodQ = url.searchParams.get("period") || "";
 
   if (!from || !to) {
-    // Обратная совместимость: period=YYYY-MM → один месяц.
-    const period = periodQ || new Date().toISOString().slice(0, 7);
-    from = period + "-01";
-    to = ymd(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0));
+    if (periodQ) {
+      // Обратная совместимость: явный period=YYYY-MM → весь календарный месяц
+      // (явный выбор, Global Constraints его не ограничивают — не дефолт).
+      from = periodQ + "-01";
+      to = ymd(new Date(Number(periodQ.slice(0, 4)), Number(periodQ.slice(5, 7)), 0));
+    } else {
+      // Дефолт без параметров: месяц по вчера (решение владельца 2026-08-25);
+      // 1-го числа месяца окно само становится прошлым месяцем целиком.
+      ({ from, to } = defaultMonthPeriod());
+    }
   }
 
   // Общий итог диапазона.

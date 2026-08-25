@@ -1,6 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { ALERT } from "@/lib/callout.js";
+import { defaultMonthPeriod } from "@/lib/period.js";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -66,10 +67,13 @@ function DetailInner({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
-  // Если период не пришёл из URL — ставим дефолт «этот месяц».
+  // Если период не пришёл из URL — ставим дефолт «месяц по вчера» (решение
+  // владельца 2026-08-25; хелпер defaultMonthPeriod, а не presetToDates
+  // ("thisMonth") — та функция используется явной кнопкой пресета «Этот
+  // месяц», её менять нельзя: явный выбор Global Constraints не ограничивает).
   useEffect(() => {
     if (!presetReady) {
-      const [f, t] = presetToDates("thisMonth");
+      const { from: f, to: t } = defaultMonthPeriod();
       setDateFrom(f); setDateTo(t); setPreset("thisMonth"); setPresetReady(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -4,12 +4,12 @@ import { C, soft } from "@/lib/palette.js";
 // Поддержка: произвольный диапазон от-до + разбивка по неделям/месяцам
 // (отрезки как колонки). Без разбивки — 3 колонки (Показатель/Всего/% выр.).
 import { useEffect, useState } from "react";
+import { defaultMonthPeriod } from "@/lib/period.js";
 
 // Палитра SAAS (тёмно-синяя).
 
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
-const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const money = (v) =>
   v == null ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(v) + " ₽";
 const moneyShort = (n) => {
@@ -75,8 +75,10 @@ const colorOf = (row, v) => {
 export default function PnlPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
-  const [dateFrom, setDateFrom] = useState(() => ymd(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
-  const [dateTo, setDateTo] = useState(() => ymd(new Date()));
+  // Дефолт — месяц по вчера (решение владельца 2026-08-25); PnlPage всегда
+  // шлёт явные from/to, сервер не видит пустых параметров с этой страницы.
+  const [dateFrom, setDateFrom] = useState(() => defaultMonthPeriod().from);
+  const [dateTo, setDateTo] = useState(() => defaultMonthPeriod().to);
   const [breakdown, setBreakdown] = useState("none"); // none|week|month
 
   useEffect(() => {

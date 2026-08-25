@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { defaultMonthPeriod } from "@/lib/period.js";
 
 import { useEffect, useState, useCallback } from "react";
 
@@ -29,8 +30,12 @@ const INCOME_TYPES = ["wb_payout", "ozon_payout", "client_return", "owner_inject
 const ACCOUNTS = ["расчётный", "карта", "касса", "wb_cabinet", "ozon_cabinet"];
 
 export default function DdsPage({ cabinetId }) {
-  const [from, setFrom] = useState(monthStart());
-  const [to, setTo] = useState(today());
+  // Дефолт — месяц по вчера (решение владельца 2026-08-25), хелпер из
+  // lib/period.js (не копия арифметики). monthStart()/today() остаются
+  // ниже — их использует явная кнопка «Этот месяц» (сброс, не дефолт) и
+  // форма добавления записи (операционная дата документа).
+  const [from, setFrom] = useState(() => defaultMonthPeriod().from);
+  const [to, setTo] = useState(() => defaultMonthPeriod().to);
   const [typeFilter, setTypeFilter] = useState("");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
