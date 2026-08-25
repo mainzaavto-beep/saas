@@ -23,7 +23,7 @@ scripts/check-ozon-profit-map.py — тот же приём: parse_accrual ра�
   4. ITEM-эквайринг (type_id=1) попадает в acquiring СВОЕГО отправления
      (тот же юнит, что и продажа, — показывает точную привязку);
   5. согласованность компонент на КАЖДОМ из 44 отправлений фикстуры:
-     cost_value_retail − commission − logistics − acquiring − loyalty
+     cost_value_retail − commission − services − logistics − acquiring − loyalty
      (ЗНАКОВОЕ вычитание, не abs()) == SUM(accrued строк отправления), допуск 0,01;
   6. инвариант периода: сумма accrued по всем отправлениям (order_costs) +
      сумма accrued кабинетных/промо строк (NON_ITEM) == сумма total_amount
@@ -116,8 +116,8 @@ def main():
         return round(sum((r["accrued"] or 0.0) for r in rows), 2)
 
     def comps_of(result):
-        return round(result["cost_value_retail"] - result["commission"] - result["logistics"]
-                     - result["acquiring"] - result["loyalty"], 2)
+        return round(result["cost_value_retail"] - result["commission"] - result["services"]
+                     - result["logistics"] - result["acquiring"] - result["loyalty"], 2)
 
     # --- 1 + 4. Продающее отправление с ITEM-эквайрингом того же юнита.
     #     unit 0154253981-0534-1: POSTING (услуги 32/29 + commission-блок,
@@ -354,6 +354,8 @@ def main():
         "coinvestment": 0.0, "bonus": 300.0,
     }
     row_outside_window = {
+        # type_id=39 (PackingFee) — bucket 'services' (волна «Сборы Ozon»,
+        # 2026-08-25; ДО этой волны был 'logistics' — см. историю правки).
         "unit_number": window_unit, "accrued_category": "POSTING", "type_id": 39,  # PackingFee
         "sku": 1, "accrued": -50.0, "date": "2026-09-20",  # 6 недель спустя — за пределами планового окна
         "seller_price": None, "sale_price": None, "sale_commission": None,
@@ -364,8 +366,9 @@ def main():
     r_full = build_order_costs(full_history_rows, {"product_id": 1, "qty": 1}, {})
     check("C1: полная история юнита -> build_order_costs вернул строку (не None)",
           r_full is not None)
-    check("C1: полная история -> logistics учитывает строку ЗА ГРАНИЦЕЙ окна (50)",
-          r_full["logistics"] == 50.0, r_full)
+    check("C1: полная история -> services учитывает строку ЗА ГРАНИЦЕЙ окна (50, "
+          "type_id=39 PackingFee -> bucket 'services')",
+          r_full["services"] == 50.0 and r_full["logistics"] == 0.0, r_full)
     check("C1: полная история -> согласованность компонент == SUM(accrued) (допуск 0,01)",
           abs(comps_of(r_full) - sum_accrued(full_history_rows)) < 0.01,
           (comps_of(r_full), sum_accrued(full_history_rows)))
@@ -374,17 +377,18 @@ def main():
           r_full["profit"] == expected_full_profit, r_full["profit"])
 
     # Контрольный пример дефекта (ДО фикса C1): группировка ТОЛЬКО строки
-    # окна (без row_outside_window) молча теряет -50 логистики и завышает
-    # profit — «выглядит» самосогласованной (comps == SUM видимых строк), но
-    # расходится с профилем полной истории. Ровно это и чинит второй SQL-
-    # запрос в collect() (см. докстроку модуля, докстроку collect()).
+    # окна (без row_outside_window) молча теряет -50 сборов (services) и
+    # завышает profit — «выглядит» самосогласованной (comps == SUM видимых
+    # строк), но расходится с профилем полной истории. Ровно это и чинит
+    # второй SQL-запрос в collect() (см. докстроку модуля, докстроку
+    # collect()).
     r_window_only = build_order_costs([row_in_window], {"product_id": 1, "qty": 1}, {})
     check("C1: узкое окно (без row_outside_window) само по себе НЕ падает на "
           "consistency_ok (иначе баг был бы заметен сторожем сразу)",
           r_window_only["consistency_ok"] is True, r_window_only)
-    check("C1: но узкое окно ЗАНИЖАЕТ логистику относительно полной истории (0 != 50)",
-          r_window_only["logistics"] == 0.0 and r_full["logistics"] == 50.0,
-          (r_window_only["logistics"], r_full["logistics"]))
+    check("C1: но узкое окно ЗАНИЖАЕТ сборы (services) относительно полной истории (0 != 50)",
+          r_window_only["services"] == 0.0 and r_full["services"] == 50.0,
+          (r_window_only["services"], r_full["services"]))
     check("C1: и, как следствие, ЗАВЫШАЕТ profit относительно полной истории (700 != 650)",
           r_window_only["profit"] != r_full["profit"] and r_window_only["profit"] == 700.0
           and r_full["profit"] == 650.0,
@@ -1182,8 +1186,9 @@ def main():
     #     обнулена в обоих блоках (фикстура ради простоты не моделирует
     #     отдельно комиссию/её реверс, только сумму реализации, как в
     #     формулировке владельца) + возвратные сборы ITEM 38 (PackageCost)/
-    #     39 (PackingFee) — bucket 'logistics' (НЕ RETURN_TYPE_IDS={45,59}),
-    #     поэтому return_dates остаётся пуст, ветка 1 не срабатывает; сумма
+    #     39 (PackingFee) — bucket 'services' (волна «Сборы Ozon», 2026-08-25;
+    #     НЕ RETURN_TYPE_IDS={45,59}), поэтому return_dates остаётся пуст,
+    #     ветка 1 не срабатывает; сумма
     #     commission-блоков (0) не строго отрицательна — ветка 2 тоже не
     #     срабатывает. cost_overrides=730 (как у владельца) — ДО фикса
     #     profit = -127.28 (sum_accrued) - 730 = -857.28; ПОСЛЕ — cost=0,

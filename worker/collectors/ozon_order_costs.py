@@ -418,7 +418,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # случай: сумма корзины отрицательна, -sum == |sum|, визуально то же
     # самое, что и раньше; edge-case с сальдо в плюс — тоже верно, тогда
     # компонента в order_costs отрицательна, и профильная формула роутов
-    # (profit = revenue − cost − commission − logistics − acquiring)
+    # (profit = revenue − cost − commission − services − logistics − acquiring − loyalty)
     # корректно ДОБАВЛЯЕТ этот возврат к прибыли). Найдено тестом
     # scripts/check-ozon-profit-calc.py на реальных строках фикстуры
     # (unit 02464949-0474, 63981463-0371) — та же логика (сумма корзины,
@@ -454,7 +454,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # ИЛИ ПОЛНОЕ СТОРНО через ПАРУ (и более) commission-блоков (находка
     # владельца, заказ 0131642813-0453-1, 2026-08-21): 10.08 блок +1378
     # (продажа), 17.08 второй блок −1378 (сторно) + возвратные сборы ITEM
-    # 38/39 (PackageCost/PackingFee — bucket 'logistics', НЕ RETURN_TYPE_IDS,
+    # 38/39 (PackageCost/PackingFee — bucket 'services', НЕ RETURN_TYPE_IDS,
     # см. ozon_profit_map.py) — ни первая, ни вторая ветка выше это НЕ ловят:
     # commission_accrued_sum ≈ 0 (не < 0 — блоки гасят друг друга ровно, не
     # уходят в минус), поэтому вторая ветка молчит; RETURN_TYPE_IDS среди
@@ -565,7 +565,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # в v1) — источник разрыва инварианта ~334 тыс ₽ и 6 284 отправлений
     # старых месяцев кабинета 1, отсутствующих из панели. Теперь строка
     # ВСЁ РАВНО пишется — product_id NULL, деньги (cost_value_retail/
-    # commission/logistics/acquiring/loyalty/profit) на месте. Счётчик "без
+    # commission/services/logistics/acquiring/loyalty/profit) на месте. Счётчик "без
     # товара" считает collect() по result["product_id"] is None (переименован
     # честно из skipped_no_product — строки больше не пропускаются).
     # ФИКС фантомного COGS (находка владельца, заказ 09609165-0986-1,
