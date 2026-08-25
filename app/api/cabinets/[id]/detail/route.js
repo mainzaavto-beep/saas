@@ -559,11 +559,19 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // суммарных services (0,03%) — кабинет 1008 не затронут (0 из 2435).
   // Точный фикс требует переноса merge_unit_siblings/_family_key в JS — вне
   // объёма задачи 1 (см. концерн в отчёте задачи 1).
+  //
+  // ⚠️ ПОСТ-РЕВЬЮ: JOIN добавляет AND a.cabinet_id = oc.cabinet_id — тенант-
+  // безопасность и без этого держится на RLS (withCabinet выставляет
+  // app.cabinet_id в транзакции), но равенство cabinet_id — бесплатная
+  // защита и самоочевидность прямо в тексте запроса: unit_number сам по
+  // себе НЕ гарантированно уникален глобально между кабинетами, JOIN без
+  // явного условия был бы корректен ТОЛЬКО благодаря RLS-фильтру, а не
+  // потому что это видно по SQL. Числа не меняются (RLS уже сужал набор).
   const svcRows = await db.prepare(
     `SELECT a.type_id AS type_id, substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) AS d,
             a.accrued_category AS accrued_category, COUNT(*) AS ops, COALESCE(SUM(-a.accrued),0) AS sum
      FROM order_costs oc
-     JOIN tenant.ozon_accruals a ON a.unit_number = oc.src_unit_number
+     JOIN tenant.ozon_accruals a ON a.unit_number = oc.src_unit_number AND a.cabinet_id = oc.cabinet_id
      WHERE oc.product_id = ?
        AND substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) >= ? AND substr(COALESCE(oc.sale_dt, oc.return_dt),1,10) <= ?
      GROUP BY a.type_id, d, a.accrued_category`

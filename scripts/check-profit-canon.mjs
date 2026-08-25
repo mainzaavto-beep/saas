@@ -187,6 +187,7 @@ const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch, ozRawProfitByDay
 const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch, wbRawProfitByDay, wbDayProfit } = await import('../lib/wbMetrics.js');
 const { ZERO_RAW_AGG } = await import('../lib/profitForms.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
+const { SERVICE_TYPE_LABELS, NON_SERVICE_PER_ORDER_SETS } = await import('../lib/ozonServiceTypes.js');
 
 function parseArgs(argv) {
   const out = { cabinet: 1, from: '2026-07-01', to: '2026-07-31' };
@@ -238,6 +239,98 @@ function pickRandomIds(ids, n) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr.slice(0, n);
+}
+
+// ── Проверка №9 (пост-ревью плана «расшифровка Сборов Ozon», 2026-08-25):
+// паритет множеств классификации py↔js. worker/collectors/
+// ozon_profit_map.py::classify_row — источник истины, по которому сборщик
+// (ozon_order_costs.py) считает order_costs.services; lib/ozonServiceTypes.js
+// ::isServiceRow — JS-зеркало ТОЙ ЖЕ логики, которым detail-роут строит
+// тултип расшифровки этой самой ячейки (см. докстроки обоих файлов —
+// «двустороннее зеркало», встречные комментарии друг на друга). Ничто
+// механически не мешает им разъехаться при правке одного файла без
+// другого: PY и JS — разные рантаймы, общего импорта нет и быть не может.
+// Если разъедутся — ячейка (py) и тултип (js) молча классифицируют один и
+// тот же type_id по-разному, без единой ошибки в логах. Эта проверка
+// вычитывает СЫРОЙ текст ozon_profit_map.py регэкспом (не может импортировать
+// питон-модуль в node) и сравнивает 4 множества с их JS-аналогами.
+//
+// Парсер простой и строгий по требованию задачи: если формат блока
+// изменился (не голый `NAME = {int, int, ...}` / `NAME = set()`) —
+// parsePySet бросает исключение с понятным текстом, проверка ниже ловит
+// её и превращает в FAIL, а не в молчаливый пропуск/пустое множество.
+function parsePySet(src, varName) {
+  if (new RegExp(`\\b${varName}\\s*=\\s*set\\(\\)`).test(src)) return new Set();
+  const startMarker = `${varName} = {`;
+  const startIdx = src.indexOf(startMarker);
+  if (startIdx === -1) {
+    throw new Error(
+      `не найдено множество "${varName}" (ни "${varName} = {...}", ни "${varName} = set()") — формат ozon_profit_map.py изменился`
+    );
+  }
+  const braceStart = startIdx + startMarker.length - 1; // индекс символа '{'
+  const closeIdx = src.indexOf('}', braceStart);
+  if (closeIdx === -1) {
+    throw new Error(`не найдена закрывающая "}" для множества "${varName}"`);
+  }
+  const block = src.slice(braceStart + 1, closeIdx);
+  const withoutComments = block.replace(/#.*$/gm, '');
+  const nums = withoutComments.match(/\d+/g) || [];
+  // Строгость: после удаления комментариев и вычитания всех чисел в блоке
+  // не должно остаться ничего, кроме запятых/пробелов/переводов строк —
+  // если осталось (выражение, диапазон, чужая ссылка на константу) —
+  // формат сложнее голого перечисления int-литералов, парсер это не умеет.
+  const residue = withoutComments.replace(/\d+/g, '').replace(/[\s,]/g, '');
+  if (residue.length > 0) {
+    throw new Error(
+      `множество "${varName}" содержит нечисловой токен после разбора ("${residue}") — блок не голый перечень int-литералов через запятую`
+    );
+  }
+  return new Set(nums.map(Number));
+}
+
+// Сравнение двух Set<number> — разница в обе стороны (для текста FAIL).
+function diffSets(a, b) {
+  const onlyInA = [...a].filter((x) => !b.has(x)).sort((x, y) => x - y);
+  const onlyInB = [...b].filter((x) => !a.has(x)).sort((x, y) => x - y);
+  return { equal: onlyInA.length === 0 && onlyInB.length === 0, onlyInA, onlyInB };
+}
+
+// Сама сверка (вынесена функцией — так же вызывается негативным юнит-тестом
+// вне рабочего дерева, см. отчёт задачи). pySrc — сырой текст
+// ozon_profit_map.py, jsSets — { SERVICE_TYPE_LABELS, NON_SERVICE_PER_ORDER_SETS }
+// с ИМЕНАМИ экспортов lib/ozonServiceTypes.js. Возвращает { ok, detail }.
+function checkPyJsSetParity(pySrc, jsSets) {
+  let pySets;
+  try {
+    pySets = {
+      PER_ORDER_SERVICE_TYPE_IDS: parsePySet(pySrc, 'PER_ORDER_SERVICE_TYPE_IDS'),
+      PER_ORDER_LOGISTICS_TYPE_IDS: parsePySet(pySrc, 'PER_ORDER_LOGISTICS_TYPE_IDS'),
+      ACQUIRING_TYPE_IDS: parsePySet(pySrc, 'ACQUIRING_TYPE_IDS'),
+      LOYALTY_TYPE_IDS: parsePySet(pySrc, 'LOYALTY_TYPE_IDS'),
+    };
+  } catch (e) {
+    return { ok: false, detail: `парсер ozon_profit_map.py упал: ${e.message}` };
+  }
+  const jsSetsByName = {
+    PER_ORDER_SERVICE_TYPE_IDS: new Set(Object.keys(jsSets.SERVICE_TYPE_LABELS).map(Number)),
+    PER_ORDER_LOGISTICS_TYPE_IDS: jsSets.NON_SERVICE_PER_ORDER_SETS.PER_ORDER_LOGISTICS_TYPE_IDS,
+    ACQUIRING_TYPE_IDS: jsSets.NON_SERVICE_PER_ORDER_SETS.ACQUIRING_TYPE_IDS,
+    LOYALTY_TYPE_IDS: jsSets.NON_SERVICE_PER_ORDER_SETS.LOYALTY_TYPE_IDS,
+  };
+  const mismatches = [];
+  for (const key of Object.keys(pySets)) {
+    const cmp = diffSets(pySets[key], jsSetsByName[key]);
+    if (!cmp.equal) {
+      mismatches.push(`${key}: только в py {${cmp.onlyInA.join(',')}}, только в js {${cmp.onlyInB.join(',')}}`);
+    }
+  }
+  return {
+    ok: mismatches.length === 0,
+    detail: mismatches.length
+      ? mismatches.join('; ')
+      : `все 4 множества совпадают (${Object.entries(pySets).map(([k, v]) => `${k}=${v.size}`).join(', ')})`,
+  };
 }
 
 let failures = 0;
@@ -568,6 +661,22 @@ async function runOzonChecks() {
     canon.qtyAnomalies === 0,
     `строк с qty≠1: ${canon.qtyAnomalies}`
   );
+  console.log('');
+
+  // ── Проверка №9 (пост-ревью плана «расшифровка Сборов Ozon»): паритет
+  // наборов py↔js — см. коммент у parsePySet/checkPyJsSetParity выше.
+  // Детерминированная, БД не трогает (сырой текст ozon_profit_map.py читается
+  // синхронно с диска, jsSets — уже импортированные экспорты
+  // lib/ozonServiceTypes.js). ──
+  {
+    const pySrc = readFileSync(new URL('../worker/collectors/ozon_profit_map.py', import.meta.url), 'utf8');
+    const { ok, detail } = checkPyJsSetParity(pySrc, { SERVICE_TYPE_LABELS, NON_SERVICE_PER_ORDER_SETS });
+    verdict(
+      'паритет наборов py↔js: PER_ORDER_SERVICE_TYPE_IDS/PER_ORDER_LOGISTICS_TYPE_IDS/ACQUIRING_TYPE_IDS/LOYALTY_TYPE_IDS (ozon_profit_map.py) = ozonServiceTypes.js (SERVICE_TYPE_LABELS/NON_SERVICE_PER_ORDER_SETS)',
+      ok,
+      detail
+    );
+  }
   console.log('');
 }
 
