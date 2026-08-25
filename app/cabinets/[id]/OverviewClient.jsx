@@ -94,17 +94,18 @@ export default function OverviewClient({ cabinetId }) {
   const [userPicked, setUserPicked] = useState(false);
   const [serverPeriod, setServerPeriod] = useState(null); // {from,to} из ответа
   const [mp, setMp] = useState("all");
-  // Произвольный интервал (гранулярность "custom"). Дефолт — последние 30 дней.
-  const [customFrom, setCustomFrom] = useState(() => ymd(new Date(Date.now() - 29 * 86400000)));
-  const [customTo, setCustomTo] = useState(() => ymd(new Date()));
+  // Произвольный интервал (гранулярность "custom"). Дефолт — последние 30 дней
+  // ПО ВЧЕРА (сегодня финансово недособрано — задача «дефолты по вчера», 2026-08-25).
+  const [customFrom, setCustomFrom] = useState(() => ymd(new Date(Date.now() - 30 * 86400000)));
+  const [customTo, setCustomTo] = useState(() => ymd(new Date(Date.now() - 86400000)));
 
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
   const period = useMemo(() => {
     if (gran === "custom") {
-      const f = customFrom || ymd(new Date(Date.now() - 29 * 86400000));
-      const t = customTo || ymd(new Date());
+      const f = customFrom || ymd(new Date(Date.now() - 30 * 86400000));
+      const t = customTo || ymd(new Date(Date.now() - 86400000));
       return { from: f, to: t, label: `${f} — ${t}` };
     }
     return computePeriod(gran, anchor);

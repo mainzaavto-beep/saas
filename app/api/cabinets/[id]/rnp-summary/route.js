@@ -6,6 +6,7 @@ import { ozProfitProductBatch } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { tenantQuery } from "@/lib/db.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
+import { defaultPeriod } from "@/lib/period.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,8 +65,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           from = d.toISOString().slice(0, 10);
         }
       } else {
-        if (!to) to = new Date().toISOString().slice(0, 10);
-        if (!from) from = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
+        // Fallback: нет данных — 7 дней ПО ВЧЕРА (сегодня финансово недособрано).
+        const def = defaultPeriod(7);
+        if (!to) to = def.to;
+        if (!from) from = def.from;
       }
     }
     const toEnd = to + "T23:59:59";

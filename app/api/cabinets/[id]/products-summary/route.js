@@ -6,6 +6,7 @@ import { ozProfitProductBatch } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
+import { defaultPeriod } from "@/lib/period.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,9 +64,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           from = d.toISOString().slice(0, 10);
         }
       } else {
-        // Fallback: нет данных — последние 30 дней от сегодня (не пустая строка!).
-        if (!to) to = new Date().toISOString().slice(0, 10);
-        if (!from) from = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+        // Fallback: нет данных — последние 30 дней ПО ВЧЕРА (не пустая строка!).
+        // Сегодня финансово недособрано (задача «дефолты по вчера», 2026-08-25).
+        const def = defaultPeriod(30);
+        if (!to) to = def.to;
+        if (!from) from = def.from;
       }
     }
     const toEnd = to ? to + "T23:59:59" : "";

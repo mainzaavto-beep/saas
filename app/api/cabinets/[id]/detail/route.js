@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { defaultPeriod } from "@/lib/period.js";
 import {
   WAREHOUSE_REGION,
   wbOrdersByDay, wbOrderRubByDay, wbSoldByDay, wbStockByDay,
@@ -82,7 +83,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const nm = Number(nmRaw);
     if (!Number.isFinite(nm)) return NextResponse.json({ error: "nm должен быть числом" }, { status: 400 });
 
-    const now = new Date();
     const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     let from = url.searchParams.get("from");
     let to = url.searchParams.get("to");
@@ -100,8 +100,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           from = ymd(d);
         }
       } else {
-        if (!to) to = ymd(now);
-        if (!from) { const d = new Date(now); d.setDate(d.getDate() - 29); from = ymd(d); }
+        // Fallback: нет данных — последние 30 дней ПО ВЧЕРА (сегодня недособрано).
+        const def = defaultPeriod(30);
+        if (!to) to = def.to;
+        if (!from) from = def.from;
       }
     }
     const toEnd = to + "T23:59:59";

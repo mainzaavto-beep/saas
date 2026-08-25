@@ -3,6 +3,7 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
 import { wbCabinetCostLabel } from "@/lib/wbMetrics.js";
 import { ozCabinetCostLabel } from "@/lib/ozonMetrics.js";
+import { defaultPeriod } from "@/lib/period.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,9 +109,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
           from = d.toISOString().slice(0, 10);
         }
       } else {
-        // Fallback: нет данных — последние 30 дней от сегодня.
-        if (!to) to = new Date().toISOString().slice(0, 10);
-        if (!from) from = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+        // Fallback: нет данных — последние 30 дней ПО ВЧЕРА (сегодня недособрано).
+        const def = defaultPeriod(30);
+        if (!to) to = def.to;
+        if (!from) from = def.from;
       }
     }
     const toEnd = to ? to + "T23:59:59" : "";
