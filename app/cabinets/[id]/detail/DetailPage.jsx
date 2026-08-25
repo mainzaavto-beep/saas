@@ -219,7 +219,9 @@ const AD_MODELS = [
 ];
 // Ozon — матрица. Без СПП (механики нет), без моделей рекламы (одна ставка).
 // orders_sum = СПРОС (SUM(total) из orders по order_dt — синхронно с «Заказы»);
-// sold/revenue/profit = ФАКТ (из order_costs по sale_dt, is_return=0).
+// sold = ФАКТ (из order_costs по sale_dt, is_return=0); revenue/profit — из
+// ozRawProfitByDay БЕЗ фильтра is_return (возвраты входят как реальный
+// убыток, канон волна 2, задача 6).
 // Корзины в API Ozon ДОСТУПНЫ (hits_tocart, сбор с 2026-08-02, см. ozon_metrics.py).
 const OZ_MATRIX_ROWS = [
   { key: "orders",          label: "Заказы",            kind: "int", group: "oz_orders" },  // created (СПРОС); клик → реклама/органика
@@ -962,7 +964,8 @@ function lastVal(days, key) {
 // при раскрытии 5 подстрок: Выручка / Себестоимость / Комиссия / Логистика /
 // Эквайринг (по дням, Σ = сумма дня). Сворачивает декомпозицию операционной
 // прибыли в одну строку матрицы — всегда видна главная цифра, детали по клику.
-// Колонка Σ родителя = Σ day.profit; null-дни не считаются (точка в ячейке).
+// Колонка Σ родителя = Σ day.profit по всем дням периода — day.profit
+// считается всегда, null-дней больше нет (канон волна 2, задача 6).
 function renderProfitGroup(days, rowTotal, expandProfit, setExpandProfit) {
   const parentRow = { key: "profit", label: "Прибыль ₽", kind: "money" };
   const periodTotal = rowTotal(parentRow);
