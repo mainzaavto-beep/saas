@@ -1,8 +1,8 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import { wbAdTotal, wbProfitProductBatch } from "@/lib/wbMetrics.js";
-import { ozProfitProductBatch } from "@/lib/ozonMetrics.js";
+import { wbAdTotal, wbProfitProductBatch, wbRawProfitCabinetByDay } from "@/lib/wbMetrics.js";
+import { ozProfitProductBatch, ozRawProfitCabinetByDay } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
@@ -73,35 +73,20 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     }
     const toEnd = to ? to + "T23:59:59" : "";
 
-    let items = [];
-    const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
-    const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
-    if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb, wbTax));
-    if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon, ozonTax));
-
     // ⚠️ ФИЛЬТР СТАТУСА 2026-07-23 (симметрично /api/unit/all): показываем active-товары
     // (из products, fallback "active") ПЛЮС товары С продажами/возвратами за период
     // (даже inactive — чтобы не терять свежие продажи снятого с продаж товара). Раньше
     // addStub по products добавлял ВСЕ 88 ozon-артикулов, включая 34 inactive без продаж.
+    // Статус не зависит от окна — считаем один раз, buildTotals переиспользует
+    // и для текущего, и для prev-окна.
     const stat = await statusMap();
-    if (!includeInactive) {
-      items = items.filter((it) => {
-        const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
-        const status = stat[key] || "active";
-        it.status = status;
-        // Товар с продажами/возвратами за период → показываем ВСЕГДА (независимо от статуса).
-        // Товар без активности → только если active. Это сохраняет свежие продажи снятого
-        // товара, но убирает inactive-мусор без продаж.
-        const hasActivity = (it.sold || 0) + (it.returns || 0) > 0;
-        return hasActivity || status === "active";
-      });
-    } else {
-      // includeInactive: обогащаем статусом, но не фильтруем (для отладки/сверки).
-      for (const it of items) {
-        const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
-        it.status = stat[key] || "active";
-      }
-    }
+
+    // items+totals — ЕДИНЫЙ путь buildTotals (задача 1 плана «Сводка по
+    // макету», 2026-08-25): та же последовательность (collect → фильтр
+    // статуса → aggTotals → довычет нераспределённой рекламы), что раньше
+    // жила прямо в GET, вынесена в функцию и переиспользуется ниже для
+    // prevTotals — БЕЗ копирования тела.
+    const { items, totals } = await buildTotals(cabinet, platform, from, to, includeInactive, stat);
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
@@ -126,85 +111,80 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // Сортировка: по выручке вниз (топ-товары сверху).
     items.sort((a, b) => (b.salesRub || 0) - (a.salesRub || 0));
 
-    const totals = aggTotals(items);
+    // totals уже посчитан buildTotals (канон ads/profit top-up — см. докстроку
+    // buildTotals ниже, перенесена туда без изменений вместе с блоком fullAd).
 
-    // ⚠️ КАНОН (задача 5 плана унификации прибыли; формула ads переписана
-    // задачей 6/7 плана «реклама Ozon по товарам», 2026-08-21/22): it.profit
-    // = canon profitProduct(nm/pid).profit, где ads(товар) ТЕПЕРЬ реальный
-    // per-SKU расход (не 0) — Σ(item.profit) уже содержит Σ item.adSpend.
-    // Чтобы totals.profit сходился с pnl.profit (товарная часть = profitProduct
-    // БЕЗ productId, где ПОЛНАЯ ads(кабинета) вычитается ОДИН раз) — см.
-    // check-profit-canon.mjs, проверка 5 «productId-фильтр аддитивен»:
-    // Σ profit(товар) − (ads(кабинета) − Σ ads(товар)) = profit(без фильтра).
-    // Довычитаем здесь ТОЛЬКО нераспределённый остаток (fullAd − Σ item.
-    // adSpend, снизу зажат нулём — округления не должны давать отрицательный
-    // довычет), а не всю fullAd целиком (иначе Σ item.adSpend вычлась бы
-    // ДВАЖДЫ — один раз внутри item.profit, второй раз здесь). item.adSpend
-    // остаётся реальным per-SKU расходом для ДРР/CPA/ROMI (решение владельца,
-    // шлюз docs/profit-unification-delta.md → задача 6 плана «реклама Ozon по
-    // товарам»).
-    //
-    // logistics больше НЕ пересчитывается отдельным «полным» блоком (в отличие
-    // от рекламы): canon-логистика каждого товара — это ПРЯМАЯ сумма
-    // order_costs.logistics ЗА ЭТОТ nm/product_id (не finance_report-агрегат,
-    // который создавал запись только для nm с «Продажей» и терял logistics-
-    // only nm) — rows строится из ВСЕХ nm/product_id, когда-либо встречавшихся
-    // в order_costs (см. коммент у SQL rows ниже), поэтому Σ(item.logistics)
-    // уже полна и аддитивна сама по себе (проверено check-profit-canon.mjs,
-    // «слагаемые аддитивны»), никакого top-up не требуется.
+    // prevTotals — то же окно длиной N, СТРОГО тем же кодом (buildTotals),
+    // стыком назад: prev_to = from−1, prev_from = prev_to−(N−1) (GC плана
+    // «Сводка по макету», задача 1). N — длина текущего окна в днях.
+    let prevTotals = null;
+    let prevPeriod = null;
     if (from && to) {
-      // ⚠️ Грабля SAAS (та же что с logistics): отдельный prepare().get() для
-      // агрегата после предыдущих запросов в транзакции возвращает 0 (баг
-      // эмулятора DatabaseSync поверх node-postgres). Решение: считать через
-      // subquery в одном запросе. fullAd = Σ ad_spend из daily_metrics за период.
-      let fullAd = 0;
-      // ⚠️ ФИКС 2026-07-23: каждый блок — в своём platform-гарде, симметрично
-      // logistics-блоку ниже (там уже есть `if (platform !== "ozon")`). Раньше
-      // WB-ad блок был БЕЗ гарда → при platform=ozon к totals.profit вычиталась
-      // ВСЯ WB-реклама (≈81к на cabinet #1) → profit показывал ≈−45к вместо
-      // реальных +1.8к. Баг: +36к (profitClean) − 81к (WB ad) = −45 651.
+      const N = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+      const prevTo = shiftDateUTC(from, -1);
+      const prevFrom = shiftDateUTC(prevTo, -(N - 1));
+      const prevBuild = await buildTotals(cabinet, platform, prevFrom, prevTo, includeInactive, stat);
+      prevTotals = prevBuild.totals;
+      prevPeriod = { from: prevFrom, to: prevTo };
+    }
+
+    // profitSpark — дневной ряд «rawProfit − реклама», ДО налога (задача 1
+    // плана «Сводка по макету», 2026-08-25). Кабинетные by-day агрегаты —
+    // ПЕРЕНОС SELECT'ов *RawProfitByDay БЕЗ product-фильтра (ozRawProfitCabinetByDay/
+    // wbRawProfitCabinetByDay, lib/ozonMetrics.js, lib/wbMetrics.js). Реклама
+    // по дням — ТЕ ЖЕ таблицы, что fullAd внутри buildTotals (WB: daily_metrics
+    // GROUP BY date; Ozon: ozon_daily_efficiency, уже один ряд в день) —
+    // держит равенство Σ profitSpark ≈ totals-канон ads (сверяется приёмкой).
+    // profit(день) = round2(rawWb(день) + rawOz(день) − ad(день)); дни без
+    // движения = 0 (ряд идёт по ВСЕМ датам окна, не только по дням с активностью).
+    let profitSpark = [];
+    if (from && to) {
+      const wbByDay = platform !== "ozon"
+        ? await wbRawProfitCabinetByDay(new DatabaseSync("wb", {readOnly:true}), { from, to })
+        : new Map();
+      const ozByDay = platform !== "wb"
+        ? await ozRawProfitCabinetByDay(new DatabaseSync("ozon", {readOnly:true}), { from, to })
+        : new Map();
+
+      const adByDay = new Map();
       if (platform !== "ozon") {
         try {
-          const wbad = await new DatabaseSync("wb", {readOnly:true}).prepare(
-            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
-                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
-          ).get(from, toEnd);
-          fullAd += (wbad && wbad.s) || 0;
-        } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
+          const rows = await new DatabaseSync("wb", {readOnly:true}).prepare(
+            `SELECT date::text AS d, COALESCE(SUM(ad_spend),0) AS s
+             FROM daily_metrics WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL
+             GROUP BY date`
+          ).all(from, toEnd);
+          for (const r of rows) adByDay.set(r.d, (adByDay.get(r.d) || 0) + (r.s || 0));
+        } catch (e) { console.error('[products-summary] WB ad по дням:', e.message); }
       }
       if (platform !== "wb") {
         try {
-          // ⚠️ 2026-08-02: было — реклама Ozon существовала только «кабинет×день»
-          // (ozon_daily_efficiency; per-SKU daily_metrics.ad_spend ПУСТ, до
-          // фикса 6046d36 расход не собирался вовсе — прибыль завышалась).
-          // С 2026-08-22 per-SKU расход реально заполняется (tenant.ozon_daily_
-          // sku_ad, миграция 043, план «реклама Ozon по товарам») и уже вычтен
-          // внутри item.profit — здесь по-прежнему вычитаем кабинетный fullAd
-          // из totals, но только НЕРАСПРЕДЕЛЁННЫЙ остаток (см. коммент блока
-          // выше), не всю сумму. date — DATE, сравниваем с 'YYYY-MM-DD'.
-          const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
-            `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM ozon_daily_efficiency
-                     WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
-          ).get(from, to);
-          fullAd += (ozad && ozad.s) || 0;
-        } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
+          const rows = await new DatabaseSync("ozon", {readOnly:true}).prepare(
+            `SELECT date::text AS d, COALESCE(SUM(ad_spend),0) AS s
+             FROM ozon_daily_efficiency WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL
+             GROUP BY date`
+          ).all(from, to);
+          for (const r of rows) adByDay.set(r.d, (adByDay.get(r.d) || 0) + (r.s || 0));
+        } catch (e) { console.error('[products-summary] Ozon ad по дням:', e.message); }
       }
-      // Σ item.adSpend ДО перезаписи totals.adSpend кабинетной суммой ниже —
-      // нужна, чтобы довычесть только нераспределённый остаток (см. коммент
-      // блока выше), а не всю fullAd целиком.
-      const sumItemAd = totals.adSpend;
-      totals.adSpend = round2(fullAd);
-      // item.profit (канон) ТЕПЕРЬ включает рекламу товара — довычитаем
-      // только нераспределённую часть кабинетной рекламы (fullAd − Σ item.
-      // adSpend), чтобы totals.profit = pnl.profit (товарная часть).
-      totals.profit = round2((totals.profit || 0) - Math.max(0, round2(fullAd - sumItemAd)));
-      if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
+
+      const N = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+      for (let i = 0; i < N; i++) {
+        const d = shiftDateUTC(from, i);
+        const rawWb = wbByDay.get(d)?.rawProfit || 0;
+        const rawOz = ozByDay.get(d)?.rawProfit || 0;
+        const adDay = adByDay.get(d) || 0;
+        profitSpark.push({ date: d, profit: round2(rawWb + rawOz - adDay) });
+      }
     }
 
     return NextResponse.json({
       count: items.length,
       period: { from, to, days },
       totals,
+      prevTotals,
+      prevPeriod,
+      profitSpark,
       items,
       shops: { wb: cabinet.shop_names?.wb, ozon: cabinet.shop_names?.ozon },
       methodology: "ОПЕРАТИВНЫЙ срез: штуки/выручка из ежедневных продаж (sales), расходы — по средним ставкам из order_costs. Возможно небольшое расхождение (≈5-10%) с финальным недельным финотчётом WB (там в «Сводке по прибыли»).",
@@ -252,6 +232,133 @@ function aggTotals(items) {
   t.margin = t.salesRub ? round2(100 * t.profit / t.salesRub) : null;
   t.avgCheck = t.ordered ? round2(t.orderRub / t.ordered) : null;
   return t;
+}
+
+// Сдвиг даты 'YYYY-MM-DD' на N дней в UTC (независимо от часового пояса
+// сервера) — для prev-окна (задача 1 плана «Сводка по макету», 2026-08-25).
+function shiftDateUTC(dateStr, deltaDays) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// buildTotals(cabinet, platform, from, to, includeInactive, stat) — ЕДИНЫЙ
+// источник totals (задача 1 плана «Сводка по макету», 2026-08-25). Тело —
+// ПЕРЕНОС без изменений того, что раньше жило прямо в GET: сбор items
+// (collectWB/collectOzon) → фильтр статуса (симметрично /api/unit/all) →
+// aggTotals → довычет НЕРАСПРЕДЕЛЁННОГО остатка кабинетной рекламы (канон
+// задачи 5 плана унификации прибыли + задачи 6/7 плана «реклама Ozon по
+// товарам», см. исходные комментарии ниже — сохранены байт-в-байт). Вызывается
+// дважды из GET: за текущее окно (totals) и за prev-окно (prevTotals) —
+// СТРОГО тем же кодом, а не копией.
+async function buildTotals(cabinet, platform, from, to, includeInactive, stat) {
+  const toEnd = to ? to + "T23:59:59" : "";
+
+  let items = [];
+  const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+  const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
+  if (platform !== "ozon") items = items.concat(await collectWB(from, toEnd, cabinet.shop_names?.wb, wbTax));
+  if (platform !== "wb")   items = items.concat(await collectOzon(from, toEnd, cabinet.shop_names?.ozon, ozonTax));
+
+  // ⚠️ ФИЛЬТР СТАТУСА 2026-07-23 (симметрично /api/unit/all): показываем active-товары
+  // (из products, fallback "active") ПЛЮС товары С продажами/возвратами за период
+  // (даже inactive — чтобы не терять свежие продажи снятого с продаж товара). Раньше
+  // addStub по products добавлял ВСЕ 88 ozon-артикулов, включая 34 inactive без продаж.
+  if (!includeInactive) {
+    items = items.filter((it) => {
+      const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
+      const status = stat[key] || "active";
+      it.status = status;
+      // Товар с продажами/возвратами за период → показываем ВСЕГДА (независимо от статуса).
+      // Товар без активности → только если active. Это сохраняет свежие продажи снятого
+      // товара, но убирает inactive-мусор без продаж.
+      const hasActivity = (it.sold || 0) + (it.returns || 0) > 0;
+      return hasActivity || status === "active";
+    });
+  } else {
+    // includeInactive: обогащаем статусом, но не фильтруем (для отладки/сверки).
+    for (const it of items) {
+      const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
+      it.status = stat[key] || "active";
+    }
+  }
+
+  const totals = aggTotals(items);
+
+  // ⚠️ КАНОН (задача 5 плана унификации прибыли; формула ads переписана
+  // задачей 6/7 плана «реклама Ozon по товарам», 2026-08-21/22): it.profit
+  // = canon profitProduct(nm/pid).profit, где ads(товар) ТЕПЕРЬ реальный
+  // per-SKU расход (не 0) — Σ(item.profit) уже содержит Σ item.adSpend.
+  // Чтобы totals.profit сходился с pnl.profit (товарная часть = profitProduct
+  // БЕЗ productId, где ПОЛНАЯ ads(кабинета) вычитается ОДИН раз) — см.
+  // check-profit-canon.mjs, проверка 5 «productId-фильтр аддитивен»:
+  // Σ profit(товар) − (ads(кабинета) − Σ ads(товар)) = profit(без фильтра).
+  // Довычитаем здесь ТОЛЬКО нераспределённый остаток (fullAd − Σ item.
+  // adSpend, снизу зажат нулём — округления не должны давать отрицательный
+  // довычет), а не всю fullAd целиком (иначе Σ item.adSpend вычлась бы
+  // ДВАЖДЫ — один раз внутри item.profit, второй раз здесь). item.adSpend
+  // остаётся реальным per-SKU расходом для ДРР/CPA/ROMI (решение владельца,
+  // шлюз docs/profit-unification-delta.md → задача 6 плана «реклама Ozon по
+  // товарам»).
+  //
+  // logistics больше НЕ пересчитывается отдельным «полным» блоком (в отличие
+  // от рекламы): canon-логистика каждого товара — это ПРЯМАЯ сумма
+  // order_costs.logistics ЗА ЭТОТ nm/product_id (не finance_report-агрегат,
+  // который создавал запись только для nm с «Продажей» и терял logistics-
+  // only nm) — rows строится из ВСЕХ nm/product_id, когда-либо встречавшихся
+  // в order_costs (см. коммент у SQL rows ниже), поэтому Σ(item.logistics)
+  // уже полна и аддитивна сама по себе (проверено check-profit-canon.mjs,
+  // «слагаемые аддитивны»), никакого top-up не требуется.
+  if (from && to) {
+    // ⚠️ Грабля SAAS (та же что с logistics): отдельный prepare().get() для
+    // агрегата после предыдущих запросов в транзакции возвращает 0 (баг
+    // эмулятора DatabaseSync поверх node-postgres). Решение: считать через
+    // subquery в одном запросе. fullAd = Σ ad_spend из daily_metrics за период.
+    let fullAd = 0;
+    // ⚠️ ФИКС 2026-07-23: каждый блок — в своём platform-гарде, симметрично
+    // logistics-блоку ниже (там уже есть `if (platform !== "ozon")`). Раньше
+    // WB-ad блок был БЕЗ гарда → при platform=ozon к totals.profit вычиталась
+    // ВСЯ WB-реклама (≈81к на cabinet #1) → profit показывал ≈−45к вместо
+    // реальных +1.8к. Баг: +36к (profitClean) − 81к (WB ad) = −45 651.
+    if (platform !== "ozon") {
+      try {
+        const wbad = await new DatabaseSync("wb", {readOnly:true}).prepare(
+          `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM daily_metrics
+                   WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+        ).get(from, toEnd);
+        fullAd += (wbad && wbad.s) || 0;
+      } catch (e) { console.error('[products-summary] WB ad пересчёт:', e.message); }
+    }
+    if (platform !== "wb") {
+      try {
+        // ⚠️ 2026-08-02: было — реклама Ozon существовала только «кабинет×день»
+        // (ozon_daily_efficiency; per-SKU daily_metrics.ad_spend ПУСТ, до
+        // фикса 6046d36 расход не собирался вовсе — прибыль завышалась).
+        // С 2026-08-22 per-SKU расход реально заполняется (tenant.ozon_daily_
+        // sku_ad, миграция 043, план «реклама Ozon по товарам») и уже вычтен
+        // внутри item.profit — здесь по-прежнему вычитаем кабинетный fullAd
+        // из totals, но только НЕРАСПРЕДЕЛЁННЫЙ остаток (см. коммент блока
+        // выше), не всю сумму. date — DATE, сравниваем с 'YYYY-MM-DD'.
+        const ozad = await new DatabaseSync("ozon", {readOnly:true}).prepare(
+          `SELECT (SELECT COALESCE(SUM(ad_spend),0) FROM ozon_daily_efficiency
+                   WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL) AS s`
+        ).get(from, to);
+        fullAd += (ozad && ozad.s) || 0;
+      } catch (e) { console.error('[products-summary] Ozon ad пересчёт:', e.message); }
+    }
+    // Σ item.adSpend ДО перезаписи totals.adSpend кабинетной суммой ниже —
+    // нужна, чтобы довычесть только нераспределённый остаток (см. коммент
+    // блока выше), а не всю fullAd целиком.
+    const sumItemAd = totals.adSpend;
+    totals.adSpend = round2(fullAd);
+    // item.profit (канон) ТЕПЕРЬ включает рекламу товара — довычитаем
+    // только нераспределённую часть кабинетной рекламы (fullAd − Σ item.
+    // adSpend), чтобы totals.profit = pnl.profit (товарная часть).
+    totals.profit = round2((totals.profit || 0) - Math.max(0, round2(fullAd - sumItemAd)));
+    if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
+  }
+
+  return { items, totals };
 }
 
 // ---------- WB ----------
