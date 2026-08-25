@@ -232,7 +232,7 @@ function extractOverviewWas(json) {
   const k = json.kpi;
   return {
     revenue: round2(k.revenue), cogsSold: round2(k.cogsSold), adSpend: round2(k.adSpend),
-    tax: round2(k.tax), profit: round2(k.grossProfit) /* поле называется grossProfit, но это ИТОГОВАЯ k.profit */,
+    tax: round2(k.tax), profit: round2(k.profit) /* поле переименовано волной 3: было kpi.grossProfit, теперь kpi.profit */,
     margin: round2(k.margin), expenses: round2(k.expenses),
   };
 }
