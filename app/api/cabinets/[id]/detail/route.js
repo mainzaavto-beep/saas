@@ -9,9 +9,9 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import {
   WAREHOUSE_REGION,
   wbOrdersByDay, wbOrderRubByDay, wbSoldByDay, wbStockByDay,
-  wbFinanceByDay, wbUnitCost, wbProfitProduct,
+  wbFinanceByDay, wbUnitCost, wbProfitProduct, wbRawProfitByDay,
 } from "@/lib/wbMetrics.js";
-import { ozProfitProduct } from "@/lib/ozonMetrics.js";
+import { ozProfitProduct, ozRawProfitByDay } from "@/lib/ozonMetrics.js";
 import { calcTotalTax, normalizeTaxMode, describeTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
@@ -259,6 +259,15 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   const fin = await wbProfitProduct(db, taxMode, { from, to }, nm);
   const unitCost = await wbUnitCost(db, nm);
 
+  // 5в) Дневной канон профита (задача 6 плана «канон волна 2», 2026-08-25):
+  // wbRawProfitByDay — ТОТ ЖЕ SELECT, что скалярный агрегат wbProfitProduct
+  // (order_costs, is_return НЕ фильтруется), GROUP BY день. Заменяет старую
+  // ручную формулу «forPay(finance_report) − logistics − cost − adSp» —
+  // finance_report/wbFinanceByDay остаётся ТОЛЬКО для информационных колонок
+  // (commission/logistics/revenue/cost дня, ниже — не трогаем), профит
+  // считается отдельно от rawByDay (см. композицию profit(день) ниже).
+  const rawByDay = await wbRawProfitByDay(db, { from, to, nmId: nm });
+
   // 6) Сборка days.
   const dateList = wbDateList(from, to);
   const dayMap = new Map(metricRows.map((r) => [r.date, r]));
@@ -284,19 +293,32 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
     const ad = adBreakByDate.get(date) || {};
     const mk = (total, adPart) => (total != null ? Math.max(0, total - (adPart ?? 0)) : null);
     const fd = finByDate.get(date);
+    // dayRevenue/dayCost — ИНФОРМАЦИОННЫЕ (finance_report/wbFinanceByDay +
+    // wbUnitCost), задача 6 плана «канон волна 2» их НЕ трогает — только
+    // profit ниже переезжает на order_costs-канон.
     const dayRevenue = fd ? fd.salesRub : null;
-    // forPay (ppvz_for_pay) — ЭТАЛОН выручки для profit (урок D15). Для витрины dayRevenue
-    // показываем salesRub, но налог и profit считаем от forPay.
-    const dayForPay = fd ? (fd.forPay || 0) : null;
     const daySold = salesDayByDate.has(date) ? salesDayByDate.get(date) : null;
     const dayCost = (fd && daySold != null) ? Math.round(((unitCost ?? 0) * daySold) * 100) / 100 : null;
-    const dayAdSp = Math.round(((e.spend || 0) + (ru.spend || 0) + (cl.spend || 0)) * 100) / 100;
-    const dayProfit = (fd && dayForPay != null && dayForPay > 0)
-      ? Math.round((dayForPay - (fd.logistics || 0) - (dayCost || 0) - dayAdSp
-          - calcTotalTax(taxMode, dayForPay,
-              (fd.logistics || 0) + (dayCost || 0) + dayAdSp
-            ).total) * 100) / 100
-      : null;
+    // Дневной канон (задача 6 «канон волна 2»): rawDay — order_costs-агрегат
+    // ЭТОГО дня (wbRawProfitByDay, ТЕ ЖЕ поля, что скаляр wbRawProfitAggregate).
+    // adDayCanon — daily_metrics.ad_spend (ТОТ ЖЕ источник, что суммирует
+    // скалярный wbAdTotal(nmId) — см. докстроку wbAdTotal), НЕ Σ 3 моделей
+    // daily_ad (ad_edinaya/ad_ruchnaya/ad_cliki_spend ниже в day — отдельный
+    // информационный ряд, дальше не трогается). expenses дня = cogs+logistics+ads (WB-налоговая база,
+    // commission/acquiring/loyalty уже внутри revenue=cost_value_pay — см.
+    // докстроку wbProfitProduct). profit дня = rawProfit дня − ad дня − tax
+    // дня. Σ profit(день) = wbProfitProduct(period, nm).profit ТОЧНО
+    // (usn_income линеен по выручке) — проверка №7 check-profit-canon.mjs.
+    // ⚠️ profit СЧИТАЕТСЯ ВСЕГДА (не только когда rawDay есть) — симметрично
+    // Ozon: реклама по nm_id не всегда совпадает с днями продаж, day.profit
+    // не должен быть null (иначе ad_spend такого дня выпадает из Σ по дням
+    // невозвратно — та же находка проверки №7, что у Ozon).
+    const rawZeroWb = { revenue: 0, cogs: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, rawProfit: 0, returnLogistics: 0 };
+    const rawDay = rawByDay.get(date) || rawZeroWb;
+    const adDayCanon = m.ad_spend ?? 0;
+    const dayExpensesCanon = rawDay.cogs + rawDay.logistics + adDayCanon;
+    const taxDayCanon = calcTotalTax(taxMode, rawDay.revenue, dayExpensesCanon).total;
+    const dayProfit = Math.round((rawDay.rawProfit - adDayCanon - taxDayCanon) * 100) / 100;
     const ordersTotal = ordersCountByDate.has(date) ? ordersCountByDate.get(date) : null;
     const clicksTotal = m.clicks ?? null;
     const cartTotal = m.cart ?? null;
@@ -502,19 +524,13 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // что и раньше (daily_metrics.ad_spend), теперь реально заполнен по SKU.
   const finPeriod = await ozProfitProduct(db, taxMode, { from, to }, nm);
 
-  // Динамика по дням.
-  const profitByDay = new Map();
-  for (const r of await db.prepare(
-    `SELECT substr(sale_dt,1,10) AS d, SUM(profit) AS p FROM order_costs WHERE product_id = ? AND sale_dt IS NOT NULL AND substr(sale_dt,1,10) >= ? AND substr(sale_dt,1,10) <= ? AND is_return = 0 GROUP BY substr(sale_dt,1,10)`
-  ).all(nm, from, to)) {
-    profitByDay.set(r.d, Math.round((r.p || 0) * 100) / 100);
-  }
-  const revenueByDay = new Map();
-  for (const r of await db.prepare(
-    `SELECT substr(sale_dt,1,10) AS d, SUM(cost_value_retail * qty) AS s FROM order_costs WHERE product_id = ? AND sale_dt IS NOT NULL AND substr(sale_dt,1,10) >= ? AND substr(sale_dt,1,10) <= ? AND is_return = 0 GROUP BY substr(sale_dt,1,10)`
-  ).all(nm, from, to)) {
-    revenueByDay.set(r.d, Math.round((r.s || 0) * 100) / 100);
-  }
+  // Динамика по дням — КАНОН (задача 6 плана «канон волна 2», 2026-08-25):
+  // ozRawProfitByDay — ТОТ ЖЕ SELECT, что скалярный агрегат ozProfitProduct
+  // (order_costs БЕЗ фильтра is_return — возвраты настоящий убыток, см.
+  // докстроку ozRawProfitAggregate), GROUP BY день. Заменяет старые ручные
+  // by-day SQL (SUM(profit)/SUM(revenue) С фильтром is_return=0) и
+  // приближение «rev−gross≈расходы» — см. композицию profit(день) ниже.
+  const rawByDay = await ozRawProfitByDay(db, { from, to, productId: nm });
   const soldByDay = new Map();
   for (const r of await db.prepare(
     `SELECT substr(sale_dt,1,10) AS d, COUNT(*) AS cnt FROM order_costs WHERE product_id = ? AND sale_dt IS NOT NULL AND substr(sale_dt,1,10) >= ? AND substr(sale_dt,1,10) <= ? AND is_return = 0 GROUP BY substr(sale_dt,1,10)`
@@ -544,14 +560,33 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   const days = dateList.map((date) => {
     const m = dayMap.get(date) || {};
     const price = m.price ?? p.price ?? null;
-    const rev = revenueByDay.has(date) ? revenueByDay.get(date) : null;
-    const grossDay = profitByDay.has(date) ? profitByDay.get(date) : null;
+    const rawDay = rawByDay.get(date) || null;
+    const rev = rawDay ? rawDay.revenue : null;
+    // adDay — daily_metrics.ad_spend товара (ТОТ ЖЕ источник, что суммирует
+    // скалярный ozAdSpend(productId) — миграция 043/ozon_daily_sku_ad, см.
+    // докстроку ozAdSpend в lib/ozonMetrics.js); Σ adDay по дням периода =
+    // ads периодного канона (finPeriod.ads) — точный дневной ряд, не
+    // распределение задним числом.
     const adDay = m.ad_spend ?? 0;
-    // Расходы дня для базы УСН = (выручка − grossDay) + реклама. grossDay уже
-    // содержит комиссию/логистику/себест (profitGross), значит rev−grossDay ≈ расходы.
-    const dayExpenses = rev != null ? Math.max(0, rev - (grossDay ?? 0)) + adDay : 0;
-    const taxDay = rev != null ? calcTotalTax(taxMode, rev, dayExpenses).total : 0;
-    const profit = grossDay != null ? Math.round((grossDay - adDay - taxDay) * 100) / 100 : null;
+    // Дневной канон (задача 6 плана «канон волна 2»): expenses дня — ТЕ ЖЕ
+    // слагаемые, что скаляр ozProfitProduct (cogs+commission+logistics+
+    // acquiring+loyalty+ads); tax дня = calcTotalTax на дневных
+    // revenue/expenses; profit дня = rawProfit дня − ad дня − tax дня.
+    // Σ profit(день) = ozProfitProduct(period, nm).profit ТОЧНО (usn_income
+    // линеен по выручке) — проверка №7 check-profit-canon.mjs.
+    // ⚠️ profit СЧИТАЕТСЯ ВСЕГДА (не только когда rawDay есть): Ozon
+    // per-SKU-реклама (ozon_daily_sku_ad) НЕ всегда совпадает с днями продаж
+    // — товар может рекламироваться в день без единой продажи. Если бы
+    // profit оставался null на такой день (как в старом коде), ad_spend
+    // этого дня выпадал бы из Σ по дням НЕВОЗВРАТНО (найдено проверкой №7
+    // check-profit-canon.mjs: реальное расхождение до 1 193 ₽ на одном
+    // товаре кабинета 1, июль-2026 — 5 ad-дней при 1 дне с order_costs).
+    // rawZero — нулевая форма agg (нет продаж/возвратов в этот день).
+    const rawZero = { revenue: 0, cogs: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0, rawProfit: 0, returnLogistics: 0 };
+    const raw = rawDay || rawZero;
+    const dayExpenses = raw.cogs + raw.commission + raw.logistics + raw.acquiring + raw.loyalty + adDay;
+    const taxDay = calcTotalTax(taxMode, raw.revenue, dayExpenses).total;
+    const profit = Math.round((raw.rawProfit - adDay - taxDay) * 100) / 100;
     const fb = fbHistNm.get(date);
     const ratingNm = fb ? fb.rating : null;
     if (ratingNm != null) lastRating = ratingNm;

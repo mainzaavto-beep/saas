@@ -106,6 +106,17 @@
 //      исполняют один и тот же SQL-агрегат (скаляр — WHERE product_id = ?,
 //      batch — GROUP BY product_id), расхождение возможно только при
 //      разъехавшейся реализации (регресс), не при округлении.
+//   7. Дневной канон (задача 6 плана «канон волна 2», 2026-08-25): для ДО 3
+//      товаров с продажами в периоде (или всех, если товаров < 3) — Σ
+//      profit(день), посчитанная той же композицией, что теперь использует
+//      detail-роут (app/api/cabinets/[id]/detail/route.js, collectOzon):
+//      ozRawProfitByDay(productId) [тот же SELECT, что скалярный агрегат,
+//      GROUP BY день] + adDay [daily_metrics.ad_spend по (product_id,date) —
+//      ТОТ ЖЕ источник, что суммирует ozAdSpend(productId)] → profit(день) =
+//      rawProfit(день) − ad(день) − calcTotalTax(день).total — сравнивается
+//      со скалярным ozProfitProduct(period, productId).profit, допуск
+//      0,05 ₽ (usn_income линеен по выручке ⇒ Σtax(день) = tax(период) точно,
+//      допуск шире базового только на случай накопленных round2 по дням).
 //
 // ═══════════════════════ WB-СЕКЦИЯ (задача 2) ═══════════════════════
 // Симметричные проверки против lib/wbMetrics.js::wbProfitProduct/
@@ -144,6 +155,14 @@
 //      wbProfitProductBatch(period).get(nm_id) покомпонентно = wbProfitProduct
 //      (period, nm_id) на 5 случайных nm_id (или всех, если nm < 5), допуск
 //      0,01 ₽.
+//   7. Дневной канон (задача 6 плана «канон волна 2») — симметрично Ozon п.7:
+//      для ДО 3 nm_id с продажами (или всех, если < 3) — Σ profit(день), той
+//      же композицией, что теперь использует detail-роут (collectWB):
+//      wbRawProfitByDay(nmId) + adDay [daily_metrics.ad_spend по (nm_id,date),
+//      ТОТ ЖЕ источник, что wbAdTotal(nmId)] → profit(день) = rawProfit(день)
+//      − ad(день) − calcTotalTax(день, база=cogs+logistics+ads).total,
+//      сравнивается со скалярным wbProfitProduct(period, nmId).profit,
+//      допуск 0,05 ₽.
 //   ℹ️ (не пронумерованная проверка, только информационная строка): is_return
 //      НЕ фильтруется — независимая проверка №1 явно НЕ добавляет "AND
 //      is_return=0"; отдельно выводится строка «что было бы, если» — это
@@ -164,8 +183,8 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 }
 
 const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
-const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch } = await import('../lib/ozonMetrics.js');
-const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch } = await import('../lib/wbMetrics.js');
+const { ozProfitProduct, ozProfitCabinet, ozProfitProductBatch, ozRawProfitByDay } = await import('../lib/ozonMetrics.js');
+const { wbProfitProduct, wbProfitCabinet, wbProfitProductBatch, wbRawProfitByDay } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
 function parseArgs(argv) {
@@ -278,6 +297,42 @@ async function runOzonChecks() {
       batchVsScalar.push({ id, batch: batchMap.get(id), scalar });
     }
 
+    // ── Проверка №7 (задача 6 плана «канон волна 2»): дневной канон Σ =
+    // скаляр — до 3 product_id с продажами (или все, если товаров < 3), та
+    // же композиция, что теперь использует detail-роут (collectOzon):
+    // ozRawProfitByDay(productId) + adDay [daily_metrics.ad_spend по
+    // (product_id,date), ТОТ ЖЕ источник, что суммирует ozAdSpend(productId)]
+    // → profit(день) = rawProfit(день) − ad(день) − calcTotalTax(день).total. ──
+    const dailyCheckIds = productRows.slice(0, 3).map((r) => r.product_id);
+    const dailyChecks = [];
+    for (const productId of dailyCheckIds) {
+      const scalar = await ozProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, productId);
+      const rawByDay = await ozRawProfitByDay(db, { from: FROM, to: TO, productId });
+      const adRows = await db
+        .prepare(
+          `SELECT date::text AS d, ad_spend FROM daily_metrics
+           WHERE product_id = ? AND date::text >= ? AND date::text <= ? AND ad_spend IS NOT NULL`
+        )
+        .all(productId, FROM, TO);
+      const adByDate = new Map(adRows.map((r) => [r.d, r.ad_spend]));
+      // ⚠️ Союз дат rawByDay∪adByDate (НЕ только rawByDay!) — товар может
+      // рекламироваться в день без единой продажи (ozon_daily_sku_ad не
+      // синхронизирован с order_costs). Итерация только по rawByDay теряла
+      // бы ad_spend таких дней целиком — та же находка, что заставила
+      // route-код (collectOzon) считать profit БЕЗУСЛОВНО на каждый день.
+      const rawZero = { revenue: 0, cogs: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0, rawProfit: 0 };
+      const allDates = new Set([...rawByDay.keys(), ...adByDate.keys()]);
+      let sumDaily = 0;
+      for (const d of allDates) {
+        const raw = rawByDay.get(d) || rawZero;
+        const adDay = adByDate.get(d) || 0;
+        const expenses = raw.cogs + raw.commission + raw.logistics + raw.acquiring + raw.loyalty + adDay;
+        const taxDay = calcTotalTax(taxMode, raw.revenue, expenses).total;
+        sumDaily += raw.rawProfit - adDay - taxDay;
+      }
+      dailyChecks.push({ id: productId, scalarProfit: scalar.profit, sumDaily: Math.round(sumDaily * 100) / 100 });
+    }
+
     return {
       profitProduct, profitCabinet,
       productCount: productRows.length,
@@ -286,6 +341,7 @@ async function runOzonChecks() {
       sumByProductAds: Math.round(sumByProductAds * 100) / 100,
       productIds: productRows.map((r) => r.product_id),
       batchVsScalar,
+      dailyChecks,
     };
   });
 
@@ -464,6 +520,27 @@ async function runOzonChecks() {
     );
   }
   console.log('');
+
+  // ── Проверка №7 (задача 6 плана «канон волна 2»): дневной канон Σ =
+  // скаляр — до 3 product_id с продажами (или все, если товаров < 3, см.
+  // canon.dailyChecks выше). ──
+  {
+    let worstDiff = 0;
+    let worstId = null;
+    let allOk = true;
+    for (const { id, scalarProfit, sumDaily } of canon.dailyChecks) {
+      const diff = Math.abs(sumDaily - scalarProfit);
+      if (diff > PRODUCT_SUM_TOL) allOk = false;
+      if (diff >= worstDiff) { worstDiff = diff; worstId = id; }
+      console.log(`  product_id=${id}: скаляр=${fmtRub(scalarProfit)}, Σ дней=${fmtRub(sumDaily)}, Δ=${fmtRub(sumDaily - scalarProfit)}`);
+    }
+    verdict(
+      'дневной канон: Σ profit(день) [ozRawProfitByDay + ads(день) + tax(день)] = ozProfitProduct(period, id).profit',
+      allOk,
+      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}${worstId != null ? ` (product_id=${worstId})` : ''}`
+    );
+  }
+  console.log('');
 }
 
 // ═════════════════════════════ WB ═════════════════════════════
@@ -522,6 +599,41 @@ async function runWbChecks() {
       batchVsScalar.push({ id, batch: batchMap.get(id), scalar });
     }
 
+    // ── Проверка №7 (задача 6 плана «канон волна 2», симметрично Ozon):
+    // дневной канон Σ = скаляр — до 3 nm_id с продажами (или все, если nm в
+    // периоде < 3), та же композиция, что теперь использует detail-роут
+    // (collectWB): wbRawProfitByDay(nmId) + adDay [daily_metrics.ad_spend по
+    // (nm_id,date), ТОТ ЖЕ источник, что суммирует wbAdTotal(nmId)] →
+    // profit(день) = rawProfit(день) − ad(день) − calcTotalTax(день,
+    // база=cogs+logistics+ads).total. ──
+    const dailyCheckIds = nmRows.slice(0, 3).map((r) => r.nm_id);
+    const dailyChecks = [];
+    for (const nmId of dailyCheckIds) {
+      const scalar = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, nmId);
+      const rawByDay = await wbRawProfitByDay(db, { from: FROM, to: TO, nmId });
+      const adRows = await db
+        .prepare(
+          `SELECT date::text AS d, ad_spend FROM daily_metrics
+           WHERE date >= ? AND date <= ? AND nm_id = ? AND ad_spend IS NOT NULL`
+        )
+        .all(FROM, TO, nmId);
+      const adByDate = new Map(adRows.map((r) => [r.d, r.ad_spend]));
+      // ⚠️ Союз дат rawByDay∪adByDate — симметрично Ozon-версии выше (nm_id
+      // может рекламироваться в день без продажи, wb_daily_metrics не
+      // синхронизирован с order_costs).
+      const rawZero = { revenue: 0, cogs: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, rawProfit: 0 };
+      const allDates = new Set([...rawByDay.keys(), ...adByDate.keys()]);
+      let sumDaily = 0;
+      for (const d of allDates) {
+        const raw = rawByDay.get(d) || rawZero;
+        const adDay = adByDate.get(d) || 0;
+        const expenses = raw.cogs + raw.logistics + adDay;
+        const taxDay = calcTotalTax(taxMode, raw.revenue, expenses).total;
+        sumDaily += raw.rawProfit - adDay - taxDay;
+      }
+      dailyChecks.push({ id: nmId, scalarProfit: scalar.profit, sumDaily: Math.round(sumDaily * 100) / 100 });
+    }
+
     return {
       profitProduct, profitCabinet,
       nmCount: nmRows.length,
@@ -530,6 +642,7 @@ async function runWbChecks() {
       sumByNmAds: Math.round(sumByNmAds * 100) / 100,
       nmIds: nmRows.map((r) => r.nm_id),
       batchVsScalar,
+      dailyChecks,
     };
   });
 
@@ -717,6 +830,27 @@ async function runWbChecks() {
       'инвариант batch ≡ скаляр: wbProfitProductBatch(period).get(nm_id) = wbProfitProduct(period, nm_id) покомпонентно',
       allOk,
       `проверено ${canon.batchVsScalar.length} товаров, макс |Δ| по полю ${worstField ?? '—'} = ${fmtRub(worstDiff)}${worstId != null ? ` (nm_id=${worstId})` : ''}`
+    );
+  }
+  console.log('');
+
+  // ── Проверка №7 (задача 6 плана «канон волна 2», симметрично Ozon):
+  // дневной канон Σ = скаляр — до 3 nm_id с продажами (или все, если nm в
+  // периоде < 3, см. canon.dailyChecks выше). ──
+  {
+    let worstDiff = 0;
+    let worstId = null;
+    let allOk = true;
+    for (const { id, scalarProfit, sumDaily } of canon.dailyChecks) {
+      const diff = Math.abs(sumDaily - scalarProfit);
+      if (diff > PRODUCT_SUM_TOL) allOk = false;
+      if (diff >= worstDiff) { worstDiff = diff; worstId = id; }
+      console.log(`  nm_id=${id}: скаляр=${fmtRub(scalarProfit)}, Σ дней=${fmtRub(sumDaily)}, Δ=${fmtRub(sumDaily - scalarProfit)}`);
+    }
+    verdict(
+      'дневной канон: Σ profit(день) [wbRawProfitByDay + ads(день) + tax(день)] = wbProfitProduct(period, nm_id).profit',
+      allOk,
+      `проверено ${canon.dailyChecks.length} товаров, макс |Δ| = ${fmtRub(worstDiff)}${worstId != null ? ` (nm_id=${worstId})` : ''}`
     );
   }
   console.log('');
