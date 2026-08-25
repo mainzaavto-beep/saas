@@ -270,7 +270,17 @@ export default function OverviewClient({ cabinetId }) {
                 <Table head={["Товар", "Прибыль"]}>
                   {data.alerts.lossMakers.map((t) => (
                     <tr key={t.nm_id}>
-                      <Td>{t.name || t.nm_id}</Td>
+                      <Td>
+                        {t.name || t.nm_id}
+                        {t.costMissing ? (
+                          <span
+                            title="Себестоимость не заведена — прибыль по этому товару занижена в расчёте"
+                            style={{ marginLeft: 6, fontSize: 9, padding: "1px 5px", borderRadius: 3, background: soft("warn", 13), color: C.warn, fontWeight: 700 }}
+                          >
+                            без себеса
+                          </span>
+                        ) : null}
+                      </Td>
                       <Td right style={{ color: C.neg }}>{money(t.profit)}</Td>
                     </tr>
                   ))}

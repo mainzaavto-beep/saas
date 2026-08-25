@@ -5,10 +5,10 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import {
   wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet, wbRevenueGross,
-  wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay,
+  wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay, wbProfitProductBatch,
 } from "@/lib/wbMetrics.js";
 import { ozOrdersByDay, ozProfitCabinet } from "@/lib/ozonMetrics.js";
-import { calcTotalTax, normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
+import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -156,53 +156,53 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   let noCogsCount = 0;
   if (mp !== "ozon" && mps.includes('wb')) {
     const db = new DatabaseSync('wb', { readOnly: true });
-    const lmFin = await db.prepare(
-      `SELECT s.nm_id,
-         SUM(s.retail_price_withdisc_rub) AS salesRub,
-         SUM(s.commission_percent * s.retail_price_withdisc_rub / 100.0) AS commission,
-         SUM(s.acquiring_fee) AS acquiring,
-         SUM(s.ppvz_for_pay) AS forPay,
-         SUM(s.quantity) AS qty
-       FROM finance_report s
-       WHERE s.supplier_oper_name='Продажа' AND s.nm_id > 0
-         AND s.rr_dt >= ? AND s.rr_dt <= ?
-       GROUP BY s.nm_id`
-    ).all(from, toEnd);
-    const lmLog = await db.prepare(
-      `SELECT nm_id, SUM(delivery_rub) AS logistics FROM finance_report
-       WHERE supplier_oper_name='Логистика' AND nm_id > 0
-         AND rr_dt >= ? AND rr_dt <= ? GROUP BY nm_id`
-    ).all(from, toEnd);
-    const lmAd = await db.prepare(
-      `SELECT nm_id, COALESCE(SUM(ad_spend),0) AS ad FROM daily_metrics
-       WHERE date >= ? AND date <= ? AND ad_spend IS NOT NULL GROUP BY nm_id`
-    ).all(from, to);
-    const lmLogMap = {}, lmAdMap = {}, lmCost = {}, lmName = {};
-    for (const r of lmLog) lmLogMap[r.nm_id] = r.logistics || 0;
-    for (const r of lmAd) lmAdMap[r.nm_id] = r.ad || 0;
-    for (const r of await db.prepare(
-      `SELECT DISTINCT ON (nm_id) nm_id, cost FROM tenant.cost_overrides
-       WHERE platform = 'wb' AND cost > 0
-         AND effective_from <= current_date
-       ORDER BY nm_id, effective_from DESC`
-    ).all()) lmCost[r.nm_id] = r.cost;
+
+    // lossMakers — КАНОН (задача 5 плана «канон волна 2», 2026-08-25). Раньше
+    // здесь был отдельный ad-hoc пересчёт (finance_report/логистика/реклама/
+    // cost_overrides, формула на ppvz_for_pay) — дубль формулы канона со
+    // своим списком багов. Теперь источник — wbProfitProductBatch, тот же
+    // канон, что /summary и /rnp-summary: кандидаты = записи Map с
+    // profit < 0 за тот же период, сортировка по возрастанию profit, top-5.
+    //
+    // СОСТАВ ВИДЖЕТА МЕНЯЕТСЯ (ожидаемо, задокументировано для владельца):
+    //  1) канон-база — ppvz_for_pay через order_costs (wbRawProfitAggregate),
+    //     а не собственная агрегация finance_report — числа по общим товарам
+    //     отличаются от старых (другой источник, другой набор слагаемых);
+    //  2) товары БЕЗ строки в cost_overrides раньше .filter()-ом молча
+    //     выпадали из списка целиком (виджет «нет убыточных» на деле часто
+    //     означал «не знаем себестоимость» — false negative). Теперь такие
+    //     товары остаются кандидатами (canon.cogs для них = 0, значит
+    //     profit завышен относительно реальности) и помечаются
+    //     costMissing: true — честнее, но требует бейджа в UI (шаг 2).
+    const profitBatch = await wbProfitProductBatch(db, wbTax, { from, to });
+    const lmName = {};
     for (const r of await db.prepare("SELECT nm_id, name FROM articles").all()) lmName[r.nm_id] = r.name;
-    lossMakers = lmFin
-      .filter((f) => lmCost[f.nm_id] != null)
-      .map((f) => {
-        // Модель ppvz_for_pay (урок D15): forPay уже включает комиссию/эквайринг/лояльность,
-        // их НЕ вычитаем. Только логистика (отдельная операция) + себест + реклама + налог.
-        const forPay = f.forPay || 0;
-        const costRub = (lmCost[f.nm_id] || 0) * (f.qty || 0);
-        const itemExpenses = (lmLogMap[f.nm_id] || 0) + (lmAdMap[f.nm_id] || 0) + costRub;
-        const tax = calcTotalTax(wbTax, forPay, itemExpenses).total;
-        const profit = forPay - itemExpenses - tax;
-        return { nm_id: f.nm_id, name: lmName[f.nm_id] || String(f.nm_id),
-                 profit: Math.round(profit * 100) / 100 };
-      })
-      .filter((x) => x.profit < 0)
-      .sort((a, b) => a.profit - b.profit)
+
+    const candidates = [...profitBatch.entries()]
+      .filter(([, f]) => f.profit < 0)
+      .sort((a, b) => a[1].profit - b[1].profit)
       .slice(0, 5);
+
+    // costMissing — ОДИН batch-SQL по множеству nm кандидатов (не N+1):
+    // true, если для nm нет актуальной строки cost_overrides (cost > 0,
+    // effective_from <= сегодня) — та же логика, что раньше отсекала товар
+    // целиком, теперь только помечает.
+    const candIds = candidates.map(([nm]) => nm);
+    const withCost = new Set();
+    if (candIds.length > 0) {
+      for (const r of await db.prepare(
+        `SELECT DISTINCT nm_id FROM tenant.cost_overrides
+         WHERE platform = 'wb' AND cost > 0 AND effective_from <= current_date
+           AND nm_id = ANY($1::bigint[])`
+      ).all(candIds)) withCost.add(r.nm_id);
+    }
+
+    lossMakers = candidates.map(([nm, f]) => ({
+      nm_id: nm,
+      name: lmName[nm] || String(nm),
+      profit: f.profit,
+      costMissing: !withCost.has(nm),
+    }));
 
     lowStock = await db.prepare(
       `WITH last_stock AS (
