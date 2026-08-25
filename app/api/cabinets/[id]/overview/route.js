@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { defaultPeriod } from "@/lib/period.js";
 import {
   wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet, wbRevenueGross,
   wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay, wbProfitProductBatch,
@@ -127,9 +128,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   const fromQ = url.searchParams.get("from") || "";
   const toQ = url.searchParams.get("to") || "";
-  // Дефолт: последние 30 дней от сегодня (упрощено для SaaS).
-  const to = toQ || new Date().toISOString().slice(0, 10);
-  const from = fromQ || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const def = defaultPeriod(30);
+  const to = toQ || def.to;
+  const from = fromQ || def.from;
   const toEnd = to + "T23:59:59";
 
   // Налоговый режим на каждый МП (per shop / per legal entity).
