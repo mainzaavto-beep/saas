@@ -233,7 +233,7 @@ export default function OverviewClient({ cabinetId }) {
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 3fr)", gap: 20, marginBottom: 22, alignItems: "start" }}>
             {/* Левая колонка — KPI-плашки */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-              <Kpi label="Чистая прибыль" value={money(data.kpi.grossProfit)} pos={data.kpi.grossProfit >= 0} primary />
+              <Kpi label="Чистая прибыль" value={money(data.kpi.profit)} pos={data.kpi.profit >= 0} primary />
               <Kpi label="Заказы, ₽" value={money(data.kpi.orderRub)} />
               <Kpi label="Выручка (продажи)" value={money(data.kpi.revenue)} accent />
               <Kpi label="Маржа" value={pct(data.kpi.margin)} pos={data.kpi.margin >= 0} />

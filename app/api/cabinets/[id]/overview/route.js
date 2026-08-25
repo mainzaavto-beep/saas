@@ -197,6 +197,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       ).all(candIds)) withCost.add(r.nm_id);
     }
 
+    // Допущение: costMissing = «нет строки в cost_overrides» — тот же
+    // предикат, каким старый код молча отсекал товар. Слепое пятно (строка
+    // заведена ПОЗЖЕ периода продаж → cogs=0 при costMissing=false)
+    // существовало и раньше; теперь товар хотя бы виден.
     lossMakers = candidates.map(([nm, f]) => ({
       nm_id: nm,
       name: lmName[nm] || String(nm),
@@ -331,7 +335,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // revenueGross — справочно (только WB-часть, см. докстроку zeroKpi выше).
       revenueGross: Math.round(k.revenueGross * 100) / 100,
       netPay: Math.round(k.netPay * 100) / 100,
-      grossProfit: k.profit,
+      // profit — полная каноническая прибыль (после рекламы и налога).
+      // До волны 3 поле звалось grossProfit и коллидировало с
+      // pnl.grossProfit (валовая ДО рекламы/налога) — одно имя, две разные
+      // величины; переименовано в честное.
+      profit: k.profit,
       margin,
       cogsSold: Math.round(k.costRub * 100) / 100,
       adSpend: Math.round(k.adSp * 100) / 100,
