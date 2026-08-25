@@ -35,6 +35,16 @@ unit_number напрямую — иначе потребители, джойня
 резолв привёл бы к коллизии ключа с ней, см. комментарий у
 exact_unit_numbers в collect()).
 
+Статья «Сборы Ozon» (задача 1 плана «статья Сборы Ozon», 2026-08-25,
+docs/superpowers/specs/2026-08-25-ozon-services-line-design.md, миграция
+045): позаказные ITEM-типы сервисов (отзывы/рассрочка/упаковка/размещение/
+утилизация и пр. — worker.collectors.ozon_profit_map.PER_ORDER_SERVICE_TYPE_IDS)
+и незнакомые позаказные типы (копилка «прочие сборы») классифицируются
+бакетом 'services', отдельным от 'logistics' — раньше маскировались под
+логистику (находка владельца: FirstCustomerReview 1 813 ₽ выглядел
+«космической логистикой» отправления 50588097-1427-1). 'logistics' теперь
+строго перевозка/обработка отправлений и возвратов (POSTING-типы).
+
 NON_ITEM-начисления (расходы уровня кабинета, unit_number всегда NULL —
 см. докстрину ozon_accruals.py) классифицируются той же функцией:
 корзина 'cabinet' → дневной агрегат в tenant.ozon_cabinet_costs
@@ -48,9 +58,10 @@ shared.ozon_accrual_types); корзина 'promo' → НЕ пишется (за
 + русский лог + exit-код 3 по образцу ozon_accruals.py::partial_exit_code;
 строки при этом всё равно пишутся — падение по СИГНАЛУ, не по данным):
   - согласованность компонент на каждом отправлении: cost_value_retail −
-    commission − logistics − acquiring − loyalty == SUM(accrued строк этого
-    отправления) — ЗНАКОВОЕ вычитание (компоненты уже несут знак после
-    build_order_costs, не abs()) — см. build_order_costs.consistency_ok;
+    commission − services − logistics − acquiring − loyalty == SUM(accrued
+    строк этого отправления) — ЗНАКОВОЕ вычитание (компоненты уже несут
+    знак после build_order_costs, не abs()) — см.
+    build_order_costs.consistency_ok;
   - инвариант периода: SUM(accrued всех прочитанных строк начислений) ==
     SUM(accrued строк, попавших в order_costs) + SUM(accrued кабинетных
     строк, включая promo) — если что-то не разнеслось нигде, расхождение
@@ -332,9 +343,9 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     гарантий стабильности порядка нет). v1 вёл себя так же (брал
     product_id первой попавшейся строки/последней строки ozon_orders при
     dict-перезаписи) — это не регресс, а тот же класс упрощения, что и
-    раньше. cost_value_retail/commission/logistics/acquiring/loyalty —
-    ДЕНЕЖНЫЕ суммы отправления ЦЕЛИКОМ (не одного SKU), поэтому финансово
-    корректны независимо от того, чей product_id записан.
+    раньше. cost_value_retail/commission/services/logistics/acquiring/
+    loyalty — ДЕНЕЖНЫЕ суммы отправления ЦЕЛИКОМ (не одного SKU), поэтому
+    финансово корректны независимо от того, чей product_id записан.
 
     Возвращает None только если accrual_rows пуст (нечего группировать —
     вызывающий код в collect() такого не передаёт по конструкции). Строки без
@@ -368,6 +379,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     # по ВСЕМ commission-строкам — тот же приём, что уже применялся к
     # logistics/acquiring/loyalty через `+=` по всем строкам корзины.
     commission_rows = []
+    services_raw = 0.0
     logistics_raw = 0.0
     acquiring_raw = 0.0
     loyalty_raw = 0.0
@@ -386,9 +398,14 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
             acquiring_raw += _num(r.get("accrued"))
         elif bucket == "loyalty":
             loyalty_raw += _num(r.get("accrued"))
-        else:  # 'logistics' — в т.ч. незнакомые позаказные типы ("прочее",
-               # чтобы роуты панели, вычитающие logistics целиком, ничего не
-               # потеряли молча, см. докстроку ozon_profit_map.py)
+        elif bucket == "services":
+            services_raw += _num(r.get("accrued"))
+        else:  # 'logistics' — строго перевозка/обработка отправлений и
+               # возвратов (см. ozon_profit_map.PER_ORDER_LOGISTICS_TYPE_IDS).
+               # Незнакомые позаказные типы больше НЕ сюда — они в 'services'
+               # (копилка «прочие сборы», known=False), чтобы роуты панели,
+               # вычитающие logistics целиком, по-прежнему ничего не теряли
+               # молча (см. докстроку ozon_profit_map.py).
             logistics_raw += _num(r.get("accrued"))
         if type_id in RETURN_TYPE_IDS:
             return_dates.append(_row_date(r.get("date")))
@@ -533,6 +550,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
                 immature = True
 
     commission_sum = round(-commission_raw, 2)
+    services_sum = round(-services_raw, 2)
     logistics_sum = round(-logistics_raw, 2)
     acquiring_sum = round(-acquiring_raw, 2)
     loyalty_sum = round(-loyalty_raw, 2)
@@ -608,7 +626,8 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
     sum_accrued = round(sum(_num(r.get("accrued")) for r in accrual_rows), 2)
     profit = round(sum_accrued - _num(cost), 2)
 
-    comps = round(cost_value_retail - commission_sum - logistics_sum - acquiring_sum - loyalty_sum, 2)
+    comps = round(cost_value_retail - commission_sum - services_sum - logistics_sum
+                  - acquiring_sum - loyalty_sum, 2)
     consistency_ok = abs(comps - sum_accrued) <= _CONSISTENCY_TOLERANCE
 
     # posting_number: резолвленный tenant.ozon_orders.posting_number (см.
@@ -633,6 +652,7 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
         "commission": round(commission_sum, 2),
         "acquiring": round(acquiring_sum, 2),
         "logistics": round(logistics_sum, 2),
+        "services": round(services_sum, 2),
         "loyalty": round(loyalty_sum, 2),
         "cost": round(cost, 2) if cost is not None else None,
         "qty": meta.get("qty") or 1,
@@ -921,11 +941,11 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                   f"но без даты", file=sys.stderr, flush=True)
         if not result["consistency_ok"]:
             mismatches += 1
-            comps = (result["cost_value_retail"] - result["commission"] - result["logistics"]
-                     - result["acquiring"] - result["loyalty"])
+            comps = (result["cost_value_retail"] - result["commission"] - result["services"]
+                     - result["logistics"] - result["acquiring"] - result["loyalty"])
             unit_sum = round(sum(_num(r.get("accrued")) for r in unit_rows), 2)
             print(f"  расхождение согласованности: posting_number={unit_number} "
-                  f"cost_value_retail-commission-logistics-acquiring-loyalty="
+                  f"cost_value_retail-commission-services-logistics-acquiring-loyalty="
                   f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
         result.pop("consistency_ok")
         if not result.pop("posting_number_resolved"):

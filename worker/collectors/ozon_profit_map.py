@@ -1,9 +1,10 @@
 """Классификация строк начислений Ozon по корзинам расчёта прибыли.
 
 Корзины позаказные (unit_number IS NOT NULL, has_unit=True): commission,
-logistics, acquiring, loyalty. Корзины уровня кабинета (unit_number IS
-NULL, has_unit=False): cabinet, promo. Незнакомое НЕ выбрасывается:
-позаказное -> logistics (known=False), кабинетное -> cabinet
+services, logistics, acquiring, loyalty. Корзины уровня кабинета
+(unit_number IS NULL, has_unit=False): cabinet, promo. Незнакомое НЕ
+выбрасывается: позаказное -> services (known=False, «прочие сборы» —
+статья «Сборы Ozon», волна 2026-08-25), кабинетное -> cabinet
 (known=False); вызывающий код логирует по флагу known.
 
 Откуда взяты перечни ниже — задача 1 плана «переезд финансов Ozon на
@@ -52,17 +53,28 @@ LOYALTY_TYPE_IDS = set()
 #   33 Marketing               "Рекламные услуги"     — реклама явным текстом в описании
 NONITEM_PROMO_TYPE_IDS = {41, 54, 33}
 
-# Позаказные сервисные типы (has_unit=True), кроме комиссии (type_id IS
-# NULL на POSTING) и эквайринга. По раскладке спеки колонка `logistics`
-# order_costs собирает ВСЕ позаказные сервисные строки отправления кроме
-# комиссии/эквайринга — поэтому сюда попадают не только POSTING-логистика
-# (32/29/98 + прочие позаказные POSTING-сервисы), но и ITEM-типы,
-# привязанные к конкретному sku/отправлению (упаковка, временное
-# размещение, рассрочка и т.п.) — в старой модели они выпадали из
-# прибыли молча (см. docs/ozon-accrual-reconciliation.md §4 "побочная
-# находка"), здесь явно попадают в logistics, чтобы не потеряться.
+# ITEM-типы позаказных СЕРВИСОВ (не перевозка): статья «Сборы Ozon».
+# До волны services (2026-08-25) жили в PER_ORDER_LOGISTICS_TYPE_IDS —
+# маскировались под логистику (находка владельца: FirstCustomerReview
+# 1 813 ₽ выглядел «космической логистикой» отправления 50588097-1427-1).
+PER_ORDER_SERVICE_TYPE_IDS = {
+    74,   # StarsMembership — звёздные товары
+    22,   # Installment — рассрочка
+    71,   # SellerReturns — вывоз товара со склада силами Ozon
+    116,  # FirstCustomerReview — сбор первых отзывов
+    79,   # TemporaryPlacementsAgent — временное размещение товара партнёрами
+    15,   # Disposal — утилизация
+    78,   # TemporaryPlacement — краткосрочное размещение возврата FBS
+    39,   # PackingFee — упаковка товара партнёрами
+    38,   # PackageCost — обеспечение материалами для упаковки товара
+}
+
+# Позаказные типы (has_unit=True), кроме комиссии (type_id IS NULL на
+# POSTING), эквайринга и сервисов (PER_ORDER_SERVICE_TYPE_IDS) — строго
+# перевозка/обработка отправлений и возвратов (11 POSTING-типов). Сервисы
+# и незнакомые позаказные типы больше сюда не попадают — см.
+# PER_ORDER_SERVICE_TYPE_IDS/бакет 'services' в classify_row.
 PER_ORDER_LOGISTICS_TYPE_IDS = {
-    # POSTING (11 типов, все — позаказные сервисы отправления)
     32,   # Logistic — логистика
     29,   # LastMileCourier — доставка до места выдачи
     98,   # DeliveryToHandoverPlaceByOzon — доставка до места выдачи силами Ozon
@@ -74,16 +86,6 @@ PER_ORDER_LOGISTICS_TYPE_IDS = {
     9,    # ClientReturn — обработка возвратов
     40,   # PartialReturn — обработка частичного невыкупа
     6,    # Cancellation — обработка отменённых и невостребованных товаров
-    # ITEM (9 типов, кроме 1=Acquiring — привязаны к sku/отправлению)
-    74,   # StarsMembership — звёздные товары (позаказный участник акции, не campaign ad_spend)
-    22,   # Installment — рассрочка
-    71,   # SellerReturns — вывоз товара со склада силами Ozon
-    116,  # FirstCustomerReview — сбор первых отзывов
-    79,   # TemporaryPlacementsAgent — временное размещение товара партнёрами
-    15,   # Disposal — утилизация
-    78,   # TemporaryPlacement — краткосрочное размещение возврата FBS
-    39,   # PackingFee — упаковка товара партнёрами
-    38,   # PackageCost — обеспечение материалами для упаковки товара
 }
 
 # NON_ITEM-типы уровня кабинета (has_unit=False), кроме продвижения
@@ -118,7 +120,7 @@ KNOWN_CABINET_TYPE_IDS = {
 
 
 def classify_row(category, type_id, has_unit):
-    """-> (bucket, known). bucket: commission|logistics|acquiring|loyalty|cabinet|promo.
+    """-> (bucket, known). bucket: commission|services|logistics|acquiring|loyalty|cabinet|promo.
 
     category — accrued_category строки ('POSTING'|'ITEM'|'NON_ITEM'),
     type_id — код типа операции (int|None), has_unit — есть ли у строки
@@ -134,4 +136,11 @@ def classify_row(category, type_id, has_unit):
         if type_id in NONITEM_PROMO_TYPE_IDS:
             return "promo", True
         return "cabinet", type_id in KNOWN_CABINET_TYPE_IDS
-    return "logistics", type_id in PER_ORDER_LOGISTICS_TYPE_IDS
+    if type_id in PER_ORDER_SERVICE_TYPE_IDS:
+        return "services", True
+    if type_id in PER_ORDER_LOGISTICS_TYPE_IDS:
+        return "logistics", True
+    # Незнакомый позаказный тип: копилка «прочие сборы» (до волны services —
+    # logistics). Незнакомое по-прежнему не теряется, но логистика больше
+    # не пухнет от чужих операций.
+    return "services", False

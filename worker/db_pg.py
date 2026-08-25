@@ -922,7 +922,7 @@ def upsert_ozon_campaign_ad_many(rows):
 # меняется, роуты панели о ней не знают.
 _OZ_OC_COLS = ["posting_number", "src_unit_number", "product_id", "size", "is_return", "order_dt",
                "sale_dt", "return_dt", "cost_value_retail", "commission", "acquiring", "logistics",
-               "loyalty", "cost", "qty", "profit", "self_buyout"]
+               "services", "loyalty", "cost", "qty", "profit", "self_buyout"]
 
 # Белый список коротких имён таблиц (без "tenant."), в которые допустимо писать
 # order_costs — задача 3 плана «переезд финансов Ozon на методы начислений»
