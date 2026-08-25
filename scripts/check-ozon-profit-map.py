@@ -42,7 +42,7 @@ sys.path.insert(0, REPO_ROOT)
 FIXTURE_DIR = os.path.join(REPO_ROOT, "scripts", "fixtures", "ozon-accruals")
 ACCRUALS_FIXTURE = os.path.join(FIXTURE_DIR, "accrual-by-day-2026-08-05-cab1.json")
 
-VALID_BUCKETS = {"commission", "logistics", "acquiring", "loyalty", "cabinet", "promo"}
+VALID_BUCKETS = {"commission", "services", "logistics", "acquiring", "loyalty", "cabinet", "promo"}
 
 failed = 0
 
@@ -161,13 +161,28 @@ def run_fixture_checks():
         check(f"classify_row(NON_ITEM, {tid}, has_unit=False) -> ('cabinet', True)",
               (bucket, known) == ("cabinet", True), (bucket, known))
 
-    # --- 5. Незнакомый выдуманный type_id.
+    # --- 5. Незнакомый выдуманный type_id. Позаказный (has_unit=True) — с
+    #        волны «Сборы Ozon» (2026-08-25) копилка НЕЗНАКОМОГО переехала
+    #        из 'logistics' в 'services' (ozon_profit_map.py:143-146) —
+    #        намеренное изменение этой волны, не регресс.
     bucket, known = classify_row("POSTING", 999999, True)
-    check("незнакомый type_id, has_unit=True -> ('logistics', False)",
-          (bucket, known) == ("logistics", False), (bucket, known))
+    check("незнакомый type_id, has_unit=True -> ('services', False)",
+          (bucket, known) == ("services", False), (bucket, known))
     bucket, known = classify_row("NON_ITEM", 999999, False)
     check("незнакомый type_id, has_unit=False -> ('cabinet', False)",
           (bucket, known) == ("cabinet", False), (bucket, known))
+
+    # --- 5b. Позитивные проверки бакета 'services' (задача 1 плана «Сборы
+    #         Ozon»): один известный сервисный ITEM-тип (116, FirstCustomerReview)
+    #         и один известный логистический POSTING-тип (32, Logistic) —
+    #         подтверждают, что PER_ORDER_SERVICE_TYPE_IDS/PER_ORDER_LOGISTICS_
+    #         TYPE_IDS не перепутаны местами.
+    bucket, known = classify_row("ITEM", 116, True)
+    check("classify_row(ITEM, 116, has_unit=True) -> ('services', True)",
+          (bucket, known) == ("services", True), (bucket, known))
+    bucket, known = classify_row("POSTING", 32, True)
+    check("classify_row(POSTING, 32, has_unit=True) -> ('logistics', True)",
+          (bucket, known) == ("logistics", True), (bucket, known))
 
     # --- 6. RETURN_TYPE_IDS — маркер возвратного отправления, не корзина:
     #        оба кода классифицируются в 'logistics' (позаказные POSTING-

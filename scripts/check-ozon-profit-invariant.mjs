@@ -276,7 +276,16 @@ function familyKeySql(col) {
 }
 const INVARIANT_SQL = `
 WITH order_part AS (
-  SELECT COALESCE(SUM(cost_value_retail - commission - logistics - acquiring - loyalty), 0) AS s,
+  -- services (миграция 045, статья «Сборы Ozon», волна 2026-08-25) — 6-е
+  -- слагаемое comps-инварианта, ФИЗИЧЕСКИ было внутри logistics ДО
+  -- бэкфилла задач 1-2 и вычиталось здесь неявно; после расщепления
+  -- колонки его нужно вычитать явно, иначе order_part систематически
+  -- завышен на Σservices окна (пост-ревью нашло перекос: 177 036,63 ₽ за
+  -- всю историю 1008 сборов) — profit колонки order_costs это НЕ трогает
+  -- (она считается сборщиком как SUM(accrued) − cost, см. docs/metrics-
+  -- contract.md §3.3 «Инвариант строки»), расходится только ЭТОТ
+  -- независимый пересчёт компонент.
+  SELECT COALESCE(SUM(cost_value_retail - commission - services - logistics - acquiring - loyalty), 0) AS s,
          count(*) AS n
   FROM tenant.ozon_order_costs
   WHERE cabinet_id = $1 AND COALESCE(sale_dt, return_dt) BETWEEN $2::text AND $3::text
@@ -441,15 +450,25 @@ const AD_SPEND_SQL = `
 //
 // Формула (ЗНАКОВАЯ, та же, что consistency_ok сборщика,
 // worker/collectors/ozon_order_costs.py::build_order_costs): cost_value_
-// retail − commission − logistics − acquiring − loyalty − SUM(accrued) — где
-// SUM(accrued) отправления/семьи ТОЖДЕСТВЕННО profit + COALESCE(cost, 0)
-// (profit = SUM(accrued) − cost, см. build_order_costs). profit САМ строится
-// из SUM(accrued), эта строка на profit не влияет — только на 5 денежных
-// КОМПОНЕНТ (cost_value_retail/commission/logistics/acquiring/loyalty),
-// которые несколько роутов панели (app/api/cabinets/[id]/overview,
-// products-summary, rnp-summary, plan/fact) складывают САМИ, а не читают
-// готовый profit — на этих 60 отправлениях их собственный пересчёт разойдётся
-// с профилем ровно на печатаемую сумму.
+// retail − commission − services − logistics − acquiring − loyalty −
+// SUM(accrued) — где SUM(accrued) отправления/семьи ТОЖДЕСТВЕННО profit +
+// COALESCE(cost, 0) (profit = SUM(accrued) − cost, см. build_order_costs).
+// profit САМ строится из SUM(accrued), эта строка на profit не влияет —
+// только на 6 денежных КОМПОНЕНТ (cost_value_retail/commission/services/
+// logistics/acquiring/loyalty), которые несколько роутов панели
+// (app/api/cabinets/[id]/overview, products-summary, rnp-summary, plan/fact)
+// складывают САМИ, а не читают готовый profit — на этих строках их
+// собственный пересчёт разойдётся с профилем ровно на печатаемую сумму.
+//
+// services добавлено в формулу класса пост-ревью волны «Сборы Ozon»
+// (2026-08-25, миграция 045 + бэкфилл задач 1-2 плана): колонка появилась
+// ПОСЛЕ того, как это class-SQL было написано (задача 3 плана «витрина
+// заказов») — без явного вычитания класс перестал означать «нарушители
+// comps-инварианта» и вместо ~60 ловил ВСЕ 10 341 строки с services≠0
+// (расщеплённая часть бывшей logistics, согласованная по построению).
+// С services в формуле класс снова измеряет РОВНО то же самое рассогласование,
+// что описано ниже (СТАБИЛЬНОСТЬ КЛАССА) — ожидаемое значение после фикса
+// снова ~60, а не 10 341.
 //
 // МЕХАНИЗМ (разбор задачи 3, 60/60 объяснено до копейки без остатка,
 // проверочный запрос — .superpowers/sdd/2026-08-18-orders-vitrina/
@@ -492,12 +511,12 @@ const AD_SPEND_SQL = `
 // ВСЕГДА, а не только при нарушении.
 const CONSISTENCY_CLASS_SQL = `
   SELECT count(*) AS n,
-         COALESCE(SUM(ABS((cost_value_retail - commission - logistics - acquiring - loyalty)
+         COALESCE(SUM(ABS((cost_value_retail - commission - services - logistics - acquiring - loyalty)
                           - (profit + COALESCE(cost, 0)))), 0) AS abs_sum,
          MAX(COALESCE(sale_dt, return_dt)) AS max_dt
   FROM tenant.ozon_order_costs
   WHERE cabinet_id = $1
-    AND ABS((cost_value_retail - commission - logistics - acquiring - loyalty)
+    AND ABS((cost_value_retail - commission - services - logistics - acquiring - loyalty)
             - (profit + COALESCE(cost, 0))) > 0.01`;
 
 const pool = new pg.Pool(readonlyPgConfig());

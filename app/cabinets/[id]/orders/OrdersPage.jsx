@@ -124,7 +124,7 @@ export default function OrdersPage({ cabinetId }) {
 
   // Тоталы по отфильтрованной выборке (для строки «Итого»).
   const t = useMemo(() => {
-    const acc = { qty: 0, cost: 0, orderTotal: 0, saleTotal: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, profit: 0 };
+    const acc = { qty: 0, cost: 0, orderTotal: 0, saleTotal: 0, commission: 0, acquiring: 0, logistics: 0, services: 0, loyalty: 0, profit: 0 };
     for (const i of filtered) {
       acc.qty += i.qty || 0;
       acc.cost += i.cost || 0;
@@ -133,6 +133,7 @@ export default function OrdersPage({ cabinetId }) {
       acc.commission += i.commission || 0;
       acc.acquiring += i.acquiring || 0;
       acc.logistics += i.logistics || 0;
+      acc.services += i.services || 0;
       acc.loyalty += i.loyalty || 0;
       acc.profit += i.profit || 0;
     }
@@ -262,6 +263,7 @@ export default function OrdersPage({ cabinetId }) {
                 <Td right>{money(it.commission)}</Td>
                 <Td right>{money(it.acquiring)}</Td>
                 <Td right>{money(it.logistics)}</Td>
+                <Td right>{money(it.services)}</Td>
                 <Td right>{money(it.loyalty)}</Td>
                 <Td right>
                   <span style={{ color: (it.profit || 0) >= 0 ? C.pos : C.neg, fontWeight: 700 }}>{money(it.profit)}</span>
@@ -301,6 +303,7 @@ export default function OrdersPage({ cabinetId }) {
                 <td style={tdFootR}>{money(t.commission)}</td>
                 <td style={tdFootR}>{money(t.acquiring)}</td>
                 <td style={tdFootR}>{money(t.logistics)}</td>
+                <td style={tdFootR}>{money(t.services)}</td>
                 <td style={tdFootR}>{money(t.loyalty)}</td>
                 <td style={{ ...tdFootR, fontWeight: 800, color: t.profit >= 0 ? C.pos : C.neg }}>{money(t.profit)}</td>
                 <td style={tdFootR}>—</td>
@@ -333,6 +336,7 @@ const COLS = [
   { key: "commission",   label: "Комиссия, ₽" },
   { key: "acquiring",    label: "Эквайринг, ₽" },
   { key: "logistics",    label: "Логистика, ₽" },
+  { key: "services",     label: "Сборы, ₽" },
   { key: "loyalty",      label: "Лояльность, ₽" },
   { key: "profit",       label: "Прибыль, ₽" },
   { key: "posting_id",   label: "№ поставки",     align: "left", minW: 110 },

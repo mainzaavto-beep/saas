@@ -26,7 +26,13 @@ export const dynamic = "force-dynamic";
 //                    всеми скидками, что заплатил покупатель)
 //    sale_total    = «Сумма продажи, руб.» (cost_value_pay — что получит
 //                    продавец; 0 для недоставленных)
-//    commission, acquiring, logistics, loyalty, profit
+//    commission, acquiring, logistics, services, loyalty, profit
+//    services      = «Сборы Ozon, руб.» (order_costs.services, статья
+//                    «Сборы Ozon» §3.3 контракта — отзывы, рассрочка,
+//                    упаковка и т.п., волна 2026-08-25). Ozon-only: у WB
+//                    order_costs такой колонки физически нет — поле всегда
+//                    0 (пост-ревью: пропажа отдавала 1 812,92 ₽ сборов
+//                    отправления 50588097-1427-1 нигде на витрине).
 //    self_buyout   = «Самовыкуп»
 //    posting_id    = «Номер поставки» (g_number WB | posting_number Ozon)
 //    platform      = 'wb' | 'ozon'                          — «Маркетплейс»
@@ -86,7 +92,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 });
 
 function agg(items) {
-  const t = { qty: 0, cost: 0, orderTotal: 0, saleTotal: 0, commission: 0, acquiring: 0, logistics: 0, loyalty: 0, profit: 0 };
+  const t = { qty: 0, cost: 0, orderTotal: 0, saleTotal: 0, commission: 0, acquiring: 0, logistics: 0, services: 0, loyalty: 0, profit: 0 };
   for (const i of items) {
     t.qty += i.qty || 0;
     t.cost += i.cost || 0;
@@ -95,6 +101,7 @@ function agg(items) {
     t.commission += i.commission || 0;
     t.acquiring += i.acquiring || 0;
     t.logistics += i.logistics || 0;
+    t.services += i.services || 0;
     t.loyalty += i.loyalty || 0;
     t.profit += i.profit || 0;
   }
@@ -168,6 +175,7 @@ async function collectWB(limit, shopName, qPattern, from, to) {
             oc.cost_value_retail AS order_total,
             oc.cost_value_pay AS sale_total,
             oc.commission, oc.acquiring, oc.logistics, oc.loyalty,
+            0               AS services, -- WB order_costs не несёт этой колонки (статья Ozon-only, §3.3)
             oc.profit + COALESCE(oc.cost, 0) - COALESCE(co.cost, oc.cost, 0) AS profit,
             o.g_number      AS posting_id,
             oc.updated_at
@@ -214,7 +222,7 @@ async function collectWB(limit, shopName, qPattern, from, to) {
             COALESCE(co.cost, 0) AS cost,
             o.price_with_disc AS order_total,
             0               AS sale_total,
-            0               AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
+            0               AS commission, 0 AS acquiring, 0 AS logistics, 0 AS services, 0 AS loyalty,
             -- profit = 0, НЕ -cost (решение владельца — план «витрина заказов»
             -- 2026-08-18, компонента 2, зеркально Ozon-фиксу выше): pending-
             -- заказы WB (в пути, без строки order_costs — она наполняется из
@@ -335,6 +343,7 @@ async function collectOzon(limit, shopName, qPattern, from, to) {
             COALESCE(co.cost, oc.cost) AS cost,
             oc.cost_value_retail AS order_total,
             oc.commission, oc.acquiring, oc.logistics, oc.loyalty,
+            oc.services, -- «Сборы Ozon» §3.3 контракта (отзывы/рассрочка/упаковка и т.п.)
             oc.profit + COALESCE(oc.cost, 0) - COALESCE(co.cost, oc.cost, 0) AS profit,
             oc.posting_number AS posting_id,
             oc.updated_at
@@ -378,7 +387,7 @@ async function collectOzon(limit, shopName, qPattern, from, to) {
             o.qty,
             COALESCE(co.cost, 0) AS cost,
             o.total          AS order_total,
-            0                AS commission, 0 AS acquiring, 0 AS logistics, 0 AS loyalty,
+            0                AS commission, 0 AS acquiring, 0 AS logistics, 0 AS services, 0 AS loyalty,
             -- profit = 0, НЕ -cost*qty (решение владельца, задача 6 плана
             -- «ремонт данных прибыли Ozon», round 3): pending-заказы (в пути/
             -- свежедоставленные/незрелые отменённые, без строки order_costs —

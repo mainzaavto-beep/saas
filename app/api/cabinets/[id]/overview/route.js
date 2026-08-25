@@ -19,8 +19,13 @@ export const dynamic = "force-dynamic";
 // отчётами МП. Канон (revenue/profit = ppvz-нетто) не трогаем — отдельное
 // число рядом. У Ozon collectOzon его не заполняет (остаётся 0 из zeroKpi;
 // revenue Ozon уже валовая, см. докстроку lib/ozonMetrics.js).
+// services — статья «Сборы Ozon» (§3.3 docs/metrics-contract.md, волна
+// 2026-08-25): расщеплено из logistics бэкфиллом задач 1-2 плана «Сборы
+// Ozon» — сборы физически теперь СВОЯ колонка order_costs, не часть
+// logistics. У WB поле остаётся 0 (collectWb его не заполняет — своей
+// статьи «сборы» у WB нет).
 const zeroKpi = () => ({
-  revenue: 0, revenueGross: 0, sold: 0, commission: 0, logistics: 0, acquiring: 0, loyalty: 0,
+  revenue: 0, revenueGross: 0, sold: 0, commission: 0, services: 0, logistics: 0, acquiring: 0, loyalty: 0,
   costRub: 0, adSp: 0, tax: 0, profit: 0, orders: 0, cancelCnt: 0, orderRub: 0,
   netPay: 0, storage: 0,
 });
@@ -82,6 +87,7 @@ async function collectOzon(db, from, to, toEnd, taxMode) {
   k.revenue = c.revenue;
   k.costRub = c.cogs;
   k.commission = c.commission;
+  k.services = c.services;
   k.logistics = c.logistics;
   k.acquiring = c.acquiring;
   k.loyalty = c.loyalty;
@@ -148,7 +154,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const margin = k.revenue > 0 ? (k.profit / k.revenue) * 100 : 0;
   const cancelRate =
     k.orders + k.cancelCnt > 0 ? (k.cancelCnt / (k.orders + k.cancelCnt)) * 100 : 0;
-  const expenses = k.commission + k.logistics + k.storage;
+  // services (§3.3 контракта, «Сборы Ozon») — реальный расход, который ДО
+  // волны 2026-08-25 маскировался внутри k.logistics; без явного сложения
+  // здесь expenses систематически недосчитывает ровно эту сумму (пост-
+  // ревью: MiniStat «Логистика» усох, деньги исчезли с главной).
+  const expenses = k.commission + k.services + k.logistics + k.storage;
 
   // --- lossMakers / lowStock: WB-only ---
   let lossMakers = [];
@@ -347,6 +357,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       expenses: Math.round(expenses * 100) / 100,
       expensesBreakdown: {
         logistics: Math.round(k.logistics * 100) / 100,
+        // services — «Сборы Ozon» (§3.3 контракта); у WB всегда 0 (нет
+        // своей статьи, см. докстроку zeroKpi выше).
+        services: Math.round(k.services * 100) / 100,
         commission: Math.round(k.commission * 100) / 100,
         storage: Math.round(k.storage * 100) / 100,
         penalties: 0,

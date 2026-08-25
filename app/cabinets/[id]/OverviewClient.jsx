@@ -249,6 +249,7 @@ export default function OverviewClient({ cabinetId }) {
             <h2 style={h2}>Расходы маркетплейса</h2>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
               <MiniStat label="Логистика" value={money(data.kpi.expensesBreakdown.logistics)} />
+              <MiniStat label="Сборы Ozon" value={money(data.kpi.expensesBreakdown.services)} />
               <MiniStat label="Комиссии" value={money(data.kpi.expensesBreakdown.commission)} />
               <MiniStat label="Хранение" value={money(data.kpi.expensesBreakdown.storage)} />
               <MiniStat label="Штрафы" value={money(data.kpi.expensesBreakdown.penalties)} />
