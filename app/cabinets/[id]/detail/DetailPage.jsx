@@ -236,6 +236,15 @@ const OZ_MATRIX_ROWS = [
   { key: "boost",      label: "Соинвест",       kind: "pct_raw" },    // снапшот бустинга Ozon (%)
   { key: "ad_spend",   label: "Реклама ₽",      kind: "money" },
   { key: "ad_views",   label: "Показы рекл.",   kind: "int" },
+  // logistics/services — задача 4 плана «Сборы Ozon» (2026-08-25): раньше
+  // Ozon-матрица вообще не показывала логистику по дням (в отличие от WB,
+  // где она видна в декомпозиции «Прибыль ₽» → PROFIT_SUB); теперь обе
+  // строки читаются из day.logistics/day.services (raw из ozRawProfitByDay,
+  // app/api/.../detail/route.js) — «Сборы Ozon» больше не маскируется
+  // внутри «Логистики» (расщеплено бэкфиллом задач 1-2 из logistics_old).
+  { key: "logistics",  label: "Логистика, ₽",   kind: "money" },
+  { key: "services",   label: "Сборы Ozon, ₽",  kind: "money",
+    hint: "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon" },
   { key: "profit",     label: "Прибыль ₽",      kind: "money" },
   { ratingGroup: true }, // раскрывающийся «Рейтинг и отзывы» (только nm, без склейки)
 ];
@@ -1241,7 +1250,7 @@ function renderMatrixRow(row, days, rowTotal, expandAd, setExpandAd, expandSplit
   const rows = [
     <tr key={row.key} onClick={onToggle}
       style={{ borderBottom: `1px solid ${soft("line", 20)}`, cursor: onToggle ? "pointer" : "default", background: (splitGroup || isAd) ? `${soft("accent", 3)}` : "transparent", opacity: muted ? 0.55 : 1 }}>
-      <td style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: (splitGroup || isAd) ? 600 : 500, color: muted ? C.faint : C.ink }}>
+      <td title={row.hint} style={{ ...tdMatL, position: "sticky", left: 0, background: C.surface, zIndex: 1, fontWeight: (splitGroup || isAd) ? 600 : 500, color: muted ? C.faint : C.ink }}>
         {onToggle ? (expanded ? "▾ " : "▸ ") : ""}{row.label}
         {muted && <span style={{ fontSize: 9, color: C.faint, marginLeft: 6 }}>(нет данных — связи склеек нет в БД)</span>}
       </td>

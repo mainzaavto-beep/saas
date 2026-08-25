@@ -220,6 +220,9 @@ function aggTotals(items) {
     orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
     acquiring: 0, loyalty: 0, tax: 0, profit: 0, adSpend: 0, stock: 0,
     returnLogistics: 0,
+    // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — только Ozon-
+    // строки несут i.services (WB-строки — undefined → 0, безвредно).
+    services: 0,
   };
   for (const i of items) {
     t.ordered += i.ordered || 0;
@@ -239,6 +242,7 @@ function aggTotals(items) {
     t.adSpend += i.adSpend || 0;
     t.stock += i.stock || 0;
     t.returnLogistics += i.returnLogistics || 0;
+    t.services += i.services || 0;
   }
   t.buyoutPct = (t.sold + t.returns + t.cancelled) > 0
     ? round2(100 * t.sold / (t.sold + t.returns + t.cancelled)) : null;
@@ -651,6 +655,10 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
       orderRub: round2(o.orderRub), salesRub: f.revenue,
       costRub: f.cogs,
       commission: f.commission, logistics: f.logistics, acquiring: f.acquiring, loyalty: f.loyalty,
+      // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — отзывы,
+      // рассрочка, упаковка, размещение, утилизация и прочие позаказные
+      // сборы; из канона (ozProfitProductBatch → ...agg), рядом с logistics.
+      services: f.services,
       // returnLogistics — СПРАВОЧНАЯ строка канона (уже внутри logistics/
       // commission выше, не вычитается повторно — см. докстроку ozProfitProduct).
       returnLogistics: f.returnLogistics,

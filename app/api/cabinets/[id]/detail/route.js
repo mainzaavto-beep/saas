@@ -589,6 +589,14 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
       orders_organic: m.orders != null ? (m.orders - (m.ad_orders ?? 0)) : null,
       orders_sum: orderSumByDay.has(date) ? orderSumByDay.get(date) : null,
       revenue: rev, profit,
+      // logistics/services — дневная раскладка (задача 4 плана «Сборы Ozon»,
+      // 2026-08-25): raw = rawDay из ozRawProfitByDay (или ZERO_RAW_AGG на
+      // дни без данных, оба поля 0 — не null, симметрично profit выше).
+      // services — отзывы, рассрочка, упаковка, размещение, утилизация и
+      // прочие позаказные сборы Ozon (расщеплено бэкфиллом задач 1-2 из
+      // logistics, см. lib/ozonMetrics.js::ozRawProfitAggregate).
+      logistics: raw.logistics,
+      services: raw.services,
     };
     for (const k of ["orders", "clicks", "cart", "ad_spend", "ad_views", "ad_clicks", "ad_orders"]) {
       if (day[k] != null) totals[k] += day[k];
@@ -621,6 +629,9 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   totals.tax = finPeriod.tax;
   totals.profit = finPeriod.profit;
   totals.returnLogistics = finPeriod.returnLogistics;
+  // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — периодный итог,
+  // источник finPeriod.services (ozProfitProduct, канон задачи 3).
+  totals.services = finPeriod.services;
 
   return {
     period: { from, to, days: dateList.length },
@@ -630,6 +641,7 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     fin: {
       revenue: totals.revenue, cost: finPeriod.cogs,
       commission: finPeriod.commission, logistics: finPeriod.logistics,
+      services: totals.services,
       acquiring: finPeriod.acquiring, loyalty: finPeriod.loyalty,
       returnLogistics: totals.returnLogistics,
       adSpend: totals.ad_spend, tax: totals.tax, profit: totals.profit,

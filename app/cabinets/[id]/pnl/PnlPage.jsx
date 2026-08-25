@@ -34,7 +34,12 @@ const moneyShort = (n) => {
 // «WB валовая выручка справочной строкой», 2026-08-20) — у Ozon revenue уже
 // валовая, отдельного поля нет. Строку скрываем, если в кабинете нет WB
 // (иначе была бы «Выручка (валовая) 0 ₽» — вводит в заблуждение).
-const buildRows = (taxLabel, hasRevenueGross) => [
+// hasServices — показывать ли строку «Сборы Ozon» (задача 4 плана «Сборы
+// Ozon», 2026-08-25). Поле services аддитивно и приходит ТОЛЬКО от Ozon-
+// блока роута (mpBlock, app/api/.../pnl/route.js) — у WB такого слагаемого
+// нет (расщеплено бэкфиллом задач 1-2 из logistics, только Ozon). Строку
+// скрываем, если в кабинете нет Ozon (иначе была бы «Сборы Ozon 0 ₽»).
+const buildRows = (taxLabel, hasRevenueGross, hasServices) => [
   { label: "Выручка", field: "revenue", color: C.pos, kind: "plain", showPct: true },
   ...(hasRevenueGross ? [{
     label: "Выручка (валовая, WB)", field: "revenueGross", color: C.muted, kind: "plain", showPct: false,
@@ -42,6 +47,10 @@ const buildRows = (taxLabel, hasRevenueGross) => [
   { label: "Себестоимость", field: "cogs", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Комиссия МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
+  ...(hasServices ? [{
+    label: "Сборы Ozon", field: "services", negate: true, color: C.neg, kind: "sub", showPct: true,
+    hint: "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon",
+  }] : []),
   { label: "Эквайринг", field: "acquiring", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Лояльность", field: "loyalty", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: "Валовая прибыль", field: "grossProfit", kind: "h1", showPct: false },
@@ -149,7 +158,7 @@ export default function PnlPage({ cabinetId }) {
                 </tr>
               </thead>
               <tbody>
-                {buildRows(data.taxLabel, Boolean(data.wb)).map((row, ri) => {
+                {buildRows(data.taxLabel, Boolean(data.wb), Boolean(data.ozon)).map((row, ri) => {
                   const v = valOf(row, data.total);
                   const isTotal = row.kind === "h0" || row.kind === "h1";
                   const big = row.kind === "h0";
@@ -158,7 +167,7 @@ export default function PnlPage({ cabinetId }) {
                   const revenue = data.total.revenue || 0;
                   return (
                     <tr key={ri} style={{ borderTop: isTotal ? `2px solid ${C.line}` : `1px solid ${soft("line", 33)}`, background: bg }}>
-                      <td style={{
+                      <td title={row.hint} style={{
                         padding: isTotal ? "12px 16px" : "9px 16px",
                         paddingLeft: row.kind === "sub" ? 30 : 16,
                         fontWeight: weight, fontSize: big ? 15 : 14, color: C.ink,
@@ -270,6 +279,9 @@ export default function PnlPage({ cabinetId }) {
                     ["Себестоимость", "cogs"],
                     ["Комиссия", "commission"],
                     ["Логистика", "logistics"],
+                    // Сборы Ozon — только у Ozon (data.wb.services не существует, money(undefined) → «—»
+                    // для колонки WB, симметрично остальным Ozon-специфичным полям в этой таблице).
+                    ["Сборы Ozon", "services"],
                     ["Прибыль", "profit"],
                   ].map(([label, key]) => {
                     const wbVal = data.wb?.[key];
@@ -277,7 +289,10 @@ export default function PnlPage({ cabinetId }) {
                     const profitCol = key === "profit";
                     return (
                       <tr key={key} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
-                        <td style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}>{label}</td>
+                        <td
+                          title={key === "services" ? "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon" : undefined}
+                          style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}
+                        >{label}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (wbVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(wbVal)}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (ozVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(ozVal)}</td>
                       </tr>

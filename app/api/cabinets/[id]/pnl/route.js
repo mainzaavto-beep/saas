@@ -35,6 +35,11 @@ function mpBlock(c, isWb, revenueGross, platform) {
     ...(isWb ? { revenueGross } : {}),
     cogs: c.cogs,
     commission: c.commission,
+    // services («Сборы Ozon» — задача 4 плана «Сборы Ozon», 2026-08-25):
+    // расщеплено бэкфиллом (задачи 1-2) из logistics; отзывы, рассрочка,
+    // упаковка, размещение, утилизация и прочие позаказные сборы. Только
+    // у Ozon (c.services у WB не существует — undefined, ключ не пишется).
+    ...(isWb ? {} : { services: c.services }),
     logistics: c.logistics,
     acquiring: c.acquiring,
     loyalty: c.loyalty,
@@ -65,6 +70,9 @@ const TOTAL_NUM_KEYS = [
   // revenueGross — только у WB-блока (mpBlock, isWb=true); Ozon-блок его не
   // отдаёт (undefined → 0 в сумме ниже), total.revenueGross = WB-часть.
   "revenueGross",
+  // services («Сборы Ozon») — только у Ozon-блока (см. mpBlock); WB-блок его
+  // не отдаёт (undefined → 0 в сумме), total.services = Ozon-часть.
+  "services",
 ];
 
 // Расчёт P&L за произвольный диапазон [from, to] (YYYY-MM-DD) — канон.

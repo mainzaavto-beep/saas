@@ -208,7 +208,7 @@ export default function SummaryPage({ cabinetId }) {
       ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
       orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
       acquiring: 0, loyalty: 0, tax: 0, profit: 0, stock: 0, returnLogistics: 0,
-      adSpend: 0,
+      adSpend: 0, services: 0,
     };
     for (const i of filtered) {
       ft.ordered += i.ordered || 0;
@@ -221,6 +221,7 @@ export default function SummaryPage({ cabinetId }) {
       ft.costRub += i.costRub || 0;
       ft.commission += i.commission || 0;
       ft.logistics += i.logistics || 0;
+      ft.services += i.services || 0;
       ft.acquiring += i.acquiring || 0;
       ft.loyalty += i.loyalty || 0;
       ft.tax += i.tax || 0;
@@ -440,6 +441,7 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{money(it.commission)}</Td>
                 <Td right>{pct(it.commissionPct)}</Td>
                 <Td right>{money(it.logistics)}</Td>
+                <Td right>{money(it.services)}</Td>
                 <Td right>{money(it.acquiring)}</Td>
                 <Td right>{money(it.adSpend)}</Td>
                 <Td right>{money(it.loyalty)}</Td>
@@ -477,6 +479,7 @@ export default function SummaryPage({ cabinetId }) {
                 <td style={tdFootR}>{money(ft.commission)}</td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{money(ft.logistics)}</td>
+                <td style={tdFootR}>{money(ft.services)}</td>
                 <td style={tdFootR}>{money(ft.acquiring)}</td>
                 <td style={tdFootR} title="Вся реклама кабинета за период; товарная часть видна в колонке «Реклама, ₽» таблицы">{money(t.adSpend)}</td>
                 <td style={tdFootR}>{money(ft.loyalty)}</td>
@@ -624,6 +627,11 @@ const COLS = [
   { key: "commission",  label: "Комиссия, ₽",    minW: 95, sort: "num" },
   { key: "commissionPct",label: "Ком. %",        minW: 65, sort: "num" },
   { key: "logistics",   label: "Логистика, ₽",   minW: 95, sort: "num" },
+  // services («Сборы Ozon», задача 4 плана «Сборы Ozon», 2026-08-25) — только
+  // у Ozon-строк (it.services у WB-товаров не существует → money(undefined) =
+  // «—», симметрично returnLogistics/profitGross и др. Ozon-only полям).
+  { key: "services",    label: "Сборы Ozon, ₽",  minW: 100, sort: "num",
+    hint: "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon" },
   { key: "acquiring",   label: "Эквайринг, ₽",   minW: 95, sort: "num" },
   { key: "adSpend",     label: "Реклама, ₽",     minW: 95, sort: "num" },
   { key: "loyalty",     label: "Лояльность, ₽",  minW: 95, sort: "num" },
@@ -663,7 +671,7 @@ function Th({ col, sort, setSort }) {
         top: 0,
         zIndex: 1,
       }}
-      title={sortable ? "Сортировка" : undefined}
+      title={col.hint ? (sortable ? `Сортировка · ${col.hint}` : col.hint) : (sortable ? "Сортировка" : undefined)}
     >
       {col.label}{isActive ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
     </th>
