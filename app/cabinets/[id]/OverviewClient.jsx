@@ -95,17 +95,27 @@ export default function OverviewClient({ cabinetId }) {
   const [serverPeriod, setServerPeriod] = useState(null); // {from,to} из ответа
   const [mp, setMp] = useState("all");
   // Произвольный интервал (гранулярность "custom"). Дефолт — последние 30 дней
-  // ПО ВЧЕРА (сегодня финансово недособрано — задача «дефолты по вчера», 2026-08-25).
-  const [customFrom, setCustomFrom] = useState(() => ymd(new Date(Date.now() - 30 * 86400000)));
-  const [customTo, setCustomTo] = useState(() => ymd(new Date(Date.now() - 86400000)));
+  // ПО ВЧЕРА (задача «дефолты по вчера», 2026-08-25). НЕ копируем расчёт lib/
+  // period.js локальным временем (ymd — getFullYear/getMonth/getDate, часовой
+  // пояс браузера) — при gran==="custom" клиент ВСЕГДА шлёт даты явно (см. ниже),
+  // serverPeriod для custom не подставляется, и около полуночи UTC локальное
+  // «вчера» может разойтись с серверным на день (пост-ревью задачи 2). Поэтому:
+  // 1) как только приходит serverPeriod (после первого ответа сервера — он
+  //    считается по lib/period.js) — подставляем ЕГО, один раз, если поля
+  //    ещё не тронуты пользователем; 2) до этого — UTC-арифметика через
+  //    toISOString (не ymd), идентичная lib/period.js.
+  const utcDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const [customFrom, setCustomFrom] = useState(() => utcDaysAgo(30));
+  const [customTo, setCustomTo] = useState(() => utcDaysAgo(1));
+  const [customSeeded, setCustomSeeded] = useState(false);
 
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
   const period = useMemo(() => {
     if (gran === "custom") {
-      const f = customFrom || ymd(new Date(Date.now() - 30 * 86400000));
-      const t = customTo || ymd(new Date(Date.now() - 86400000));
+      const f = customFrom || utcDaysAgo(30);
+      const t = customTo || utcDaysAgo(1);
       return { from: f, to: t, label: `${f} — ${t}` };
     }
     return computePeriod(gran, anchor);
@@ -132,9 +142,16 @@ export default function OverviewClient({ cabinetId }) {
           setAnchor(d.period.to);
           setServerPeriod(d.period);
         }
+        // Сидируем поля «Интервала» серверным периодом (один раз, пока
+        // пользователь их не трогал) — не копия расчёта, а чтение ответа.
+        if (d.period && !customSeeded) {
+          setCustomFrom(d.period.from);
+          setCustomTo(d.period.to);
+          setCustomSeeded(true);
+        }
       })
       .catch((e) => setError(String(e)));
-  }, [cabinetId, period.from, period.to, mp, userPicked, gran]);
+  }, [cabinetId, period.from, period.to, mp, userPicked, gran, customSeeded]);
 
   const goPrev = () => { setUserPicked(true); setAnchor((a) => shiftPeriod(gran, a, -1)); };
   const goNext = () => { setUserPicked(true); setAnchor((a) => shiftPeriod(gran, a, +1)); };
