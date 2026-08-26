@@ -33,6 +33,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const ozonItems = mps.includes("ozon") ? await computeOzon(ozRates, { includeInactive }) : [];
     const items = [...wbItems, ...ozonItems];
     const categories = [...new Set(items.map((i) => i.category).filter(Boolean))].sort();
+    const whatif = await loadWhatif();
 
     const valid = items.filter((i) => !i.draft && Number.isFinite(i.profit));
     const totals = {
@@ -49,7 +50,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       wb: aggPlatform(valid, "wb"),
       ozon: aggPlatform(valid, "ozon"),
     };
-    return NextResponse.json({ items, totals, categories });
+    return NextResponse.json({ items, totals, categories, whatif });
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
@@ -110,6 +111,22 @@ async function loadManual(platform) {
     }
     return out;
   } catch { return {}; }
+}
+
+// Персист what-if прикидок (tenant.unit_whatif, миграция 046) — целиком
+// набор входов на товар, отдельно от «↧ в факт» (tenant.unit_inputs).
+// Ответ: { wb: { nmId: inputs }, ozon: { productId: inputs } }.
+async function loadWhatif() {
+  try {
+    const rows = await tenantQuery(
+      `SELECT platform, item_id, inputs FROM tenant.unit_whatif`
+    );
+    const out = { wb: {}, ozon: {} };
+    for (const r of rows) {
+      if (out[r.platform]) out[r.platform][String(r.item_id)] = r.inputs;
+    }
+    return out;
+  } catch { return { wb: {}, ozon: {} }; }
 }
 
 // ---------- WB ----------
