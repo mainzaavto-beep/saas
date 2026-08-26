@@ -67,6 +67,20 @@ export default function UnitPage({ cabinetId }) {
   const [saveState, setSaveState] = useState({ status: "idle", time: null });
   const saveTimers = useRef({});
   const retryTimers = useRef({});
+  const saveSeq = useRef({}); // sku -> поколение последней ЗАПУЩЕННОЙ отправки
+  const saveAbort = useRef({}); // sku -> AbortController запроса в полёте
+
+  // Cleanup на смену cabinetId / размонтирование: не полагаемся на то, что
+  // setTimeout сам «не выстрелит» — гасим таймеры и абортим запросы в полёте
+  // явно, чтобы не словить setState после ухода со страницы и не слать
+  // прикидку под уже неактуальным cabinetId.
+  useEffect(() => {
+    return () => {
+      Object.values(saveTimers.current).forEach(clearTimeout);
+      Object.values(retryTimers.current).forEach(clearTimeout);
+      Object.values(saveAbort.current).forEach((c) => c?.abort());
+    };
+  }, [cabinetId]);
 
   useEffect(() => {
     fetch(`/api/cabinets/${cabinetId}/unit/all`)
@@ -88,23 +102,52 @@ export default function UnitPage({ cabinetId }) {
   // Автосейв прикидки в tenant.unit_whatif (POST /unit/whatif, дебаунс 1000мс
   // на товар). Ретрай 1 раз через 3с при ошибке сети; значения в overrides
   // при этом не трогаются — теряется только факт сохранения, не ввод.
+  //
+  // Секвенирование (пост-ревью): bare fetch без гейта позволял стейл-POST
+  // (медленный первый запрос, >1000мс в полёте) разрешиться ПОСЛЕ более
+  // нового второго и молча перетереть tenant.unit_whatif устаревшими inputs
+  // (оба ответа 200, индикатор мог показать «✓ Сохранено» на самом деле
+  // откатив запись назад). Фикс — счётчик поколений per-sku (saveSeq):
+  // каждый doSave() бампает поколение при СТАРТЕ отправки; предыдущий
+  // запрос того же sku абортируется через AbortController (не долетает
+  // до сервера как отдельный конкурентный запрос), а если абort не успел
+  // (ответ уже пришёл) — isCurrent() гасит применение результата стейл-вызова
+  // (индикатор/ретрай не трогаются устаревшим поколением). Свежий вызов
+  // всегда либо единственный в полёте, либо последний, чей результат учтён.
   const doSave = useCallback(async (sku, inputs) => {
+    // Новая отправка для sku перекрывает и таймер ретрая, и запрос в полёте —
+    // предыдущее поколение больше не должно ни дописаться в БД, ни повлиять
+    // на индикатор.
+    clearTimeout(retryTimers.current[sku]);
+    saveAbort.current[sku]?.abort();
+    const ctrl = new AbortController();
+    saveAbort.current[sku] = ctrl;
+    saveSeq.current[sku] = (saveSeq.current[sku] || 0) + 1;
+    const seq = saveSeq.current[sku];
+    const isCurrent = () => saveSeq.current[sku] === seq;
+
     const body = JSON.stringify({ platform, itemId: Number(sku), inputs: inputs && Object.keys(inputs).length > 0 ? inputs : null });
     setSaveState({ status: "saving", time: null });
     try {
-      const r = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      const r = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: ctrl.signal });
       if (!r.ok) throw new Error(String(r.status));
-      setSaveState({ status: "saved", time: new Date() });
-    } catch {
+      if (isCurrent()) setSaveState({ status: "saved", time: new Date() });
+    } catch (e) {
+      if (e?.name === "AbortError") return; // абортирован более свежей отправкой — не ошибка
+      if (!isCurrent()) return; // стейл-ответ (уже есть более новое поколение) — игнорируем
       setSaveState({ status: "retrying", time: null });
-      clearTimeout(retryTimers.current[sku]);
       retryTimers.current[sku] = setTimeout(async () => {
+        if (!isCurrent()) return; // за 3с успела прийти более новая правка — ретрай не нужен
+        saveAbort.current[sku]?.abort();
+        const ctrl2 = new AbortController();
+        saveAbort.current[sku] = ctrl2;
         try {
-          const r2 = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+          const r2 = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: ctrl2.signal });
           if (!r2.ok) throw new Error(String(r2.status));
-          setSaveState({ status: "saved", time: new Date() });
-        } catch {
-          setSaveState({ status: "error", time: null });
+          if (isCurrent()) setSaveState({ status: "saved", time: new Date() });
+        } catch (e2) {
+          if (e2?.name === "AbortError") return;
+          if (isCurrent()) setSaveState({ status: "error", time: null });
         }
       }, 3000);
     }
