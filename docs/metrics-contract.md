@@ -1601,6 +1601,27 @@ check-profit-canon.mjs`: до 3 товаров с продажами в пери
 
 ---
 
+### 11.6 Персист what-if прикидок (`tenant.unit_whatif`, миграция 046, 2026-08-26)
+
+**Что это.** Таблица `tenant.unit_whatif(cabinet_id, platform, item_id, inputs
+JSONB, updated_at)` хранит последний набор пользовательских what-if входов
+строки ПРИКИДКА на `/unit` (см. §11.4) — сценарии владельца «что если», НЕ
+данные площадки. В канон прибыли (§11.1/11.5), сверки (`check-profit-canon.mjs`)
+и сторожа не входит и не должна входить — по конструкции это гипотетический
+ввод, а не измерение факта.
+
+**Доступ.** RLS: `tenant_iso_unit_whatif` (роль `saas_app`, `cabinet_id =
+app.cabinet_id`) + `panel_local_ro_cab1` (SELECT, `cabinet_id = 1`) — по
+образцу соседних tenant-таблиц (041/043).
+
+**Запись.** `POST /api/cabinets/[id]/unit/whatif` принимает только ключи из
+белого списка `WHATIF_INPUTS`/`ALLOWED_KEYS` (`route.js`), коэрцирует к
+числу и обрезает по границам `[0, max]`; для долевых полей (`discount`,
+`commissionRate`, `spp`, `buyout`, `adsRate`, `defectRate`) `max = 1` — доля,
+не проценты. `inputs: null` удаляет строку, не пишет нули.
+
+---
+
 ## 12. Маржа (базы объединены задачей 5 — было три РАЗНЫЕ базы, теперь одна)
 
 | Страница | Формула | База | Взвешено по обороту? |
