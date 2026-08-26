@@ -59,6 +59,47 @@ function delta(cur, prev, { pp = false, short = false } = {}) {
   return { text: `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} ${tail}`, dir: d >= 0 ? "up" : "down" };
 }
 
+// Форматирование сравнения периодов для тултипа дельты.
+// Формат: "Сравнение периодов: DD.MM–DD.MM (текущий) против DD.MM–DD.MM (прошлый)"
+// Год добавляется только если окна в разных годах.
+function formatPeriodComparison(period, prevPeriod) {
+  if (!period || !prevPeriod || !period.from || !period.to || !prevPeriod.from || !prevPeriod.to) {
+    return null;
+  }
+
+  const parseDate = (dateStr) => {
+    const d = new Date(dateStr);
+    return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() };
+  };
+
+  const formatDate = (dateStr, showYear) => {
+    const d = parseDate(dateStr);
+    const day = String(d.day).padStart(2, '0');
+    const month = String(d.month).padStart(2, '0');
+    if (showYear) {
+      return `${day}.${month}.${d.year}`;
+    }
+    return `${day}.${month}`;
+  };
+
+  // Определяем, нужен ли год: проверяем разные ли годы в текущем окне и prev окне
+  const curFromYear = parseDate(period.from).year;
+  const curToYear = parseDate(period.to).year;
+  const prevFromYear = parseDate(prevPeriod.from).year;
+  const prevToYear = parseDate(prevPeriod.to).year;
+
+  const yearDiffers = curFromYear !== curToYear ||
+                     curFromYear !== prevFromYear ||
+                     curFromYear !== prevToYear;
+
+  const curFrom = formatDate(period.from, yearDiffers);
+  const curTo = formatDate(period.to, yearDiffers);
+  const prevFrom = formatDate(prevPeriod.from, yearDiffers);
+  const prevTo = formatDate(prevPeriod.to, yearDiffers);
+
+  return `Сравнение периодов: ${curFrom}–${curTo} (текущий) против ${prevFrom}–${prevTo} (прошлый)`;
+}
+
 // Спарклайн прибыли (до налога) — line+area+точка на конце, как в макете Сводки.
 function Spark({ series }) {
   if (!series || series.length < 2) return null;
@@ -333,6 +374,8 @@ export default function SummaryPage({ cabinetId }) {
   // Дата снимка остатков Ozon (грабля #139): показываем последнюю доступную дату,
   // т.к. остаток = снапшот и может не совпадать с концом выбранного периода.
   const ozStockDate = (data.items || []).find((i) => i.platform === "ozon")?.stockDate || null;
+  // Тултип для дельт: какие периоды сравниваются (формат: Сравнение периодов: … против …).
+  const deltaTooltip = formatPeriodComparison(period, data.prevPeriod);
 
   return (
     <main style={{ width: "100%", margin: 0, padding: "20px 18px", fontFamily: FONT, color: C.ink }}>
@@ -370,6 +413,7 @@ export default function SummaryPage({ cabinetId }) {
             + "График — прибыль по дням до налога (rawProfit − реклама), по всему кабинету за период"
             + (hasProductFilter ? " (не сужается товарным фильтром)" : "")}
           delta={delta(ft.profit, prevTotals?.profit)}
+          deltaTitle={deltaTooltip}
           primary
         >
           <Spark series={profitSpark} />
@@ -378,6 +422,7 @@ export default function SummaryPage({ cabinetId }) {
           label="Выручка"
           value={money(ft.salesRub)}
           delta={delta(ft.salesRub, prevTotals?.salesRub)}
+          deltaTitle={deltaTooltip}
         />
         <Kpi
           label="Реклама, ₽"
@@ -389,11 +434,13 @@ export default function SummaryPage({ cabinetId }) {
           label="Продано, шт"
           value={num(ft.sold)}
           delta={delta(ft.sold, prevTotals?.sold)}
+          deltaTitle={deltaTooltip}
         />
         <Kpi
           label="% выкупа"
           value={pct(ft.buyoutPct)}
           delta={delta(ft.buyoutPct, prevTotals?.buyoutPct, { pp: true })}
+          deltaTitle={deltaTooltip}
         />
       </div>
 
@@ -781,10 +828,11 @@ const tdFootL = { padding: "10px 8px", fontSize: 12.5, fontWeight: 800, color: C
 const tdFootR = { padding: "10px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
 // delta — {text, dir} из хелпера delta() выше, или null (нет prev/деление на
-// 0 — просто не рендерим строку, без "NaN"). sub — второстепенная muted-
-// подпись под значением (плитка «Реклама»: «ДРР N %»). children — доп.
+// 0 — просто не рендерим строку, без "NaN"). deltaTitle — тультип на строку
+// дельты (формат: «Сравнение периодов: … против …»). sub — второстепенная
+// muted-подпись под значением (плитка «Реклама»: «ДРР N %»). children — доп.
 // контент primary-плитки (спарклайн), выравнивается справа от текста.
-function Kpi({ label, value, color, title, primary, delta, sub, children }) {
+function Kpi({ label, value, color, title, primary, delta, deltaTitle, sub, children }) {
   return (
     <div style={{
       padding: "12px 16px", borderRadius: 10, background: C.surface,
@@ -795,7 +843,7 @@ function Kpi({ label, value, color, title, primary, delta, sub, children }) {
         <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
         <div style={{ fontSize: primary ? 30 : 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
         {delta && (
-          <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, color: delta.dir === "up" ? C.pos : C.neg }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginTop: 4, color: delta.dir === "up" ? C.pos : C.neg }} title={deltaTitle}>
             {delta.dir === "up" ? "▲" : "▼"} {delta.text}
           </div>
         )}
