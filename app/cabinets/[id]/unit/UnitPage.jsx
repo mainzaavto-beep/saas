@@ -414,7 +414,9 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: C.muted, textTransform: "uppercase" }}>факт</span>
                       {it.estimated && (
-                        <span title="Активный товар без продаж: выкуп 90% и комиссия — оценка по категории."
+                        <span title={platform === "wb"
+                            ? "Активный товар без продаж: выкуп 90% и комиссия — оценка по категории."
+                            : "Логистика — каталожный тариф Ozon: нет проданных штук за последние 30 дней (факт из начислений недоступен)."}
                           style={{ fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "rgba(255,180,0,0.14)", color: "#c98a00", whiteSpace: "nowrap", border: "1px solid rgba(255,180,0,0.3)" }}>⚙ оценка</span>
                       )}
                       {applying && <span style={{ fontSize: 10, color: C.pos }}>⏳</span>}
