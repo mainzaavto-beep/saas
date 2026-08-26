@@ -8,7 +8,7 @@ import { C, soft } from "@/lib/palette.js";
 //
 // Каждый товар = ДВЕ строки: ФАКТ (read-only из БД) + ПРИКИДКА (редактируемые
 // входы, прибыль пересчитывается через calcWB/calcOzon; «↧ в факт» → POST).
-import { Fragment, useEffect, useMemo, useState, useCallback } from "react";
+import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { COLUMNS_WB, COLUMNS_OZON, calcWB, calcOzon } from "@/lib/unit";
 
 // Палитра SAAS (тёмно-синяя).
@@ -64,18 +64,65 @@ export default function UnitPage({ cabinetId }) {
   const [page, setPage] = useState(1);
   const [applying, setApplying] = useState(null);
   const [overrides, setOverrides] = useState({});
+  const [saveState, setSaveState] = useState({ status: "idle", time: null });
+  const saveTimers = useRef({});
+  const retryTimers = useRef({});
 
   useEffect(() => {
     fetch(`/api/cabinets/${cabinetId}/unit/all`)
       .then((r) => r.json())
-      .then((d) => (d.error ? setError(d.error) : setData(d)))
+      .then((d) => {
+        if (d.error) { setError(d.error); return; }
+        setData(d);
+        // Сид: прикидки, сохранённые ранее (tenant.unit_whatif), накладываются
+        // на строки при загрузке — ключ overrides = sku (как и весь остальной
+        // код страницы), поэтому wb/ozon сливаются в один словарь.
+        if (d.whatif) {
+          const seed = { ...(d.whatif.wb || {}), ...(d.whatif.ozon || {}) };
+          if (Object.keys(seed).length > 0) setOverrides((prev) => ({ ...seed, ...prev }));
+        }
+      })
       .catch((e) => setError(String(e)));
   }, [cabinetId]);
 
+  // Автосейв прикидки в tenant.unit_whatif (POST /unit/whatif, дебаунс 1000мс
+  // на товар). Ретрай 1 раз через 3с при ошибке сети; значения в overrides
+  // при этом не трогаются — теряется только факт сохранения, не ввод.
+  const doSave = useCallback(async (sku, inputs) => {
+    const body = JSON.stringify({ platform, itemId: Number(sku), inputs: inputs && Object.keys(inputs).length > 0 ? inputs : null });
+    setSaveState({ status: "saving", time: null });
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (!r.ok) throw new Error(String(r.status));
+      setSaveState({ status: "saved", time: new Date() });
+    } catch {
+      setSaveState({ status: "retrying", time: null });
+      clearTimeout(retryTimers.current[sku]);
+      retryTimers.current[sku] = setTimeout(async () => {
+        try {
+          const r2 = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+          if (!r2.ok) throw new Error(String(r2.status));
+          setSaveState({ status: "saved", time: new Date() });
+        } catch {
+          setSaveState({ status: "error", time: null });
+        }
+      }, 3000);
+    }
+  }, [cabinetId, platform]);
+
+  const scheduleSave = useCallback((sku, inputs) => {
+    clearTimeout(saveTimers.current[sku]);
+    saveTimers.current[sku] = setTimeout(() => doSave(sku, inputs), 1000);
+  }, [doSave]);
+
   const setOverride = useCallback((sku, field, rawValue, asFraction) => {
     const v = Number.isFinite(rawValue) ? (asFraction ? rawValue / 100 : rawValue) : 0;
-    setOverrides((prev) => ({ ...prev, [sku]: { ...(prev[sku] || {}), [field]: v } }));
-  }, []);
+    setOverrides((prev) => {
+      const nextForSku = { ...(prev[sku] || {}), [field]: v };
+      scheduleSave(sku, nextForSku);
+      return { ...prev, [sku]: nextForSku };
+    });
+  }, [scheduleSave]);
 
   const applyOverride = useCallback(async (sku) => {
     const ov = overrides[sku];
@@ -104,9 +151,16 @@ export default function UnitPage({ cabinetId }) {
     setTimeout(() => setApplying((s) => (s === sku ? null : s)), 800);
   }, [overrides, platform, cabinetId]);
 
+  // «⟲ к факту» — сброс входов прикидки к фактическим И немедленное удаление
+  // сохранённой строки из tenant.unit_whatif (POST inputs:null, минуя дебаунс —
+  // явное действие пользователя). Отменяет отложенный автосейв для sku, чтобы
+  // он не «воскресил» удалённую запись.
   const resetOverride = useCallback((sku) => {
+    clearTimeout(saveTimers.current[sku]);
+    clearTimeout(retryTimers.current[sku]);
     setOverrides((prev) => { const next = { ...prev }; delete next[sku]; return next; });
-  }, []);
+    doSave(sku, null);
+  }, [doSave]);
 
   const platformItems = useMemo(
     () => (data?.items || []).filter((i) => i.platform === platform),
@@ -172,7 +226,7 @@ export default function UnitPage({ cabinetId }) {
   const whatifFields = WHATIF_INPUTS[platform];
 
   return (
-    <main style={{ width: "100%", maxWidth: 1640, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
+    <main style={{ width: "100%", margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", color: C.accent, fontWeight: 700 }}>
@@ -219,6 +273,14 @@ export default function UnitPage({ cabinetId }) {
         <label style={labelStyle}><input type="checkbox" checked={onlyLoss} onChange={(e) => setOnlyLoss(e.target.checked)} /> только убыточные</label>
         <label style={labelStyle}><input type="checkbox" checked={hideDraft} onChange={(e) => setHideDraft(e.target.checked)} /> скрыть черновики</label>
         <label style={labelStyle}><input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} /> все колонки</label>
+      </div>
+
+      {/* Легенда + индикатор автосейва */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, color: C.muted }}>
+          Серая строка — факт из БД. Синяя — прикидка: меняйте поля с рамкой, прибыль пересчитается. Сохраняется автоматически.
+        </div>
+        <SaveIndicator saveState={saveState} />
       </div>
 
       {/* Таблица — 2 строки на товар */}
@@ -316,8 +378,8 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
         })}
       </tr>
 
-      {/* Строка 2: ПРИКИДКА */}
-      <tr style={{ background: soft("accent", 5) }}>
+      {/* Строка 2: ПРИКИДКА — акцентная полоса слева + подсветка отличают её от ФАКТА */}
+      <tr style={{ background: soft("accent", 7), boxShadow: `inset 3px 0 0 ${C.accent}` }}>
         {cols.map((c, idx) => {
           if (idx === 0) {
             return (
@@ -333,8 +395,8 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
                     <>
                       <button onClick={() => onApply(it.sku)} title="Применить прикидку к боевым значениям (запишется в БД)"
                         style={{ padding: "3px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: `1px solid ${C.accent}`, borderRadius: 6, background: C.surface, color: C.accent }}>↧ в факт</button>
-                      <button onClick={() => onReset(it.sku)} title="Сбросить прикидку"
-                        style={{ padding: "3px 7px", fontSize: 11, cursor: "pointer", border: `1px solid ${C.line}`, borderRadius: 6, background: C.surfaceAlt, color: C.muted }}>✕</button>
+                      <button onClick={() => onReset(it.sku)} title="Сбросить прикидку к фактическим значениям и удалить сохранённую запись"
+                        style={{ padding: "3px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: `1px solid ${C.line}`, borderRadius: 6, background: C.surfaceAlt, color: C.muted }}>⟲ к факту</button>
                     </>
                   )}
                 </div>
@@ -344,10 +406,11 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
           if (isWhatifInput(c.key)) {
             const meta = fieldMeta(c.key);
             const stored = ov && ov[c.key] != null ? ov[c.key] : it[c.key];
+            const changedInput = ov && ov[c.key] != null && !resultEqual(ov[c.key], it[c.key]);
             return (
               <td key={c.key} style={td(c, whatif)}>
                 <OverrideInput sku={it.sku} field={c.key} asFraction={meta ? meta.asFraction : c.unit === "%"} unit={c.unit}
-                  max={meta ? meta.max : (c.unit === "₽" ? 1000000 : 100)} value={stored} onChange={onOverride} />
+                  max={meta ? meta.max : (c.unit === "₽" ? 1000000 : 100)} value={stored} isChanged={changedInput} onChange={onOverride} />
               </td>
             );
           }
@@ -393,9 +456,10 @@ function Thumb({ url }) {
   );
 }
 
-function OverrideInput({ sku, field, asFraction, unit, max, value, onChange }) {
+function OverrideInput({ sku, field, asFraction, unit, max, value, isChanged, onChange }) {
   const display = value != null ? (asFraction ? Math.round(value * 100) : Math.round(value)) : 0;
   const [text, setText] = useState(String(display));
+  const [focused, setFocused] = useState(false);
   useEffect(() => { setText(String(display)); }, [display]);
   const commit = () => {
     const n = parseFloat(text);
@@ -404,14 +468,43 @@ function OverrideInput({ sku, field, asFraction, unit, max, value, onChange }) {
   };
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 3, justifyContent: "flex-end", width: "100%" }}>
+      {isChanged && <span title="Отличается от факта" style={{ width: 5, height: 5, borderRadius: "50%", background: C.accent, flexShrink: 0 }} />}
       <input type="number" min={0} max={max} step={1} value={text}
-        onChange={(e) => setText(e.target.value)} onBlur={commit}
+        onChange={(e) => setText(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); commit(); }}
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }}
         title={`Прикидка: ${field}, ${unit}`}
-        style={{ width: unit === "₽" ? 70 : 50, padding: "3px 5px", fontSize: 13, textAlign: "right", border: `1px solid ${C.accent}`, borderRadius: 5, background: C.bg, color: C.accent, fontVariantNumeric: "tabular-nums" }} />
+        style={{
+          width: unit === "₽" ? 70 : 50, padding: "3px 5px", fontSize: 13, textAlign: "right",
+          border: `1px solid ${focused ? C.accent : C.line}`, borderRadius: 5, background: C.bg,
+          color: isChanged ? C.accent : C.ink, fontWeight: isChanged ? 700 : 400, fontVariantNumeric: "tabular-nums",
+        }} />
       <span style={{ fontSize: 11, color: C.faint }}>{unit}</span>
     </span>
   );
+}
+
+// Индикатор автосейва у легенды: Сохранение… → ✓ Сохранено HH:MM; при ошибке
+// сети — «Не сохранилось — повторю» на время ретрая (3с), затем стойкий индикатор
+// ошибки (значения прикидки в стейте не теряются — только факт записи в БД).
+function SaveIndicator({ saveState }) {
+  if (saveState.status === "idle") return null;
+  const label =
+    saveState.status === "saving" ? "Сохранение…" :
+    saveState.status === "retrying" ? "Не сохранилось — повторю…" :
+    saveState.status === "error" ? "✕ Не сохранилось" :
+    `✓ Сохранено ${fmtTime(saveState.time)}`;
+  const color = saveState.status === "error" ? C.neg : saveState.status === "saved" ? C.pos : C.muted;
+  return (
+    <span style={{ fontSize: 12, fontWeight: 600, color }}
+      title={saveState.status === "error" ? "Изменения остались в браузере — измените поле ещё раз, чтобы повторить сохранение" : undefined}>
+      {label}
+    </span>
+  );
+}
+function fmtTime(d) {
+  return d ? d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "";
 }
 
 function Kpi({ label, value, accent, pos }) {
