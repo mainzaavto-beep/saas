@@ -1616,9 +1616,10 @@ app.cabinet_id`) + `panel_local_ro_cab1` (SELECT, `cabinet_id = 1`) — по
 
 **Запись.** `POST /api/cabinets/[id]/unit/whatif` принимает только ключи из
 белого списка `WHATIF_INPUTS`/`ALLOWED_KEYS` (`route.js`), коэрцирует к
-числу и обрезает по границам `[0, max]`; для долевых полей (`discount`,
-`commissionRate`, `spp`, `buyout`, `adsRate`, `defectRate`) `max = 1` — доля,
-не проценты. `inputs: null` удаляет строку, не пишет нули.
+числу и ОТКЛОНЯЕТ значения вне границ `[0, max]` кодом 400 (не обрезает/не
+clamp'ит); для долевых полей (`discount`, `commissionRate`, `spp`, `buyout`,
+`adsRate`, `defectRate`) `max = 1` — доля, не проценты. `inputs: null`
+удаляет строку, не пишет нули.
 
 ---
 

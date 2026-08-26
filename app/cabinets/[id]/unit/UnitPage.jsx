@@ -190,9 +190,18 @@ export default function UnitPage({ cabinetId }) {
       });
       return { ...prev, items };
     });
+    // Гасим отложенный автосейв прикидки (дебаунс мог бы ДОЗАПИСАТЬ inputs в
+    // tenant.unit_whatif уже ПОСЛЕ применения к фактам) и удаляем сохранённую
+    // строку — иначе после F5 сид «прикидка из БД» воскрешает применённые
+    // значения поверх новых фактов (бейдж «Δ +0₽», кнопки «↧ в факт»/«⟲ к
+    // факту» снова появляются). Тот же паттерн, что и resetOverride: doSave()
+    // сам гасит/абортит любой ещё более ранний запрос в полёте для sku.
+    clearTimeout(saveTimers.current[sku]);
+    clearTimeout(retryTimers.current[sku]);
     setOverrides((prev) => { const next = { ...prev }; delete next[sku]; return next; });
+    doSave(sku, null);
     setTimeout(() => setApplying((s) => (s === sku ? null : s)), 800);
-  }, [overrides, platform, cabinetId]);
+  }, [overrides, platform, cabinetId, doSave]);
 
   // «⟲ к факту» — сброс входов прикидки к фактическим И немедленное удаление
   // сохранённой строки из tenant.unit_whatif (POST inputs:null, минуя дебаунс —
