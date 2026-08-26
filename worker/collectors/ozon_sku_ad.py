@@ -24,6 +24,7 @@ import re
 import csv
 import sys
 import time
+import hashlib
 import zipfile
 import requests
 from datetime import datetime, timezone, timedelta
@@ -59,6 +60,23 @@ STALE_FALLBACK_H = 26       # свежий РЕАЛЬНЫЙ ok старше эт
                              # запросе ниже (без него, если вечерний тик тоже
                              # сорвётся, skip-прогон бесконечно продлевает себя
                              # самого — баг вскрыт ревью 2026-08-23, не запускался в проде)
+# Переиспользование pending-отчёта между тиками (диагностика 2026-08-26:
+# uuid ba1432a6 дошёл до state=OK за ~1182с — почти вдвое дольше окна поллинга
+# POLL_MAX*POLL_SLEEP=600с; сборщик каждый тик заказывал НОВЫЙ отчёт и бросал
+# почти готовый). Своей таблицы состояния у сборщика нет и заводить её через
+# миграцию не нужно — ЖЕ механизм, что уже держит «умный ритм» выше
+# (jobs.collector_runs, доступен сборщику только на SELECT — GRANT в
+# 031_collector_runs.sql): при exit-коде 3 (PartialError) orchestrator._record_run
+# (worker/orchestrator.py) пишет ПОСЛЕДНЮЮ строку стдаута/стдерр падения тика
+# в jobs.collector_runs.error под ролью postgres (у сборщика такого доступа
+# нет и не нужно). Поэтому pending-uuid не «сохраняется» отдельной записью —
+# он ПРОСТО остаётся последним словом уже существующего PartialError-сообщения,
+# а следующий тик вычитывает его оттуда через SELECT (тот же запрос, что и
+# в SKIP_WINDOW_MSK ниже).
+PENDING_TTL_H = 24           # старше — считаем протухшим, отчёт Ozon мог истечь
+_PENDING_RE = re.compile(
+    r"PENDING uuid=(?P<uuid>[0-9a-fA-F-]{20,36}) chunk=(?P<chunk>[0-9a-f]{12}) "
+    r"created=(?P<created>\S+)")
 _TOTAL_ROWS = ("всего", "итого")
 _CORRECTION = "корректировка"
 _DATE_DMY = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})$")
@@ -122,32 +140,40 @@ def _campaigns_in_window(since_s, to_s):
     return [str(r["campaign_id"]) for r in rows]
 
 
-def _fetch_report(token, campaign_ids, since_s, to_s):
-    """create → poll → download → список членов ZIP [(имя, текст)].
-    Любой сбой → PartialError."""
-    r = _request("post", HOST + "/api/client/statistics", token,
-                 body={"campaigns": campaign_ids, "dateFrom": since_s,
-                       "dateTo": to_s, "groupBy": "DATE"})
-    if r.status_code != 200:
-        raise PartialError(f"create HTTP {r.status_code}: {r.text[:120]}")
-    uuid = (r.json() or {}).get("UUID")
-    if not uuid:
-        raise PartialError(f"create без UUID: {r.text[:120]}")
-    link = None
-    for _ in range(POLL_MAX):
-        time.sleep(POLL_SLEEP)
-        p = _request("get", f"{HOST}/api/client/statistics/{uuid}", token)
-        if p.status_code != 200:
-            raise PartialError(f"poll HTTP {p.status_code}")
-        data = p.json() or {}
-        state = (data.get("state") or "").upper()
-        if state == "OK":
-            link = data.get("link")
-            break
-        if state in ("ERROR", "FAILED"):
-            raise PartialError(f"отчёт {uuid} state={state}")
-    if not link:
-        raise PartialError(f"отчёт {uuid} не готов за {POLL_MAX * POLL_SLEEP:.0f}с")
+def _chunk_key(campaign_ids, since_s, to_s):
+    """Детерминированный короткий ключ чанка (дата-окно + набор кампаний) —
+    им сверяем, что pending-отчёт из прошлого тика относится к ТОМУ ЖЕ
+    запросу, а не к другому окну/чанку."""
+    raw = f"{since_s}|{to_s}|{','.join(campaign_ids)}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def _pending_report(cid, chunk_key):
+    """Последний партиальный тик этого сборщика для кабинета — читаем
+    jobs.collector_runs.error (SELECT уже разрешён GRANT'ом 031, см.
+    константы выше) и ищем маркер PENDING нашего chunk_key. Возвращает
+    (uuid, created_at) или (None, None), если pending нет/протух/не тот чанк."""
+    rows = db_pg.query(
+        "SELECT error, finished_at FROM jobs.collector_runs "
+        "WHERE collector = 'ozon_sku_ad' AND cabinet_id = %s AND status = 'partial' "
+        "ORDER BY finished_at DESC LIMIT 1",
+        (cid,))
+    if not rows or not rows[0]["error"]:
+        return None, None
+    m = _PENDING_RE.search(rows[0]["error"])
+    if not m or m.group("chunk") != chunk_key:
+        return None, None
+    try:
+        created = datetime.fromisoformat(m.group("created"))
+    except ValueError:
+        return None, None
+    age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+    if age_h >= PENDING_TTL_H:
+        return None, None
+    return m.group("uuid"), created
+
+
+def _download(link, token, campaign_ids):
     d = _request("get", link if link.startswith("http") else HOST + link, token)
     if d.status_code != 200:
         raise PartialError(f"download HTTP {d.status_code}")
@@ -160,6 +186,78 @@ def _fetch_report(token, campaign_ids, since_s, to_s):
         return [(f"{campaign_ids[0]}_single.csv", content.decode("utf-8-sig", errors="replace"))]
     zf = zipfile.ZipFile(io.BytesIO(content))
     return [(n, zf.read(n).decode("utf-8-sig", errors="replace")) for n in zf.namelist()]
+
+
+def _fetch_report(token, campaign_ids, since_s, to_s, cid):
+    """(переиспользовать pending | create) → poll → download → список членов
+    ZIP [(имя, текст)]. Любой сбой → PartialError; если отчёт остался
+    незавершённым (ещё готовится / временная ошибка проверки статуса),
+    PartialError несёт маркер `PENDING uuid=... chunk=... created=...`
+    последней строкой — это то, что orchestrator._record_run запишет в
+    jobs.collector_runs.error, и следующий тик подхватит его через
+    _pending_report() вместо того чтобы заказывать новый отчёт заново."""
+    chunk_key = _chunk_key(campaign_ids, since_s, to_s)
+    uuid, created = _pending_report(cid, chunk_key)
+    if uuid:
+        age_s = (datetime.now(timezone.utc) - created).total_seconds()
+        print(f"  чанк {chunk_key}: проверяю pending-отчёт {uuid} "
+              f"(заказан {age_s:.0f}с назад на прошлом тике)", flush=True)
+        p = _request("get", f"{HOST}/api/client/statistics/{uuid}", token)
+        if p.status_code == 200:
+            data = p.json() or {}
+            state = (data.get("state") or "").upper()
+            if state == "OK" and data.get("link"):
+                print(f"  чанк {chunk_key}: pending-отчёт {uuid} готов — скачиваю", flush=True)
+                return _download(data["link"], token, campaign_ids)
+            if state not in ("ERROR", "FAILED"):
+                # Ещё готовится — не поллим повторно (вежливость к API),
+                # оставляем pending на следующий тик тем же uuid.
+                raise PartialError(
+                    f"отчёт {uuid} ещё готовится (state={state or '?'}) — "
+                    f"PENDING uuid={uuid} chunk={chunk_key} "
+                    f"created={created.isoformat(timespec='seconds')}")
+            print(f"  отчёт {uuid} state={state} — закажу новый", flush=True)
+        elif p.status_code == 404:
+            print(f"  отчёт {uuid} 404 (истёк) — закажу новый", flush=True)
+        else:
+            # Транзиентная ошибка самой проверки статуса — не бросаем uuid,
+            # тот же отчёт попробуем следующим тиком.
+            raise PartialError(
+                f"poll pending HTTP {p.status_code} — "
+                f"PENDING uuid={uuid} chunk={chunk_key} "
+                f"created={created.isoformat(timespec='seconds')}")
+    # Pending нет (или протух/чужой чанк/ERROR/404) — заказываем новый отчёт.
+    r = _request("post", HOST + "/api/client/statistics", token,
+                 body={"campaigns": campaign_ids, "dateFrom": since_s,
+                       "dateTo": to_s, "groupBy": "DATE"})
+    if r.status_code != 200:
+        raise PartialError(f"create HTTP {r.status_code}: {r.text[:120]}")
+    uuid = (r.json() or {}).get("UUID")
+    if not uuid:
+        raise PartialError(f"create без UUID: {r.text[:120]}")
+    created = datetime.now(timezone.utc)
+    link = None
+    for _ in range(POLL_MAX):
+        time.sleep(POLL_SLEEP)
+        p = _request("get", f"{HOST}/api/client/statistics/{uuid}", token)
+        if p.status_code != 200:
+            raise PartialError(
+                f"poll HTTP {p.status_code} — "
+                f"PENDING uuid={uuid} chunk={chunk_key} "
+                f"created={created.isoformat(timespec='seconds')}")
+        data = p.json() or {}
+        state = (data.get("state") or "").upper()
+        if state == "OK":
+            link = data.get("link")
+            break
+        if state in ("ERROR", "FAILED"):
+            raise PartialError(f"отчёт {uuid} state={state}")
+    if not link:
+        raise PartialError(
+            f"отчёт {uuid} не готов за {POLL_MAX * POLL_SLEEP:.0f}с — "
+            f"PENDING uuid={uuid} chunk={chunk_key} "
+            f"created={created.isoformat(timespec='seconds')}")
+    return _download(link, token, campaign_ids)
 
 
 def _parse_member(name, text, sku_to_pid, counters):
@@ -234,11 +332,11 @@ def _sku_map():
 def collect(since=None, to=None):
     print("[ozon_sku_ad] реклама Ozon по товарам", flush=True)
     db_pg.init()
+    cid = db_pg._cabinet_id()
     # «Умный ритм» (см. константы выше): в дневном окне и при свежем успешном
     # прогоне — мягкий skip, вечерний тик и так соберёт актуальные данные.
     now_msk = datetime.now()
     if SKIP_WINDOW_MSK[0] <= now_msk.hour < SKIP_WINDOW_MSK[1]:
-        cid = db_pg._cabinet_id()
         # rows_written IS NOT NULL — отсекает сам soft-skip: реальный сбор всегда
         # печатает ##OBS (rows_written заполняется оркестратором из маркера),
         # skip-прогон ##OBS не печатает → rows_written NULL. Без этого фильтра
@@ -283,7 +381,7 @@ def collect(since=None, to=None):
         print(f"  окно {s}..{e}: кампаний со spend>0: {len(campaigns)}", flush=True)
         for i in range(0, len(campaigns), CHUNK_CAMPAIGNS):
             chunk = campaigns[i:i + CHUNK_CAMPAIGNS]
-            members = _fetch_report(token, chunk, s, e)
+            members = _fetch_report(token, chunk, s, e, cid)
             for name, text in members:
                 all_rows.extend(_parse_member(name, text, sku_to_pid, counters))
         win_start = win_end + timedelta(days=1)
