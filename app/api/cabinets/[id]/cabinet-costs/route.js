@@ -1,8 +1,9 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import { wbCabinetCostLabel } from "@/lib/wbMetrics.js";
-import { ozCabinetCostLabel } from "@/lib/ozonMetrics.js";
+import { normalizeTaxMode } from "@/lib/tax.js";
+import { wbProfitCabinet } from "@/lib/wbMetrics.js";
+import { ozProfitCabinet } from "@/lib/ozonMetrics.js";
 import { defaultPeriod } from "@/lib/period.js";
 
 export const runtime = "nodejs";
@@ -21,70 +22,68 @@ export const dynamic = "force-dynamic";
 //  размазывать по SKU пропорционально выручке — это исказит маржу.
 //  Показываем ОТДЕЛЬНО: потребитель использует их для P&L кабинета.
 //
+//  ФИКС 2026-08-26 (нашёл владелец): раньше собирали суммы НАПРЯМУЮ из
+//  tenant.wb_cabinet_costs / tenant.ozon_cabinet_costs — сырые суммы в
+//  НАТИВНОМ знаке каждой площадки (WB: расход>0, возмещение<0; Ozon:
+//  расход<0, доход>0 — см. докстроки lib/wbMetrics.js:685-704,
+//  lib/ozonMetrics.js:548-565). Складывать их «как есть» в одну таблицу
+//  и одно «Итого» — ошибка того же класса, что чинили в каноне
+//  (ozonMetrics.js:555-565, «сложить сырое, не нормализовав»): знак статьи
+//  расходился с P&L, а «Итого» на Сводке арифметически НЕ совпадало с
+//  cabinetCostsTotal на P&L (доказано: июль-2026 каб.1, −58 354,67 ₽ на
+//  Сводке vs −38 474,07 ₽ в каноне/P&L — разница 19 880,60 ₽ = 2×WB-нетто).
+//  Теперь источник — КАНОН: wbProfitCabinet/ozProfitCabinet(...).cabinetCosts
+//  (тот же вызов, что использует /api/cabinets/[id]/pnl/route.js) — знак уже
+//  нормализован (amount<0 — расход, amount>0 — доход/возмещение), лейблы
+//  (включая Ozon accrual_<id> → русское имя) тоже приходят из канона.
+//
 //  Источник: tenant.wb_cabinet_costs (PK cost_type,period_from,period_to),
-//  tenant.ozon_cabinet_costs (PK cost_type,date). RLS изолирует по cabinet.
+//  tenant.ozon_cabinet_costs (PK cost_type,date) — читает канон. RLS
+//  изолирует по cabinet.
 // =====================================================================
 
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
-// Лейблы больше НЕ дублируются локально (мини-фикс 2026-08-21: страница
-// показывала сырые accrual_N для Ozon — LABELS ниже был WB-only словарём и
-// не знал про Ozon accrual_<id>). Канон:
-//  - WB: wbCabinetCostLabel(costType) — lib/wbMetrics.js (статичный словарь).
-//  - Ozon: ozCabinetCostLabel(db, costType) — lib/ozonMetrics.js
-//    (accrual_<id> → shared.ozon_accrual_types, кэш на процесс внутри).
-// Сырой cost_type всё равно остаётся в ответе отдельным полем (для отладки).
-
-async function collectWB(from, to) {
-  // WB хранит период отчёта как диапазон (period_from, period_to).
-  // Берём строки, пересекающиеся с [from; to].
-  let rows = [];
+async function collectWB(taxMode, from, to) {
+  let cabinetCosts = [];
   try {
-    rows = await new DatabaseSync("wb", { readOnly: true }).prepare(
-      `SELECT cost_type, COALESCE(SUM(amount),0) AS s
-         FROM cabinet_costs
-        WHERE period_from <= ? AND period_to >= ?
-        GROUP BY cost_type`
-    ).all(to, from);
+    const db = new DatabaseSync("wb", { readOnly: true });
+    const c = await wbProfitCabinet(db, taxMode, { from, to });
+    cabinetCosts = c.cabinetCosts;
   } catch {
-    rows = [];
+    cabinetCosts = [];
   }
-  const sum = rows.reduce((acc, r) => acc + (Number(r.s) || 0), 0);
+  const sum = round2(cabinetCosts.reduce((acc, x) => acc + x.amount, 0));
   return {
-    sum: round2(sum),
-    byType: rows.map((r) => ({
-      cost_type: r.cost_type,
-      label: wbCabinetCostLabel(r.cost_type),
-      amount: round2(r.s),
+    sum,
+    byType: cabinetCosts.map((x) => ({
+      cost_type: x.costType,
+      label: x.label,
+      amount: x.amount, // уже канон-знак (расход<0, доход/возмещение>0)
       platform: "wb",
     })),
   };
 }
 
-async function collectOzon(from, toEnd) {
-  // Ozon: period = один день (date). Простой BETWEEN.
-  let rows = [];
-  const db = new DatabaseSync("ozon", { readOnly: true });
+async function collectOzon(taxMode, from, to) {
+  let cabinetCosts = [];
   try {
-    rows = await db.prepare(
-      `SELECT cost_type, COALESCE(SUM(amount),0) AS s
-         FROM cabinet_costs
-        WHERE date >= ? AND date <= ?
-        GROUP BY cost_type`
-    ).all(from, toEnd);
+    const db = new DatabaseSync("ozon", { readOnly: true });
+    const c = await ozProfitCabinet(db, taxMode, { from, to });
+    cabinetCosts = c.cabinetCosts;
   } catch {
-    rows = [];
+    cabinetCosts = [];
   }
-  const sum = rows.reduce((acc, r) => acc + (Number(r.s) || 0), 0);
-  // ozCabinetCostLabel асинхронный (accrual_<id> резолвится через
-  // shared.ozon_accrual_types, кэш на процесс внутри lib/ozonMetrics.js).
-  const byType = await Promise.all(rows.map(async (r) => ({
-    cost_type: r.cost_type,
-    label: await ozCabinetCostLabel(db, r.cost_type),
-    amount: round2(r.s),
-    platform: "ozon",
-  })));
-  return { sum: round2(sum), byType };
+  const sum = round2(cabinetCosts.reduce((acc, x) => acc + x.amount, 0));
+  return {
+    sum,
+    byType: cabinetCosts.map((x) => ({
+      cost_type: x.costType,
+      label: x.label,
+      amount: x.amount, // уже канон-знак (расход<0, доход/возмещение>0)
+      platform: "ozon",
+    })),
+  };
 }
 
 export const GET = withCabinet(async (req, { cabinet }) => {
@@ -115,25 +114,42 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         if (!from) from = def.from;
       }
     }
-    const toEnd = to ? to + "T23:59:59" : "";
+    // Ozon-канон (ozProfitCabinet) сам сравнивает date по [from; to] без
+    // суффикса времени (см. lib/ozonMetrics.js:570-578) — toEnd/T23:59:59
+    // больше не нужен, канон — источник истины по границам периода.
+
+    // Налоговый режим на каждый МП — тот же паттерн, что в pnl/route.js.
+    // cabinetCosts[].amount не зависит от taxMode (нормализация знака —
+    // до расчёта налога), но wbProfitCabinet/ozProfitCabinet считают его
+    // как часть общего профита канона (base = wbProfitProduct/ozProfitProduct).
+    const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
+    const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
 
     let wb = { sum: 0, byType: [] };
     let oz = { sum: 0, byType: [] };
-    // ⚠️ Фикс при переносе: эталон забыл await здесь (Promise<...> использовался
-    // как объект). Теперь корректно await'им оба вызова.
-    if (platform !== "ozon") wb = await collectWB(from, to);
-    if (platform !== "wb")  oz = await collectOzon(from, toEnd);
+    if (platform !== "ozon") wb = await collectWB(wbTax, from, to);
+    if (platform !== "wb")  oz = await collectOzon(ozonTax, from, to);
 
     // Сливаем byType в единый список items, сортировка по |amount| (убывание).
-    // Не отбрасываем отрицательные (сторно WB) — показываем как есть.
+    // Не отбрасываем отрицательные статьи (расходы после нормализации) —
+    // показываем как есть, знак уже канон-знак.
     const items = [...wb.byType, ...oz.byType]
       .filter((x) => Math.abs(x.amount) > 0)
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
+    // «Итого» — ПОДПИСАННАЯ сумма нормализованных amount (тот же смысл,
+    // что cabinetCostsTotal в pnl/route.js) — должна арифметически совпадать
+    // с P&L за тот же период.
     const totalAll = round2(wb.sum + oz.sum);
+    // Доля — от ОБЩЕГО МОДУЛЯ (Σ|amount| по всем статьям), НЕ от totalAll:
+    // totalAll — подписанная сумма, взаимопогашение расход/возмещение (напр.
+    // WB promotion −84 395 ₽ и payout_other +68 774 ₽) может увести его к
+    // нулю или сменить знак — тогда доля каждой статьи считалась бы неверно
+    // или вообще не считалась. Модуль это гасит (тот же смысл, что был в
+    // комментарии до фикса: «чтобы сторно не съедал долю других типов»).
+    const totalAbs = round2(items.reduce((acc, x) => acc + Math.abs(x.amount), 0));
     for (const it of items) {
-      // Доля от общего модуля (чтобы сторно не «съедал» долю других типов).
-      it.share = totalAll ? Math.round(Math.abs(it.amount) / totalAll * 1000) / 10 : null;
+      it.share = totalAbs ? Math.round(Math.abs(it.amount) / totalAbs * 1000) / 10 : null;
     }
 
     return NextResponse.json({

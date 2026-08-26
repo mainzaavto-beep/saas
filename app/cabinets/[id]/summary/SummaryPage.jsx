@@ -619,7 +619,11 @@ export default function SummaryPage({ cabinetId }) {
                       }}>{it.platform === "wb" ? "WB" : "Ozon"}</span>
                     </Td>
                     <Td right>
-                      <span style={{ color: (it.amount || 0) < 0 ? C.pos : C.ink, fontWeight: 600 }}>
+                      {/* Знак/цвет как в P&L (PnlPage.jsx:255) — amount уже
+                          канон-знак (расход<0, доход/возмещение>0), тот же
+                          источник, что и на P&L: расход — красный, доход/
+                          возмещение — зелёный, без platform-веток. */}
+                      <span style={{ color: (it.amount || 0) < 0 ? C.neg : C.pos, fontWeight: 600 }}>
                         {money(it.amount)}
                       </span>
                     </Td>
@@ -631,7 +635,10 @@ export default function SummaryPage({ cabinetId }) {
                 <tr style={{ background: C.surfaceAlt, borderTop: `2px solid ${C.line}` }}>
                   <td style={tdFootL}>Итого</td>
                   <td style={tdFootR}>—</td>
-                  <td style={{ ...tdFootR, fontWeight: 800, color: C.neg }}>{money(cab.totals.all)}</td>
+                  {/* Цвет по знаку (как cabinetCostsTotal на P&L, PnlPage.jsx:68-72:
+                      v<0 → C.neg, иначе C.ink) — раньше был жёстко C.neg вне
+                      зависимости от факта. */}
+                  <td style={{ ...tdFootR, fontWeight: 800, color: (cab.totals.all || 0) < 0 ? C.neg : C.ink }}>{money(cab.totals.all)}</td>
                   <td style={tdFootR}>100%</td>
                 </tr>
               </tfoot>
