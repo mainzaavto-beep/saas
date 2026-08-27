@@ -44,7 +44,18 @@ const ALLOWED_KEYS = {
     logisticsFbo: { max: 100000 },
     adsRate: { max: 1 },
     cost: { max: 1000000 },
+    defectRate: { max: 1 }, // зеркало WB (задача 2026-08-27-unit-modes/1): брак-режим Ozon
   },
+};
+
+// Сентинель item_id=0 — НЕ товар, а «прикидка кабинета» для глобальной ставки
+// УСН (задача 2026-08-27-unit-modes/1, §3 плана). Отдельный узкий whitelist:
+// только usnRate, диапазон [0, 0.25] (потолок УСН Доходы−Расходы в льготных
+// регионах, см. lib/tax.js). Платформенно — сентинель хранится отдельно для
+// wb/ozon (тот же PK cabinet_id+platform+item_id=0), обычные строки usnRate
+// не принимают (см. ALLOWED_KEYS выше — там его нет ни для wb, ни для ozon).
+const SENTINEL_ALLOWED_KEYS = {
+  usnRate: { max: 0.25 },
 };
 
 export const POST = withCabinet(async (req, { cabinet }) => {
@@ -75,7 +86,7 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     return NextResponse.json({ error: `inputs превышает ${MAX_INPUTS_JSON_BYTES} байт` }, { status: 400 });
   }
 
-  const allowed = ALLOWED_KEYS[platform];
+  const allowed = item === 0 ? SENTINEL_ALLOWED_KEYS : ALLOWED_KEYS[platform];
   const clean = {};
   for (const [key, raw] of Object.entries(inputs)) {
     const bounds = allowed[key];

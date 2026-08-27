@@ -48,8 +48,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       avgMargin: valid.length > 0
         ? Math.round((valid.reduce((a, i) => a + (Number.isFinite(i.margin) ? i.margin : 0), 0) / valid.length) * 1000) / 10
         : 0,
-      wb: aggPlatform(valid, "wb"),
-      ozon: aggPlatform(valid, "ozon"),
+      wb: { ...aggPlatform(valid, "wb"), usnDefault: round4(wbRates.usnRate) },
+      ozon: { ...aggPlatform(valid, "ozon"), usnDefault: round4(ozRates.usnRate) },
     };
     return NextResponse.json({ items, totals, categories, whatif });
   } catch (e) {
@@ -67,6 +67,14 @@ function aggPlatform(items, platform) {
       : 0,
     lossCount: arr.filter((i) => i.profit < 0).length,
   };
+}
+
+// Дефолтная ставка УСН кабинета (фракция) — тот же источник, что и колонка
+// «УСН» в calcWB/calcOzon (taxRates(cabinet.shopTax.<platform>) выше). Отдаётся
+// в totals.<platform>.usnDefault (задача 2026-08-27-unit-modes/1, §3 плана) —
+// клиент (UnitPage.jsx) сеет дефолт «Ставки УСН, %» из неё, а не хардкодом.
+function round4(v) {
+  return Math.round((v + Number.EPSILON) * 10000) / 10000;
 }
 
 function median(arr) {
