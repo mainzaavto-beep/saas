@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 import os
+import random
 import time
 from typing import Any, Iterator
 
@@ -25,6 +26,28 @@ REQUEST_PAUSE_SEC = 1.0  # ≥1 с между страницами пагина�
 ACCRUAL_MAX_PAGES = 200  # потолок страниц/день: выше — что-то не так с курсором
 
 DEPTH_WARN_PAGES = 30  # аномальная глубина offset-пагинации — предупреждаем, не роняем
+
+# --- Ретраи/бэкофф одного HTTP-запроса (флап Ozon API 25-27.08.2026: /v1/finance/
+# accrual/types и /v1/analytics/data периодически не отвечают — таймаут/обрыв
+# соединения без HTTP-статуса — по несколько минут подряд, баннер зажигался почти
+# каждый прогон). Экспоненциальный бэкофф с джиттером: пауза перед повтором =
+# BASE_DELAY_SEC * 2^attempt + random[0, JITTER_SEC) — т.е. между 5 попытками паузы
+# ~2с → 4с → 8с → 16с (+ до 1с джиттера). Джиттер нужен, чтобы параллельные кабинеты/
+# сборщики не били по Ozon синхронной волной ретраев ровно в момент, когда API
+# отходит от сбоя (thundering herd после общего восстановления).
+RETRY_ATTEMPTS = 5
+RETRY_BASE_DELAY_SEC = 2.0
+RETRY_JITTER_SEC = 1.0
+
+# Per-request timeout снижен с прежних 60с до 20с (правка 2026-08-27, флап Ozon).
+# Причина: при 5 попытках по 60с ОДИН полностью исчерпанный запрос стоил бы ~5.5 мин —
+# а COLLECTOR_TIMEOUT сборщика (worker/orchestrator.py) = 900с, и сборщик делает
+# десятки запросов за прогон. 2-3 таких запроса съедали бы весь бюджет прогона ещё
+# ДО того, как воркер узнает о проблеме (процесс просто убьют по timeout без внятного
+# сообщения — то же самое, от чего лечит задача 4 ниже). 20с — с запасом больше
+# типичного времени ответа Ozon (обычно секунды), но достаточно мало, чтобы 5 попыток
+# с бэкоффом укладывались в ~2 мин worst-case на один запрос (см. арифметику в отчёте).
+REQUEST_TIMEOUT_SEC = 20
 
 SELLER_HOST = "https://api-seller.ozon.ru"
 # ВНИМАНИЕ: api-analytics.ozon.ru НЕ резолвится с нашего сервера (проверено в Фазе 2,
@@ -58,12 +81,24 @@ class OzonClient:
         }
 
     def _request(self, method: str, host: str, path: str, body: dict | None = None,
-                 retries: int = 5, timeout: int = 60) -> dict:
-        """HTTP-запрос с retry/backoff на 429 и сетевые ошибки. Уважает X-RateLimit-Reset.
-        method: 'post' | 'get'. Для GET body игнорируется (Ozon /v1/actions — GET)."""
+                 retries: int = RETRY_ATTEMPTS, timeout: int = REQUEST_TIMEOUT_SEC) -> dict:
+        """HTTP-запрос с ретраями на флап Ozon API: таймаут/обрыв соединения, 5xx, 429.
+        Экспоненциальный бэкофф с джиттером — см. RETRY_*/REQUEST_TIMEOUT_SEC вверху файла.
+        4xx-логические ошибки (400/403/404 и т.п., КРОМЕ 429) — это ошибка запроса,
+        не флап сети: ретраить бессмысленно, поднимаем OzonError сразу, без пауз.
+        429 — уважаем Retry-After (секунды, стандартный заголовок), если Ozon его
+        не отдаёт — X-RateLimit-Reset, иначе свой экспоненциальный бэкофф.
+        method: 'post' | 'get'. Для GET body игнорируется (Ozon /v1/actions — GET).
+
+        При исчерпании всех попыток сообщение включает ПОСЛЕДНЮЮ причину, число
+        попыток и реальное затраченное время (было — голое «: None» на некоторых
+        путях исчерпания, т.к. причина не сохранялась для 429/5xx — см. отчёт
+        ozon-client-retries.md)."""
         url = host.rstrip("/") + path
-        last_exc: Exception | None = None
+        last_reason = "неизвестная причина"
+        start = time.monotonic()
         for attempt in range(retries):
+            is_last = attempt == retries - 1
             try:
                 if method.lower() == "get":
                     r = requests.get(url, headers=self._headers(), timeout=timeout)
@@ -71,25 +106,38 @@ class OzonClient:
                     r = requests.post(url, headers=self._headers(), json=body or {},
                                       timeout=timeout)
             except requests.RequestException as e:
-                last_exc = e
-                if attempt == retries - 1:
-                    raise
-                time.sleep(5 * (attempt + 1))
+                last_reason = f"{type(e).__name__}: {e}"
+                if is_last:
+                    break
+                time.sleep(_backoff_delay(attempt))
                 continue
 
             if r.status_code == 429:
-                # У Ozon лимит по окну — ждём, отдано в заголовках.
+                # У Ozon лимит по окну — ждём столько, сколько говорит Ozon, иначе
+                # свой экспоненциальный бэкофф (не голые 30/60с, как раньше).
+                last_reason = "429 too many requests"
+                if is_last:
+                    break
+                retry_after = r.headers.get("Retry-After")
                 reset = r.headers.get("X-RateLimit-Reset")
-                wait = float(reset) if reset and reset.isdigit() else 30.0
-                time.sleep(min(wait, 60.0))
-                continue
-            if r.status_code >= 500:
-                if attempt == retries - 1:
-                    r.raise_for_status()
-                time.sleep(3 * (attempt + 1))
+                if retry_after and retry_after.replace(".", "", 1).isdigit():
+                    wait = min(float(retry_after), 60.0)
+                elif reset and reset.replace(".", "", 1).isdigit():
+                    wait = min(float(reset), 60.0)
+                else:
+                    wait = _backoff_delay(attempt)
+                time.sleep(wait)
                 continue
 
-            # 4xx (кроме 429) — разбор тела. Ozon возвращает JSON с code/message.
+            if r.status_code >= 500:
+                last_reason = f"{r.status_code} server error: {r.text[:200]}"
+                if is_last:
+                    break
+                time.sleep(_backoff_delay(attempt))
+                continue
+
+            # 4xx (кроме 429) — не флап, а ошибка запроса. Разбор тела и немедленный
+            # отказ БЕЗ ретраев. Ozon возвращает JSON с code/message.
             try:
                 data = r.json()
             except ValueError:
@@ -100,14 +148,19 @@ class OzonClient:
                 msg = data.get("message") or data.get("error", {}).get("message") or r.text
                 raise OzonError(f"Ozon API {r.status_code} [{code}]: {msg}")
             return data.get("result", data)
-        raise OzonError(f"Исчерпаны попытки запроса {path}: {last_exc}")
+
+        elapsed = time.monotonic() - start
+        raise OzonError(
+            f"Исчерпаны попытки запроса {path}: {last_reason} "
+            f"после {retries} попыток за {elapsed:.0f}с")
 
     def _post(self, host: str, path: str, body: dict | None = None,
-              retries: int = 5, timeout: int = 60) -> dict:
+              retries: int = RETRY_ATTEMPTS, timeout: int = REQUEST_TIMEOUT_SEC) -> dict:
         """POST с retry/backoff (делегирует в _request)."""
         return self._request("post", host, path, body, retries, timeout)
 
-    def _get(self, host: str, path: str, retries: int = 5, timeout: int = 60) -> dict:
+    def _get(self, host: str, path: str, retries: int = RETRY_ATTEMPTS,
+             timeout: int = REQUEST_TIMEOUT_SEC) -> dict:
         """GET с retry/backoff (делегирует в _request). Для /v1/actions и др."""
         return self._request("get", host, path, None, retries, timeout)
 
@@ -511,6 +564,13 @@ class OzonClient:
         data = self._post(self.host, "/v1/actions/products",
                           {"action_id": action_id, "limit": limit})
         return data if isinstance(data, dict) else {}
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Пауза перед следующей попыткой (attempt — индекс только что провалившейся
+    попытки, с 0): экспонента RETRY_BASE_DELAY_SEC*2^attempt + джиттер [0, RETRY_JITTER_SEC).
+    При RETRY_ATTEMPTS=5 даёт паузы ~2с → 4с → 8с → 16с перед попытками 2..5."""
+    return RETRY_BASE_DELAY_SEC * (2 ** attempt) + random.uniform(0, RETRY_JITTER_SEC)
 
 
 # --- вспомогательное форматирование дат для тела запроса ---
