@@ -159,17 +159,23 @@ export default function UnitPage({ cabinetId }) {
   // (ответ уже пришёл) — isCurrent() гасит применение результата стейл-вызова
   // (индикатор/ретрай не трогаются устаревшим поколением). Свежий вызов
   // всегда либо единственный в полёте, либо последний, чей результат учтён.
-  const doSave = useCallback(async (sku, inputs) => {
-    // Новая отправка для sku перекрывает и таймер ретрая, и запрос в полёте —
+  // `key` — ключ дебаунса/секвенирования (по умолчанию = sku). Разведён от
+  // `sku`/`itemId`, т.к. сентинель ставки УСН шлёт itemId=0 ОДИНАКОВО для wb
+  // и ozon — общий ключ `0` заставлял переключение вкладки в течение 1с
+  // (дебаунс) убивать таймер/запрос другой площадки через clearTimeout
+  // (пост-ревью, находка «сентинель-таймеры per-platform»). itemId в теле
+  // запроса всегда считается из `sku`, а не из `key`.
+  const doSave = useCallback(async (sku, inputs, key = sku) => {
+    // Новая отправка для key перекрывает и таймер ретрая, и запрос в полёте —
     // предыдущее поколение больше не должно ни дописаться в БД, ни повлиять
     // на индикатор.
-    clearTimeout(retryTimers.current[sku]);
-    saveAbort.current[sku]?.abort();
+    clearTimeout(retryTimers.current[key]);
+    saveAbort.current[key]?.abort();
     const ctrl = new AbortController();
-    saveAbort.current[sku] = ctrl;
-    saveSeq.current[sku] = (saveSeq.current[sku] || 0) + 1;
-    const seq = saveSeq.current[sku];
-    const isCurrent = () => saveSeq.current[sku] === seq;
+    saveAbort.current[key] = ctrl;
+    saveSeq.current[key] = (saveSeq.current[key] || 0) + 1;
+    const seq = saveSeq.current[key];
+    const isCurrent = () => saveSeq.current[key] === seq;
 
     const body = JSON.stringify({ platform, itemId: Number(sku), inputs: inputs && Object.keys(inputs).length > 0 ? inputs : null });
     setSaveState({ status: "saving", time: null });
@@ -181,11 +187,11 @@ export default function UnitPage({ cabinetId }) {
       if (e?.name === "AbortError") return; // абортирован более свежей отправкой — не ошибка
       if (!isCurrent()) return; // стейл-ответ (уже есть более новое поколение) — игнорируем
       setSaveState({ status: "retrying", time: null });
-      retryTimers.current[sku] = setTimeout(async () => {
+      retryTimers.current[key] = setTimeout(async () => {
         if (!isCurrent()) return; // за 3с успела прийти более новая правка — ретрай не нужен
-        saveAbort.current[sku]?.abort();
+        saveAbort.current[key]?.abort();
         const ctrl2 = new AbortController();
-        saveAbort.current[sku] = ctrl2;
+        saveAbort.current[key] = ctrl2;
         try {
           const r2 = await fetch(`/api/cabinets/${cabinetId}/unit/whatif`, { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: ctrl2.signal });
           if (!r2.ok) throw new Error(String(r2.status));
@@ -198,9 +204,9 @@ export default function UnitPage({ cabinetId }) {
     }
   }, [cabinetId, platform]);
 
-  const scheduleSave = useCallback((sku, inputs) => {
-    clearTimeout(saveTimers.current[sku]);
-    saveTimers.current[sku] = setTimeout(() => doSave(sku, inputs), 1000);
+  const scheduleSave = useCallback((sku, inputs, key = sku) => {
+    clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(() => doSave(sku, inputs, key), 1000);
   }, [doSave]);
 
   const setOverride = useCallback((sku, field, rawValue, asFraction) => {
@@ -264,19 +270,24 @@ export default function UnitPage({ cabinetId }) {
   // дебаунс 1000мс). Платформа — берётся из текущего состояния `platform`
   // (doSave уже её захватывает), поэтому сентинель пишется в кабинетную
   // строку активной вкладки. n — процент (0..25), как ввёл пользователь.
+  // Ключ дебаунса/секвенирования — `${platform}:0` (НЕ голый sku=0): itemId=0
+  // одинаков для wb/ozon, а ключ таймера/seq/abort должен быть РАЗНЫМ, иначе
+  // переключение вкладки в течение 1с убивает ещё не отправленный сейв другой
+  // площадки через clearTimeout (пост-ревью).
   const setUsnRate = useCallback((n) => {
     setUsnRateOverride((prev) => ({ ...prev, [platform]: n }));
-    scheduleSave(0, { usnRate: n / 100 });
+    scheduleSave(0, { usnRate: n / 100 }, `${platform}:0`);
   }, [platform, scheduleSave]);
 
   // «⟲» у поля ставки УСН — сброс к дефолту кабинета (usnDefault) и немедленный
   // POST inputs:null (удаляет сентинель), минуя дебаунс — тот же паттерн, что
-  // resetOverride.
+  // resetOverride. Тот же per-platform ключ, что и setUsnRate.
   const resetUsnRate = useCallback(() => {
-    clearTimeout(saveTimers.current[0]);
-    clearTimeout(retryTimers.current[0]);
+    const key = `${platform}:0`;
+    clearTimeout(saveTimers.current[key]);
+    clearTimeout(retryTimers.current[key]);
     setUsnRateOverride((prev) => ({ ...prev, [platform]: null }));
-    doSave(0, null);
+    doSave(0, null, key);
   }, [platform, doSave]);
 
   const platformItems = useMemo(
@@ -435,7 +446,7 @@ export default function UnitPage({ cabinetId }) {
             {paged.map((it) => (
               <ProductRow key={it.sku} it={it} cols={cols} platform={platform} whatifFields={whatifFields}
                 override={overrides[it.sku]} applying={applying === it.sku}
-                buyoutOn={buyoutOn} defectOn={defectOn} usnRateFrac={usnRateFrac}
+                buyoutOn={buyoutOn} defectOn={defectOn} usnRateFrac={usnRateFrac} usnCustom={usnRateOverride[platform] != null}
                 onOverride={setOverride} onApply={applyOverride} onReset={resetOverride} />
             ))}
             {paged.length === 0 && (
@@ -472,20 +483,25 @@ export default function UnitPage({ cabinetId }) {
 // =====================================================================
 //  ProductRow — двойная строка (ФАКТ + ПРИКИДКА)
 // =====================================================================
-function ProductRow({ it, cols, platform, whatifFields, override, applying, buyoutOn, defectOn, usnRateFrac, onOverride, onApply, onReset }) {
+function ProductRow({ it, cols, platform, whatifFields, override, applying, buyoutOn, defectOn, usnRateFrac, usnCustom, onOverride, onApply, onReset }) {
   const ov = override || null;
-  // Прикидка теперь считается ВСЕГДА (не только при наличии сохранённого
-  // per-sku override), т.к. режимы «с % выкупа»/«с браком» и глобальная
-  // ставка УСН — page-level входы, влияющие на КАЖДУЮ строку. В дефолтном
-  // состоянии (buyoutOn/defectOn=true, usnRateFrac=usnDefault, ov=null) это
-  // идемпотентно повторяет расчёт it (те же входы → те же числа, регресс не
-  // ломается — ФАКТ-строка вообще не пересчитывается, она server-truth).
+  // Прикидка считается заново, когда РЕАЛЬНО активен какой-то режим/ставка/
+  // override — per-sku ov, «с % выкупа»/«с браком» OFF, или явная (не
+  // дефолтная) ставка УСН на этой вкладке. Если НИЧЕГО из этого не активно —
+  // короткое замыкание `return it` (пост-ревью, фикс «фантомный changed»):
+  // calcWB/calcOzon скармливают себе же СВОИ ОКРУГЛЁННЫЕ выходы (round2 на
+  // logisticsFbo и т.п.) вместо исходных дробных фактов — идемпотентность
+  // держится «в среднем», но даёт дрейф ±0.005 на части товаров (~25% Ozon,
+  // ~3.5% WB на проде), который resultEqual (округление до копейки) иногда
+  // засчитывает как «изменилось» → ложный бейдж «Δ +0₽» на нетронутой строке.
+  // При коротком замыкании пересчёта вообще нет — whatif===it, дрейфу неоткуда взяться.
   const whatif = useMemo(() => {
+    if (!ov && buyoutOn && defectOn && !usnCustom) return it;
     const input = { ...it, ...ov, usnRate: usnRateFrac };
     if (!buyoutOn) input.buyout = 1; // «с % выкупа» OFF — нейтральный вход, сохранённые прикидки не трогаем
     if (!defectOn) input.defectRate = 0; // «с браком» OFF — нейтральный вход
     return platform === "wb" ? calcWB(input) : calcOzon(input);
-  }, [it, ov, platform, buyoutOn, defectOn, usnRateFrac]);
+  }, [it, ov, platform, buyoutOn, defectOn, usnRateFrac, usnCustom]);
 
   const hasOverride = !!ov && Object.keys(ov).length > 0; // per-sku override — управляет только кнопками «↧ в факт»/«⟲ к факту»
   // «changed» — шире hasOverride: строка могла измениться и из-за глобальных

@@ -1649,12 +1649,13 @@ cabinetId/platform в ключе — глобально на страницу), 
 
 **Ozon-модель: defect-зеркало WB.** `calcOzon` (`lib/unit.js`) получил ту же
 семантику брака, что и `calcWB`: `defectLoss = purchase × defectRate`,
-`profitWithDefect = profit − defectLoss`, `marginWithDefect =
-profitWithDefect / <база margin>`. База маржи — «родная» для площадки, не
-унифицирована: у WB это `priceCabinet` (как у обычной `margin`, §11.4), у
-Ozon — `revNet` (тоже как у обычной `margin` этой площадки). Разные базы —
-не расхождение, а продолжение уже существующего разделения WB/Ozon по базе
-маржи из §11.4/§12.
+`profitWithDefect = profit − defectLoss`. **У WB `marginWithDefect` НЕ
+выводится вовсе** (нет ни в `calcWB`, ни в `COLUMNS_WB`) — у WB есть только
+`profitWithDefect`. `marginWithDefect = profitWithDefect / revNet` — только
+у Ozon (`COLUMNS_OZON`), база — `revNet` (та же, что у обычной `margin` этой
+площадки, §11.4). Разные объёмы зеркала (WB — только `profitWithDefect`,
+Ozon — `profitWithDefect` И `marginWithDefect`) — не расхождение, а буквальное
+следование брифу задачи (`marginWithDefect` для WB не запрашивался).
 
 **ЯВНО: «с % выкупа» на Ozon — no-op, это осознанно, не баг.** У Ozon нет
 поля/колонки `buyout`, и `calcOzon` его вообще не принимает как вход —
