@@ -27,7 +27,11 @@ const COMPACT = {
   // финальная цена покупателя из WB API (discountedPrice), от которой считаются
   // налоги/комиссии. Заменяет эмуляцию «СПП» (WB не отдаёт её отдельным полем).
   wb: ["name", "priceSeller", "discount", "priceSell", "spp", "priceWithSpp", "priceBuy", "adsRate", "ads", "buyout", "defectRate", "profitWithDefect"],
-  ozon: ["name", "priceSell", "boost", "priceBuyer", "vat", "revNet", "commission", "logisticsFbo", "ads", "usn", "cost", "profit", "margin"],
+  // defectRate/profitWithDefect/marginWithDefect добавлены в дефолтный набор
+  // (2026-08-27, режимы юнитки) — зеркало WB-COMPACT (там defectRate/
+  // profitWithDefect уже в списке); галочка «с браком» их фильтрует, но им
+  // нужно СНАЧАЛА быть в базовом списке, иначе фильтрации нечего показывать.
+  ozon: ["name", "priceSell", "boost", "priceBuyer", "vat", "revNet", "commission", "logisticsFbo", "ads", "usn", "cost", "profit", "margin", "defectRate", "profitWithDefect", "marginWithDefect"],
 };
 
 const WHATIF_INPUTS = {
@@ -48,8 +52,19 @@ const WHATIF_INPUTS = {
     { key: "logisticsFbo", label: "Логистика FBO", unit: "₽", max: 100000 },
     { key: "adsRate", label: "ДРР", unit: "%", max: 100, asFraction: true },
     { key: "cost", label: "Себест.", unit: "₽", max: 1000000 },
+    { key: "defectRate", label: "% брака", unit: "%", max: 100, asFraction: true },
   ],
 };
+
+// Галочки «с % выкупа» / «с браком» (2026-08-27, режимы юнитки): управляют
+// И видимостью колонок (COMPACT/full фильтруются одинаково), И calc-входами
+// прикидки (OFF → нейтральный вход buyout=1 / defectRate=0 — см. ProductRow).
+// Состояние — localStorage, глобально на страницу (без cabinetId/platform в
+// ключе — решение брифа задачи 2, «ключ не нужен»).
+const HIDDEN_WHEN_BUYOUT_OFF = new Set(["buyout"]);
+const HIDDEN_WHEN_DEFECT_OFF = new Set(["defectRate", "profitWithDefect", "marginWithDefect"]);
+const LS_BUYOUT_KEY = "unit.buyoutOn";
+const LS_DEFECT_KEY = "unit.defectOn";
 
 export default function UnitPage({ cabinetId }) {
   const [platform, setPlatform] = useState("wb");
@@ -60,6 +75,14 @@ export default function UnitPage({ cabinetId }) {
   const [onlyLoss, setOnlyLoss] = useState(false);
   const [hideDraft, setHideDraft] = useState(true);
   const [full, setFull] = useState(false);
+  // Режимы «с % выкупа» / «с браком» — дефолт ON (=текущий вид: WB уже
+  // показывает buyout/defectRate по умолчанию в COMPACT — регресс-инвариант
+  // сохраняется, т.к. ON = реальные входы calc, без нейтрализации).
+  const [buyoutOn, setBuyoutOn] = useState(true);
+  const [defectOn, setDefectOn] = useState(true);
+  // Ставка УСН, % — сентинель кабинета (itemId=0), отдельно на площадку.
+  // null = не задано явно пользователем → берём usnDefault из ответа /unit/all.
+  const [usnRateOverride, setUsnRateOverride] = useState({ wb: null, ozon: null });
   const [pageSize, setPageSize] = useState(50);
   const [page, setPage] = useState(1);
   const [applying, setApplying] = useState(null);
@@ -82,6 +105,20 @@ export default function UnitPage({ cabinetId }) {
     };
   }, [cabinetId]);
 
+  // localStorage — состояние галочек «с % выкупа»/«с браком» (view-настройка
+  // страницы, не данные кабинета). Чтение после mount (SSR не имеет доступа
+  // к localStorage); запись при каждом изменении.
+  useEffect(() => {
+    try {
+      const b = localStorage.getItem(LS_BUYOUT_KEY);
+      const d = localStorage.getItem(LS_DEFECT_KEY);
+      if (b != null) setBuyoutOn(b === "1");
+      if (d != null) setDefectOn(d === "1");
+    } catch {}
+  }, []);
+  useEffect(() => { try { localStorage.setItem(LS_BUYOUT_KEY, buyoutOn ? "1" : "0"); } catch {} }, [buyoutOn]);
+  useEffect(() => { try { localStorage.setItem(LS_DEFECT_KEY, defectOn ? "1" : "0"); } catch {} }, [defectOn]);
+
   useEffect(() => {
     fetch(`/api/cabinets/${cabinetId}/unit/all`)
       .then((r) => r.json())
@@ -90,10 +127,18 @@ export default function UnitPage({ cabinetId }) {
         setData(d);
         // Сид: прикидки, сохранённые ранее (tenant.unit_whatif), накладываются
         // на строки при загрузке — ключ overrides = sku (как и весь остальной
-        // код страницы), поэтому wb/ozon сливаются в один словарь.
+        // код страницы), поэтому wb/ozon сливаются в один словарь. itemId=0 —
+        // сентинель ставки УСН (кабинетный, не товар) — сеется ОТДЕЛЬНО в
+        // usnRateOverride, а не в overrides (иначе «завис» бы ключом "0" в
+        // словаре прикидок, не относящемся ни к одному товару).
         if (d.whatif) {
           const seed = { ...(d.whatif.wb || {}), ...(d.whatif.ozon || {}) };
+          delete seed["0"];
           if (Object.keys(seed).length > 0) setOverrides((prev) => ({ ...seed, ...prev }));
+          setUsnRateOverride({
+            wb: d.whatif.wb?.["0"]?.usnRate != null ? d.whatif.wb["0"].usnRate * 100 : null,
+            ozon: d.whatif.ozon?.["0"]?.usnRate != null ? d.whatif.ozon["0"].usnRate * 100 : null,
+          });
         }
       })
       .catch((e) => setError(String(e)));
@@ -214,6 +259,26 @@ export default function UnitPage({ cabinetId }) {
     doSave(sku, null);
   }, [doSave]);
 
+  // Ставка УСН — сентинель itemId=0 в tenant.unit_whatif (та же doSave/
+  // scheduleSave-механика, что и per-sku прикидка: секвенирование, ретрай,
+  // дебаунс 1000мс). Платформа — берётся из текущего состояния `platform`
+  // (doSave уже её захватывает), поэтому сентинель пишется в кабинетную
+  // строку активной вкладки. n — процент (0..25), как ввёл пользователь.
+  const setUsnRate = useCallback((n) => {
+    setUsnRateOverride((prev) => ({ ...prev, [platform]: n }));
+    scheduleSave(0, { usnRate: n / 100 });
+  }, [platform, scheduleSave]);
+
+  // «⟲» у поля ставки УСН — сброс к дефолту кабинета (usnDefault) и немедленный
+  // POST inputs:null (удаляет сентинель), минуя дебаунс — тот же паттерн, что
+  // resetOverride.
+  const resetUsnRate = useCallback(() => {
+    clearTimeout(saveTimers.current[0]);
+    clearTimeout(retryTimers.current[0]);
+    setUsnRateOverride((prev) => ({ ...prev, [platform]: null }));
+    doSave(0, null);
+  }, [platform, doSave]);
+
   const platformItems = useMemo(
     () => (data?.items || []).filter((i) => i.platform === platform),
     [data, platform]
@@ -251,10 +316,19 @@ export default function UnitPage({ cabinetId }) {
 
   const cols = useMemo(() => {
     const base = platform === "ozon" ? COLUMNS_OZON : COLUMNS_WB;
-    if (full) return base;
     const byKey = Object.fromEntries(base.map((c) => [c.key, c]));
-    return COMPACT[platform].map((k) => byKey[k]).filter(Boolean);
-  }, [platform, full]);
+    let list = full ? base : COMPACT[platform].map((k) => byKey[k]).filter(Boolean);
+    if (!buyoutOn) list = list.filter((c) => !HIDDEN_WHEN_BUYOUT_OFF.has(c.key));
+    if (!defectOn) list = list.filter((c) => !HIDDEN_WHEN_DEFECT_OFF.has(c.key));
+    return list;
+  }, [platform, full, buyoutOn, defectOn]);
+
+  // Ставка УСН активной вкладки — дефолт usnDefault (сервер, per platform) или
+  // явный override пользователя (сентинель). Фракция всегда идёт в calc всех
+  // строк прикидки (ProductRow), проценты — в поле ввода.
+  const usnDefaultPct = data ? (data.totals?.[platform]?.usnDefault ?? 0) * 100 : 0;
+  const usnRatePct = usnRateOverride[platform] != null ? usnRateOverride[platform] : usnDefaultPct;
+  const usnRateFrac = usnRatePct / 100;
 
   const t = useMemo(() => {
     const valid = filtered.filter((i) => !i.draft && Number.isFinite(i.profit));
@@ -325,6 +399,18 @@ export default function UnitPage({ cabinetId }) {
         <label style={labelStyle}><input type="checkbox" checked={onlyLoss} onChange={(e) => setOnlyLoss(e.target.checked)} /> только убыточные</label>
         <label style={labelStyle}><input type="checkbox" checked={hideDraft} onChange={(e) => setHideDraft(e.target.checked)} /> скрыть черновики</label>
         <label style={labelStyle}><input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} /> все колонки</label>
+        <label style={labelStyle}><input type="checkbox" checked={buyoutOn} onChange={(e) => setBuyoutOn(e.target.checked)} /> с % выкупа</label>
+        <label style={labelStyle}><input type="checkbox" checked={defectOn} onChange={(e) => setDefectOn(e.target.checked)} /> с браком</label>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.muted }}>
+          Ставка УСН:
+          <OverrideInput sku="usn" field="Ставка УСН" asFraction={false} unit="%" max={25}
+            value={usnRatePct} isChanged={usnRateOverride[platform] != null}
+            onChange={(_sku, _field, n) => setUsnRate(n)} />
+          {usnRateOverride[platform] != null && (
+            <button onClick={resetUsnRate} title="Сбросить к дефолтной ставке кабинета"
+              style={{ padding: "3px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: `1px solid ${C.line}`, borderRadius: 6, background: C.surfaceAlt, color: C.muted }}>⟲</button>
+          )}
+        </span>
       </div>
 
       {/* Легенда + индикатор автосейва */}
@@ -349,6 +435,7 @@ export default function UnitPage({ cabinetId }) {
             {paged.map((it) => (
               <ProductRow key={it.sku} it={it} cols={cols} platform={platform} whatifFields={whatifFields}
                 override={overrides[it.sku]} applying={applying === it.sku}
+                buyoutOn={buyoutOn} defectOn={defectOn} usnRateFrac={usnRateFrac}
                 onOverride={setOverride} onApply={applyOverride} onReset={resetOverride} />
             ))}
             {paged.length === 0 && (
@@ -385,16 +472,27 @@ export default function UnitPage({ cabinetId }) {
 // =====================================================================
 //  ProductRow — двойная строка (ФАКТ + ПРИКИДКА)
 // =====================================================================
-function ProductRow({ it, cols, platform, whatifFields, override, applying, onOverride, onApply, onReset }) {
+function ProductRow({ it, cols, platform, whatifFields, override, applying, buyoutOn, defectOn, usnRateFrac, onOverride, onApply, onReset }) {
   const ov = override || null;
+  // Прикидка теперь считается ВСЕГДА (не только при наличии сохранённого
+  // per-sku override), т.к. режимы «с % выкупа»/«с браком» и глобальная
+  // ставка УСН — page-level входы, влияющие на КАЖДУЮ строку. В дефолтном
+  // состоянии (buyoutOn/defectOn=true, usnRateFrac=usnDefault, ov=null) это
+  // идемпотентно повторяет расчёт it (те же входы → те же числа, регресс не
+  // ломается — ФАКТ-строка вообще не пересчитывается, она server-truth).
   const whatif = useMemo(() => {
-    if (!ov) return it;
-    return platform === "wb" ? calcWB({ ...it, ...ov }) : calcOzon({ ...it, ...ov });
-  }, [it, ov, platform]);
+    const input = { ...it, ...ov, usnRate: usnRateFrac };
+    if (!buyoutOn) input.buyout = 1; // «с % выкупа» OFF — нейтральный вход, сохранённые прикидки не трогаем
+    if (!defectOn) input.defectRate = 0; // «с браком» OFF — нейтральный вход
+    return platform === "wb" ? calcWB(input) : calcOzon(input);
+  }, [it, ov, platform, buyoutOn, defectOn, usnRateFrac]);
 
-  const hasOverride = !!ov && Object.keys(ov).length > 0;
-  const dProfit = hasOverride ? whatif.profit - it.profit : 0;
-  const dMargin = hasOverride ? (whatif.margin - it.margin) * 100 : 0;
+  const hasOverride = !!ov && Object.keys(ov).length > 0; // per-sku override — управляет только кнопками «↧ в факт»/«⟲ к факту»
+  // «changed» — шире hasOverride: строка могла измениться и из-за глобальных
+  // режимов/ставки без единого per-sku override (badge/подсветка должны это видеть).
+  const changed = hasOverride || !resultEqual(whatif.profit, it.profit) || !resultEqual(whatif.margin, it.margin);
+  const dProfit = changed ? whatif.profit - it.profit : 0;
+  const dMargin = changed ? (whatif.margin - it.margin) * 100 : 0;
   const pos = dProfit >= 0;
 
   const fieldMeta = (key) => whatifFields.find((f) => f.key === key);
@@ -440,7 +538,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
               <td key={c.key} style={{ ...td(c, it), verticalAlign: "middle", whiteSpace: "nowrap" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: C.accent, textTransform: "uppercase" }}>прикидка</span>
-                  {hasOverride ? (
+                  {changed ? (
                     <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 7px", borderRadius: 6, background: pos ? soft("pos", 14) : soft("neg", 14), color: pos ? C.pos : C.neg, whiteSpace: "nowrap" }}>
                       Δ {pos ? "+" : ""}{Math.round(dProfit)}₽ · {pos ? "+" : ""}{dMargin.toFixed(1)}%
                     </span>
@@ -468,7 +566,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, onOv
               </td>
             );
           }
-          const isChanged = hasOverride && !resultEqual(it[c.key], whatif[c.key]);
+          const isChanged = !resultEqual(it[c.key], whatif[c.key]);
           return (
             <td key={c.key} style={{
               ...td(c, whatif),
