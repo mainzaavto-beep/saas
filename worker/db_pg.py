@@ -900,6 +900,34 @@ def upsert_ozon_accruals_many(rows):
     return len(rows)
 
 
+def update_ozon_delivered_dt(date_from=None):
+    """ozon_orders.delivered_dt := MIN(date) начислений «последней мили» по unit_number
+    (type_id: 28 LastMile, 29 LastMileCourier «Доставка до места выдачи»,
+    30 LastMilePickUpPoint «Выдача товара»). Семантика сверена с живым API 28.08.2026:
+    у постинга 77388497-0210-2 тип 29 датирован 2026-08-22 — день в день с
+    OperationAgentDeliveredToCustomer из /v3/finance/transaction/list.
+    Вне _OZ_ORDERS_MAP сознательно: upsert заказов не должен затирать дату NULL-ом.
+    date_from сужает окно по дате начисления (плановый прогон); None — вся история."""
+    cond = "AND date >= %s" if date_from else ""
+    sql = f"""
+        UPDATE tenant.ozon_orders o
+           SET delivered_dt = d.dt, updated_at = now()
+          FROM (SELECT unit_number, MIN(date)::text AS dt
+                  FROM tenant.ozon_accruals
+                 WHERE type_id IN (28, 29, 30)
+                   AND unit_number IS NOT NULL AND unit_number <> ''
+                   {cond}
+                 GROUP BY unit_number) d
+         WHERE o.posting_number = d.unit_number
+           AND o.delivered_dt IS DISTINCT FROM d.dt
+    """
+    params = [date_from] if date_from else []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.rowcount
+
+
 # --- daily_stock (остатки FBO) ---
 _OZ_STOCK_COLS = ["product_id", "date", "warehouse", "fbo_present", "fbo_reserved", "fbo_defect"]
 

@@ -313,6 +313,10 @@ def collect(date_from=None, date_to=None):
     if mismatches:
         msg += f", расхождений строки/total_amount: {mismatches}"
     print(msg, flush=True)
+
+    upd = db_pg.update_ozon_delivered_dt(date_from=d_from)
+    print(f"[ozon_accruals] delivered_dt: обновлено {upd} строк ozon_orders", flush=True)
+
     print(f"##OBS rows={written} from={d_from} to={d_to}", flush=True)
     _MISMATCHES = mismatches
     return written
