@@ -794,6 +794,13 @@ git commit -m "feat(worker): ozon_references — справочник класт
 - Consumes: всё из задач 1–7.
 - Produces: заполненная история (склады, схемы, даты, FBS в деньгах), повторяемый смоук-скрипт.
 
+- [ ] **Step 0: Очистить мусорную ozon_sales** (вскрыто 28.08 в задаче 4: /v3/posting/fbo/list игнорирует filter.status, cancelled-проход исторически перезаписывал все продажи как возвраты — вся таблица до фикса мусорная; бэкфилл не перезапишет строки-фантомы недоставленных постингов, поэтому чистим целиком и пересобираем)
+
+```bash
+PGPASSFILE=/root/.pgpass-admin psql -h localhost -U postgres -d saas -c "DELETE FROM tenant.ozon_sales;"
+```
+Expected: `DELETE N` (~3600+); дальше Step 1 наполняет таблицу заново честными строками.
+
 - [ ] **Step 1: Бэкфилл Ozon** (окно с 01.05 — начало истории заказов; порядок сборщиков в списке не важен, оркестратор соблюдает инвариант accruals→costs сам; таймаут поднят на время бэкфилла)
 
 Run: `set -a; . /etc/saas-worker.env; set +a; cd /opt/agents/saas && SAAS_COLLECTOR_TIMEOUT_SEC=3600 python3 -m worker.orchestrator --all --collectors ozon_orders,ozon_sales,ozon_accruals,ozon_order_costs --date-from 2026-05-01 --date-to $(date +%F)`
