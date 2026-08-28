@@ -809,6 +809,10 @@ _OZ_ORDERS_MAP = [
     ("status", "status"), ("is_cancel", "is_cancel"), ("cancel_dt", "cancel_dt"),
     ("qty", "qty"), ("price", "price"), ("total", "total"),
     ("warehouse", "warehouse"), ("region", "region"), ("size", "size"),
+    # география 2.0 (047): delivered_dt сознательно отсутствует —
+    # её заполняет update_ozon_delivered_dt() из начислений.
+    ("scheme", "scheme"), ("warehouse_id", "warehouse_id"),
+    ("delivery_type", "delivery_type"), ("shipment_dt", "shipment_dt"),
 ]
 _OZ_SALES_MAP = [
     ("posting_number", "posting_number"), ("product_id", "product_id"),
