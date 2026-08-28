@@ -820,6 +820,7 @@ _OZ_SALES_MAP = [
     ("last_change_dt", "last_change_dt"), ("status", "status"),
     ("is_return", "is_return"), ("qty", "qty"), ("price", "price"),
     ("revenue", "revenue"), ("payout_amount", "payout_amount"),
+    ("scheme", "scheme"),  # география 2.0 (047)
 ]
 
 
