@@ -95,9 +95,10 @@ def collect(since=None, to=None):
             order_dt = p.get("in_process_at") or p.get("created_at")
             last_change_dt = p.get("last_change_date") or p.get("shipment_date")
             analytics = p.get("analytics_data") or {}
-            # API отдаёт warehouse_name; ключа `warehouse` не существует — из-за
-            # него склад был пуст во всех строках (баг вскрыт 27.08).
-            warehouse = analytics.get("warehouse_name") or ""
+            # FBO кладёт имя склада в warehouse_name (ключа `warehouse` там нет —
+            # из-за него склад был пуст во всех строках, баг вскрыт 27.08),
+            # а FBS — наоборот, в warehouse (проверено живым API 28.08).
+            warehouse = analytics.get("warehouse_name") or analytics.get("warehouse") or ""
             region = analytics.get("region") or analytics.get("city", "")
             products = p.get("products") or p.get("product") or []
             for prod in products:
