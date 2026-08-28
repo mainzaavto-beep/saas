@@ -339,6 +339,44 @@ class OzonClient:
             seen_cursors.add(new_cursor)
             cursor = new_cursor
 
+    # --- ЗАКАЗЫ/ПРОДАЖИ: posting fbs ---
+
+    def posting_fbs_list(self, since, to, status: str | None = None,
+                         limit: int = 1000, offset: int = 0) -> dict:
+        """FBS-отправления за период (фильтр по дате создания). limit/offset-пагинация."""
+        body: dict[str, Any] = {
+            "dir": "ASC",
+            "filter": {"since": _iso(since), "to": _iso(to)},
+            "limit": limit,
+            "offset": offset,
+            "with": {"analytics_data": True},
+        }
+        if status:
+            body["filter"]["status"] = status
+        return self._post(self.host, "/v3/posting/fbs/list", body)
+
+    def iter_fbs_postings(self, since, to, status: str | None = None):
+        """Итератор FBS-постингов: limit/offset, выход по has_next=False."""
+        offset = 0
+        first = True
+        while True:
+            if not first:
+                time.sleep(REQUEST_PAUSE_SEC)
+            first = False
+            res = self.posting_fbs_list(since, to, status=status, offset=offset) or {}
+            postings = res.get("postings") or []
+            for p in postings:
+                yield p
+            if not res.get("has_next") or not postings:
+                break
+            offset += len(postings)
+
+    def cluster_list(self, cluster_type: str = "CLUSTER_TYPE_OZON") -> list:
+        """Справочник кластеров: кластер → logistic_clusters → склады.
+        Ответ приходит БЕЗ обёртки result (проверено живым API 28.08.2026)."""
+        res = self._post(self.host, "/v1/cluster/list", {"cluster_type": cluster_type}) or {}
+        return res.get("clusters") or []
+
     # --- ОСТАТКИ ---
 
     def stock_on_warehouses(self, limit: int = 1000) -> dict:
@@ -672,6 +710,15 @@ class MockOzonClient(OzonClient):
 
     def iter_postings(self, since, to, status: str | None = None):
         return iter([])
+
+    def posting_fbs_list(self, since, to, status=None, limit=1000, offset=0):
+        return {"postings": [], "has_next": False}
+
+    def iter_fbs_postings(self, since, to, status=None):
+        return iter([])
+
+    def cluster_list(self, cluster_type="CLUSTER_TYPE_OZON"):
+        return []
 
     def iter_stock(self):
         return iter([])
