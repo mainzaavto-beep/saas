@@ -52,7 +52,7 @@ STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
 # (таймер saas-references, Mon 06:00). wb_references пишет в shared.* (без RLS).
-REFERENCES_COLLECTORS="wb_references"
+REFERENCES_COLLECTORS="wb_references,ozon_references"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;

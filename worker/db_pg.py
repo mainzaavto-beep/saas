@@ -1333,6 +1333,23 @@ def upsert_shared_wb_warehouses(rows):
     return len(rows)
 
 
+def upsert_shared_ozon_clusters(rows):
+    """Справочник «склад Ozon → кластер» из /v1/cluster/list (глобальный, без RLS)."""
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    cols = ["warehouse_id", "warehouse_name", "warehouse_type", "cluster_id", "cluster_name"]
+    placeholders = ", ".join(["%s"] * (len(cols) + 1))
+    upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols[1:]) + ", updated_at=EXCLUDED.updated_at"
+    sql = (f"INSERT INTO shared.ozon_clusters ({', '.join(cols)}, updated_at) "
+           f"VALUES ({placeholders}) ON CONFLICT (warehouse_id) DO UPDATE SET {upd}")
+    batch = [[r.get(c) for c in cols] + [now] for r in rows]
+    with get_shared_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, batch)
+    return len(rows)
+
+
 def upsert_shared_wb_transit_tariffs(rows):
     """Batch-upsert тарифов перевозок в shared.wb_transit_tariffs.
     rows: [{transit_warehouse_name, destination_warehouse_name, active_from,

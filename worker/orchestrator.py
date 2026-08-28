@@ -199,6 +199,7 @@ OZON_COLLECTORS = [
     "ozon_efficiency",
     "ozon_sku_ad",     # товарная реклама (миграция 043); в расписании (MAIN_COLLECTORS) — после шлюза владельца
     "ozon_prices",     # дневной снимок цен → соинвест (миграция 030, спек 2026-08-02)
+    "ozon_references", # справочник кластеров → shared.ozon_clusters (таймер saas-references)
 ]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).
