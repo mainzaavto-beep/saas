@@ -746,13 +746,19 @@ def compact_redundant_weekly_costs():
 #  PK составной у orders/sales/finance (posting+product / posting+operation).
 # =====================================================================
 
-def _upsert_raw_multi_pk(table, pk_cols, mapping, rows):
+def _upsert_raw_multi_pk(table, pk_cols, mapping, rows, bool_cols=None):
     """Батч-upsert СЫРЫХ строк по карте (колонка_БД, ключ_источника) с СОСТАВНЫМ pk.
-    cabinet_id добавляется автоматически. Булевы → 0/1. pk_cols — без cabinet_id."""
+    cabinet_id добавляется автоматически. Булевы → 0/1 (_conv), кроме колонок из
+    bool_cols — для них значение остаётся настоящим Python bool (psycopg сам
+    адаптирует его в boolean); нужно для таблиц, где колонка BOOLEAN, а не
+    legacy INTEGER, см. tenant.wb_supplies.done. ::boolean-каст параметра НЕ
+    спасает: psycopg биндит маленькие int как smallint, а smallint→boolean
+    каста в Postgres нет (только int4→boolean)."""
     if not rows:
         return 0
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cid = _cabinet_id()
+    bool_cols = set(bool_cols or ())
     data_cols = [c for c, _ in mapping] + ["updated_at"]
     all_cols = ["cabinet_id"] + data_cols
     placeholders = ", ".join(["%s"] * len(all_cols))
@@ -761,7 +767,13 @@ def _upsert_raw_multi_pk(table, pk_cols, mapping, rows):
     upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in upd_cols)
     sql = (f"INSERT INTO tenant.{table} (cabinet_id, {', '.join(data_cols)}) "
            f"VALUES ({placeholders}) ON CONFLICT ({conflict}) DO UPDATE SET {upd}")
-    batch = [[cid] + [_conv(r.get(src)) for _, src in mapping] + [now] for r in rows]
+
+    def _conv_col(c, v):
+        if c in bool_cols:
+            return None if v is None else bool(v)
+        return _conv(v)
+
+    batch = [[cid] + [_conv_col(c, r.get(src)) for c, src in mapping] + [now] for r in rows]
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.executemany(sql, batch)
@@ -830,6 +842,24 @@ def upsert_ozon_orders_many(rows):
 
 def upsert_ozon_sales_many(rows):
     return _upsert_raw_multi_pk("ozon_sales", ["posting_number", "product_id"], _OZ_SALES_MAP, rows)
+
+
+# --- wb_supplies (поставки WB FBS, marketplace-api /api/v3/supplies) ---
+_WB_SUPPLIES_MAP = [
+    ("supply_id", "id"), ("name", "name"), ("created_at", "createdAt"),
+    ("closed_at", "closedAt"), ("scan_dt", "scanDt"), ("reject_dt", "rejectDt"),
+    ("done", "done"), ("cargo_type", "cargoType"),
+    ("destination_office_id", "destinationOfficeId"),
+]
+
+
+def upsert_wb_supplies_many(rows):
+    """Поставки WB FBS (marketplace-api /api/v3/supplies). ISO-строки дат
+    кастуются в TIMESTAMPTZ самим Postgres. done — настоящий BOOLEAN (не legacy
+    INTEGER, как is_cancel/is_return у Ozon) — bool_cols кастует явно, иначе
+    Postgres роняет upsert (integer→boolean без explicit cast не работает)."""
+    return _upsert_raw_multi_pk("wb_supplies", ["supply_id"], _WB_SUPPLIES_MAP, rows,
+                                 bool_cols=["done"])
 
 
 # --- finance_report (/v3/finance/transaction/list) ---

@@ -180,6 +180,7 @@ WB_COLLECTORS = [
     "wb_prices",
     "wb_stocks",
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
+    "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)
 ]
 OZON_COLLECTORS = [
     "ozon_catalog",
