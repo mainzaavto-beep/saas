@@ -4,7 +4,7 @@
 
 -- 1. Склад Ozon больше не пустой (свежие FBO-заказы)
 SELECT 'ozon_warehouse_filled' AS check,
-       COUNT(*) FILTER (WHERE warehouse='') = 0 AS ok, COUNT(*) AS n
+       COUNT(*) FILTER (WHERE warehouse='' OR warehouse IS NULL) = 0 AS ok, COUNT(*) AS n
 FROM tenant.ozon_orders WHERE scheme='fbo' AND order_dt >= '2026-06-01';
 
 -- 2. FBS-постинги появились и попали в деньги

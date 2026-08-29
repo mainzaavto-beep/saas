@@ -770,7 +770,9 @@ def _upsert_raw_multi_pk(table, pk_cols, mapping, rows, bool_cols=None):
 
     def _conv_col(c, v):
         if c in bool_cols:
-            return None if v is None else bool(v)
+            # колонка NOT NULL BOOLEAN — None от API превращаем в False,
+            # а не пробрасываем дальше (иначе upsert падает на constraint).
+            return False if v is None else bool(v)
         return _conv(v)
 
     batch = [[cid] + [_conv_col(c, r.get(src)) for c, src in mapping] + [now] for r in rows]
@@ -937,20 +939,45 @@ def update_ozon_delivered_dt(date_from=None):
     у постинга 77388497-0210-2 тип 29 датирован 2026-08-22 — день в день с
     OperationAgentDeliveredToCustomer из /v3/finance/transaction/list.
     Вне _OZ_ORDERS_MAP сознательно: upsert заказов не должен затирать дату NULL-ом.
-    date_from сужает окно по дате начисления (плановый прогон); None — вся история."""
-    cond = "AND date >= %s" if date_from else ""
-    sql = f"""
-        UPDATE tenant.ozon_orders o
-           SET delivered_dt = d.dt, updated_at = now()
-          FROM (SELECT unit_number, MIN(date)::text AS dt
-                  FROM tenant.ozon_accruals
-                 WHERE type_id IN (28, 29, 30)
-                   AND unit_number IS NOT NULL AND unit_number <> ''
-                   {cond}
-                 GROUP BY unit_number) d
-         WHERE o.posting_number = d.unit_number
-           AND o.delivered_dt IS DISTINCT FROM d.dt
-    """
+
+    date_from сужает только ОТБОР затронутых юнитов (плановый прогон видит начисление
+    последней мили в окне date_from..) — сам MIN(date) считается по ВСЕЙ истории
+    начислений юнита, а не только внутри окна. Иначе при повторном прогоне (юнит
+    уже сузился до конкретной даты в прошлом, а окно захватывает только более
+    позднее начисление того же unit_number — например, задвоенный/скорректированный
+    начисление) MIN внутри окна может оказаться ПОЗЖЕ настоящей ранней даты и
+    затереть уже верное delivered_dt более поздним значением. None — вся история,
+    отбор не нужен (подзапрос упрощается)."""
+    if date_from:
+        sql = """
+            UPDATE tenant.ozon_orders o
+               SET delivered_dt = d.dt, updated_at = now()
+              FROM (SELECT unit_number, MIN(date)::text AS dt
+                      FROM tenant.ozon_accruals
+                     WHERE type_id IN (28, 29, 30)
+                       AND unit_number IS NOT NULL AND unit_number <> ''
+                       AND unit_number IN (
+                           SELECT unit_number FROM tenant.ozon_accruals
+                            WHERE type_id IN (28, 29, 30)
+                              AND unit_number IS NOT NULL AND unit_number <> ''
+                              AND date >= %s
+                       )
+                     GROUP BY unit_number) d
+             WHERE o.posting_number = d.unit_number
+               AND o.delivered_dt IS DISTINCT FROM d.dt
+        """
+    else:
+        sql = """
+            UPDATE tenant.ozon_orders o
+               SET delivered_dt = d.dt, updated_at = now()
+              FROM (SELECT unit_number, MIN(date)::text AS dt
+                      FROM tenant.ozon_accruals
+                     WHERE type_id IN (28, 29, 30)
+                       AND unit_number IS NOT NULL AND unit_number <> ''
+                     GROUP BY unit_number) d
+             WHERE o.posting_number = d.unit_number
+               AND o.delivered_dt IS DISTINCT FROM d.dt
+        """
     params = [date_from] if date_from else []
     with get_connection() as conn:
         with conn.cursor() as cur:

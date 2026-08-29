@@ -52,6 +52,9 @@ def _get(url):
 
 
 def collect():
+    if not WB_TOKEN:
+        print("[wb_supplies] ПРОПУСК: нет WB_TOKEN (exit 0)", flush=True)
+        return 0
     print(f"[wb_supplies] поставки FBS ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
     db_pg.init()
     rows, nxt, pages = [], 0, 0

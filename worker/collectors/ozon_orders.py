@@ -51,7 +51,7 @@ def _resolve_pid(prod, sku2pid, offer2pid):
 
 
 def collect(since=None, to=None):
-    print("[ozon_orders] постинги FBO", flush=True)
+    print("[ozon_orders] постинги FBO+FBS", flush=True)
     db_pg.init()
     cli = OzonClient()
 

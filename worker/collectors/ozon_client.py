@@ -371,6 +371,8 @@ class OzonClient:
                 break
             offset += len(postings)
 
+    # --- СПРАВОЧНИКИ: кластеры/склады ---
+
     def cluster_list(self, cluster_type: str = "CLUSTER_TYPE_OZON") -> list:
         """Справочник кластеров: кластер → logistic_clusters → склады.
         Ответ приходит БЕЗ обёртки result (проверено живым API 28.08.2026)."""

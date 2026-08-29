@@ -65,5 +65,7 @@ CREATE TABLE IF NOT EXISTS shared.ozon_clusters (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 GRANT SELECT, INSERT, UPDATE ON shared.ozon_clusters TO saas_app;
+-- Локальная read-only панель владельца (SSH-туннель, кабинет 1) — как у shared.wb_warehouses.
+GRANT SELECT ON shared.ozon_clusters TO panel_local_ro;
 
 COMMIT;
