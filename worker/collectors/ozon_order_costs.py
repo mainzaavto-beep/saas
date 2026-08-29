@@ -120,6 +120,7 @@ DELETE+INSERT затирала ранее записанную ПОЛНУЮ ст
 """
 import argparse
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timezone
@@ -163,6 +164,17 @@ _RETURN_NET_TOLERANCE = 0.01
 # почти наверняка уже есть; юнит младше порога получает НУЛИ через pending
 # (см. app/api/cabinets/[id]/orders/route.js) вместо фантомного убытка.
 MATURITY_THRESHOLD_DAYS = 3
+
+# Разбор 29.08.2026 (задача 8 плана «География 2.0», фикс-раунд по PARTIAL
+# кабинета 1): unit_number вида "sr01-…" — это НЕ отправление, а заявка на
+# сервисную операцию склада Ozon (вывоз товара и т.п., подтверждено вручную
+# на sr01-bx20227797734: SellerReturns + TemporaryPlacementsAgent, 390 ₽,
+# деньги учтены верно). У таких юнитов posting_number закономерно НЕ
+# резолвится через ozon_orders — это ожидаемо, не находка сторожа полноты,
+# и не должно поднимать шумный PARTIAL/failed на каждом тике 45-дневного
+# окна. Запись денег «как есть» НЕ меняется ни на копейку — меняется только
+# маркировка (обычная info-строка вместо счётчика unresolved_posting_number).
+SERVICE_UNIT_PREFIX_RE = re.compile(r"^sr\d+-")
 
 # F3 (фикс-волна финального ревью 2026-08-18): зрелость юнита БЕЗ
 # commission-блока меряется от возраста ЕГО ОПЕРАЦИЙ (last_date выше) — а не
@@ -949,9 +961,16 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                   f"{comps:.2f} != SUM(accrued)={unit_sum:.2f}", file=sys.stderr, flush=True)
         result.pop("consistency_ok")
         if not result.pop("posting_number_resolved"):
-            unresolved_posting_number += 1
-            print(f"  posting_number не резолвлен через ozon_orders, записан unit_number "
-                  f"как есть: {unit_number}", file=sys.stderr, flush=True)
+            if SERVICE_UNIT_PREFIX_RE.match(unit_number):
+                # Сервисный юнит (вывоз и т.п., см. SERVICE_UNIT_PREFIX_RE выше)
+                # — не отправление, резолва и не будет; НЕ PARTIAL, просто info.
+                print(f"  сервисный юнит (заявка на вывоз/сервисную операцию "
+                      f"Ozon, не отправление), записан как есть: {unit_number}",
+                      flush=True)
+            else:
+                unresolved_posting_number += 1
+                print(f"  posting_number не резолвлен через ozon_orders, записан unit_number "
+                      f"как есть: {unit_number}", file=sys.stderr, flush=True)
         order_costs_out.append(dict(result, _unit_number=unit_number))
         sum_order_accrued += sum(_num(r.get("accrued")) for r in unit_rows)
 
