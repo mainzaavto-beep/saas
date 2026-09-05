@@ -18,8 +18,10 @@
 //     facets:   { brand: [{value,count}], group: [{value,count}], nm: [{id,label,count}] },
 //   }
 //
-// mp=wb|ozon — платформа, которой нет, отдаётся locality как
-// { rows: [], localPct: null, mappedPct: null }, speed — как [].
+// mp=wb|ozon — платформа, которой нет (ни по query, ни по cabinet.
+// marketplaces — гейт применяется единообразно с overview/items/pnl),
+// отдаётся locality как { rows: [], localPct: null, mappedPct: null },
+// speed — как [].
 // scheme=all|fbo|fbs — ВАЛИДИРУЕТСЯ на входе (находка ревью задачи 2): любое
 // иное значение ломает SQL в geoMetrics-хелперах (WB_SCHEME_SQL[scheme] даёт
 // undefined) — падаем на «all», а не пробрасываем сырой параметр.
@@ -64,13 +66,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     q: (url.searchParams.get("q") || "").trim(),
   };
 
+  // Гейт площадок кабинета (находка ревью, фикс-раунд 1): паттерн
+  // overview/route.js:126,141,145 — mp-параметр И реально подключённые
+  // площадки. Кабинет с одной площадкой (обычный итог онбординга) не
+  // должен вхолостую гонять SQL по отсутствующей БД дважды (cur+prev).
+  const mps = cabinet.marketplaces || ["wb", "ozon"];
+  const wantWb = mp !== "ozon" && mps.includes("wb");
+  const wantOz = mp !== "wb" && mps.includes("ozon");
+
   // prev-окно ТЕМ ЖЕ кодом (паттерн products-summary/route.js:117-129).
   const N = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
   const prevTo = shiftDateUTC(from, -1);
   const prevFrom = shiftDateUTC(prevTo, -(N - 1));
 
-  const cur = await collectAll(mp, { from, to, ...filters });
-  const prev = await collectAll(mp, { from: prevFrom, to: prevTo, ...filters, kpiOnly: true });
+  const cur = await collectAll({ wantWb, wantOz }, { from, to, ...filters });
+  const prev = await collectAll({ wantWb, wantOz }, { from: prevFrom, to: prevTo, ...filters, kpiOnly: true });
 
   return NextResponse.json({
     period: { from, to }, prevPeriod: { from: prevFrom, to: prevTo },
@@ -90,14 +100,16 @@ function shiftDateUTC(dateStr, deltaDays) {
   return d.toISOString().slice(0, 10);
 }
 
-// collectAll(mp, opts) — ЕДИНСТВЕННОЕ место расчёта (и текущего окна, и
-// prev). opts.kpiOnly=true пропускает byRegion/byWarehouse/детальную speed/
-// facets — это тяжёлые запросы, prev-окну хватает kpi (сам kpi всё равно
-// считается ТЕМИ ЖЕ функциями geoMetrics, что и для текущего окна).
-async function collectAll(mp, opts) {
+// collectAll({wantWb, wantOz}, opts) — ЕДИНСТВЕННОЕ место расчёта (и
+// текущего окна, и prev). wantWb/wantOz уже учитывают И mp-параметр, И
+// cabinet.marketplaces (считает вызывающий GET) — здесь только сами флаги,
+// без доступа к query/cabinet, чтобы функция оставалась чистой и не решала
+// дважды один и тот же гейт. opts.kpiOnly=true пропускает byRegion/
+// byWarehouse/детальную speed/facets — это тяжёлые запросы, prev-окну
+// хватает kpi (сам kpi всё равно считается ТЕМИ ЖЕ функциями geoMetrics,
+// что и для текущего окна).
+async function collectAll({ wantWb, wantOz }, opts) {
   const { from, to, scheme, nmId, brand, group, q, kpiOnly } = opts;
-  const wantWb = mp !== "ozon";
-  const wantOz = mp !== "wb";
   const wbDb = wantWb ? new DatabaseSync("wb", { readOnly: true }) : null;
   const ozDb = wantOz ? new DatabaseSync("ozon", { readOnly: true }) : null;
 
