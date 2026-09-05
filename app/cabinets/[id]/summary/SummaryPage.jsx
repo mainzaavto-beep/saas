@@ -608,6 +608,32 @@ export default function SummaryPage({ cabinetId }) {
                 <td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td>
                 <td style={tdFootR}>—</td>
               </tr>
+              {/* «Не разнесено по товарам» (задача 8 плана «geo-canon-vitrina»,
+                  обещание владельцу 05.09: увидел «−16 663» в итогах при
+                  плюсовых строках без объяснения — это была нераспределённая
+                  реклама Ozon кабинета за день, пока per-SKU отчёт дозревал).
+                  Правило: расхождение «итог ≠ Σ строк» никогда не молчит —
+                  показываем остаток явно, той же формулой, что уже вычиталась
+                  из «Итого» выше молча (data.unallocated с сервера). Не
+                  сужается товарным фильтром — как и «Реклама, ₽» строкой выше,
+                  это кабинетные суммы целиком за период. */}
+              {data.unallocated && (
+                <tr style={{ background: C.surfaceAlt }}>
+                  <td
+                    colSpan={COLS.length}
+                    style={{
+                      padding: "6px 10px", fontSize: 11.5,
+                      color: data.unallocated.note ? C.warn : C.muted,
+                      borderTop: `1px solid ${soft("line", 30)}`,
+                    }}
+                  >
+                    {data.unallocated.note && (
+                      <span title={data.unallocated.note} style={{ marginRight: 6 }}>⚠</span>
+                    )}
+                    Не разнесено по товарам: реклама {money(data.unallocated.ads)} · кабинетные {money(data.unallocated.cabinetCosts)}
+                  </td>
+                </tr>
+              )}
             </tfoot>
           )}
         </table>

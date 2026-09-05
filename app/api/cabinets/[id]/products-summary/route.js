@@ -86,7 +86,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // статуса → aggTotals → довычет нераспределённой рекламы), что раньше
     // жила прямо в GET, вынесена в функцию и переиспользуется ниже для
     // prevTotals — БЕЗ копирования тела.
-    const { items, totals } = await buildTotals(cabinet, platform, from, to, includeInactive, stat);
+    const { items, totals, unallocatedAds } = await buildTotals(cabinet, platform, from, to, includeInactive, stat);
 
     const days = from && to
       ? Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1)
@@ -184,6 +184,27 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       }
     }
 
+    // unallocated — «Не разнесено по товарам» (задача 8 плана «geo-canon-
+    // vitrina», обещание владельцу 05.09: увидел «−16 663» в итогах при
+    // плюсовых строках без объяснения — это была реклама Ozon кабинета за
+    // день, не разнесённая по товарам per-SKU отчётом, который отставал на
+    // 2 дня из-за 429). Правило: расхождение «итог ≠ Σ строк» не молчит.
+    //   ads — unallocatedAds из buildTotals (ЧИСЛО НЕ ПЕРЕСЧИТЫВАЕТСЯ,
+    //     ровно тот же довычет, что уже уходил в totals.profit молча).
+    //   cabinetCosts — Σ cabinetCosts.amount (канон-знак wbProfitCabinet/
+    //     ozProfitCabinet), минимальный прямой запрос — полный вызов канона
+    //     здесь избыточен (он бы ещё раз посчитал profitProduct(null) целиком
+    //     только ради Σ amount).
+    //   note — по сырым таблицам Ozon-рекламы (ozon_daily_campaign_ad,
+    //     ozon_daily_sku_ad — НЕ daily_metrics/ozon_daily_efficiency, те уже
+    //     пересчитанные агрегаты, лаг сборщика виден только в первоисточниках).
+    const [cabinetCostsUnalloc, unallocNote] = from && to
+      ? await Promise.all([
+          unallocatedCabinetCosts(platform, from, to),
+          ozonSkuAdLagNote(platform, from, to),
+        ])
+      : [0, null];
+
     return NextResponse.json({
       count: items.length,
       period: { from, to, days },
@@ -191,6 +212,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       prevTotals,
       prevPeriod,
       profitSpark,
+      unallocated: { ads: unallocatedAds || 0, cabinetCosts: cabinetCostsUnalloc, note: unallocNote },
       items,
       shops: { wb: cabinet.shop_names?.wb, ozon: cabinet.shop_names?.ozon },
       methodology: "ОПЕРАТИВНЫЙ срез: штуки/выручка из ежедневных продаж (sales), расходы — по средним ставкам из order_costs. Возможно небольшое расхождение (≈5-10%) с финальным недельным финотчётом WB (там в «Сводке по прибыли»).",
@@ -291,6 +313,15 @@ async function buildTotals(cabinet, platform, from, to, includeInactive, stat) {
 
   const totals = aggTotals(items);
 
+  // unallocatedAds — нераспределённый остаток кабинетной рекламы (fullAd −
+  // Σ item.adSpend, снизу зажат нулём), вычисляется ниже вместе с довычетом
+  // totals.profit. По умолчанию 0 (period может быть пуст — см. `if (from &&
+  // to)` ниже). Вынесено отдельной переменной для ответа GET (задача 8 плана
+  // «geo-canon-vitrina», строка «Не разнесено по товарам», инцидент 05.09) —
+  // ЧИСЛО НЕ ПЕРЕСЧИТЫВАЕТСЯ заново, это ровно то, что и раньше вычиталось
+  // из totals.profit молча.
+  let unallocatedAds = 0;
+
   // ⚠️ КАНОН (задача 5 плана унификации прибыли; формула ads переписана
   // задачей 6/7 плана «реклама Ozon по товарам», 2026-08-21/22): it.profit
   // = canon profitProduct(nm/pid).profit, где ads(товар) ТЕПЕРЬ реальный
@@ -360,11 +391,80 @@ async function buildTotals(cabinet, platform, from, to, includeInactive, stat) {
     // item.profit (канон) ТЕПЕРЬ включает рекламу товара — довычитаем
     // только нераспределённую часть кабинетной рекламы (fullAd − Σ item.
     // adSpend), чтобы totals.profit = pnl.profit (товарная часть).
-    totals.profit = round2((totals.profit || 0) - Math.max(0, round2(fullAd - sumItemAd)));
+    unallocatedAds = Math.max(0, round2(fullAd - sumItemAd));
+    totals.profit = round2((totals.profit || 0) - unallocatedAds);
     if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
   }
 
-  return { items, totals };
+  return { items, totals, unallocatedAds };
+}
+
+// unallocatedCabinetCosts — Σ cabinetCosts.amount (кабинетные расходы №27,
+// БЕЗ привязки к товару: хранение/удержание/подписка и пр.) за окно, тем же
+// знаком-каноном, что wbProfitCabinet/ozProfitCabinet (lib/wbMetrics.js,
+// lib/ozonMetrics.js) — расход<0, доход/возмещение>0. Минимальный ПРЯМОЙ
+// запрос (не вызов wbProfitCabinet/ozProfitCabinet целиком): те функции
+// сперва считают profitProduct(null) по ВСЕМУ кабинету — дорогая и здесь
+// не нужная работа, если нужна только Σ amount по типам расходов. Источник
+// для UI-секции «Кабинетные расходы» ниже на этой же странице (/api/cabinets/
+// [id]/cabinet-costs) остаётся отдельным (даёт разбивку по типам) — здесь
+// нужна только итоговая цифра для строки «Не разнесено по товарам» (задача 8
+// плана «geo-canon-vitrina»).
+async function unallocatedCabinetCosts(platform, from, to) {
+  let sum = 0;
+  if (platform !== "ozon") {
+    try {
+      const r = await new DatabaseSync("wb", { readOnly: true }).prepare(
+        `SELECT COALESCE(SUM(amount),0) AS s FROM cabinet_costs
+         WHERE period_from <= ? AND period_to >= ?`
+      ).get(to, from);
+      // WB amount — сырой знак (расход>0, возмещение<0); канон-знак = −amount
+      // (см. wbProfitCabinet, lib/wbMetrics.js).
+      sum += -((r && r.s) || 0);
+    } catch (e) { console.error('[products-summary] WB unallocatedCabinetCosts:', e.message); }
+  }
+  if (platform !== "wb") {
+    try {
+      const r = await new DatabaseSync("ozon", { readOnly: true }).prepare(
+        `SELECT COALESCE(SUM(amount),0) AS s FROM cabinet_costs
+         WHERE date >= ? AND date <= ?`
+      ).get(from, to);
+      // Ozon amount уже канон-знак (расход<0, доход>0) — без инверсии
+      // (см. ozProfitCabinet, lib/ozonMetrics.js).
+      sum += (r && r.s) || 0;
+    } catch (e) { console.error('[products-summary] Ozon unallocatedCabinetCosts:', e.message); }
+  }
+  return round2(sum);
+}
+
+// ozonSkuAdLagNote — сигнал «per-SKU реклама Ozon дозревает» (инцидент 05.09:
+// владелец увидел «−16 663» в итогах без объяснения — это была реклама Ozon
+// кабинета за 04.09, при этом ozon_daily_sku_ad (миграция 043) за тот день
+// был ПУСТ из-за 429 у Performance API, хотя ozon_daily_campaign_ad
+// (миграция 039, то же окно) уже показывал 16 662,95 ₽ расхода). Смотрим
+// СЫРЫЕ таблицы напрямую, а не daily_metrics/ozon_daily_efficiency — те уже
+// пересчитанные агрегаты (worker.db_pg.recompute_ozon_daily_ad), лаг
+// сборщика виден только в первоисточниках. Последние 2 дня окна — по одному
+// разу дня достаточно, чтобы поймать типичный лаг сборщика (1-2 дня).
+async function ozonSkuAdLagNote(platform, from, to) {
+  if (platform === "wb") return null; // Ozon-специфичный сигнал
+  try {
+    const d1 = shiftDateUTC(to, -1);
+    const checkFrom = d1 < from ? from : d1; // не выходим за левую границу окна
+    const db = new DatabaseSync("ozon", { readOnly: true });
+    const rows = await db.prepare(
+      `SELECT c.date AS d, COALESCE(c.spend,0) AS campaign_spend, COALESCE(s.sku_spend,0) AS sku_spend
+       FROM (SELECT date, SUM(spend) AS spend FROM tenant.ozon_daily_campaign_ad
+             WHERE date >= ? AND date <= ? GROUP BY date) c
+       LEFT JOIN (SELECT date, SUM(spend) AS sku_spend FROM tenant.ozon_daily_sku_ad
+             WHERE date >= ? AND date <= ? GROUP BY date) s ON s.date = c.date`
+    ).all(checkFrom, to, checkFrom, to);
+    const lagging = rows.some((r) => (r.campaign_spend || 0) > 0 && (r.sku_spend || 0) === 0);
+    return lagging ? "per-SKU реклама Ozon дозревает" : null;
+  } catch (e) {
+    console.error('[products-summary] ozonSkuAdLagNote:', e.message);
+    return null;
+  }
 }
 
 // ---------- WB ----------
