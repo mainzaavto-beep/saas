@@ -580,6 +580,7 @@ function SuppliesSection({ supplies }) {
       <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>FBS-отгрузки</h2>
       <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
         Поставки WB: стадии создана → закрыта → принята СЦ, висящие без приёмки подсвечены.
+        «До покупателя» — до выкупа (включает ПВЗ).
       </p>
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
         {supplies.total === 0 ? (
@@ -592,6 +593,7 @@ function SuppliesSection({ supplies }) {
               {supplies.p90ScHours != null ? ` (p90 ${fmt1(supplies.p90ScHours)}ч)` : ""}
               {" · "}висят без приёмки {supplies.stuckCount}{supplies.stuckCount > 0 ? "⚠" : ""}
               {" · "}без отметки (старые) {supplies.noScanOldCount}
+              {" · "}до покупателя {supplies.buyoutMedianDaysOverall != null ? `${fmt1(supplies.buyoutMedianDaysOverall)}д (медиана)` : "—"}
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
@@ -603,6 +605,7 @@ function SuppliesSection({ supplies }) {
                     <th style={thStyle("left")}>Принята СЦ</th>
                     <th style={thStyle("center")}>Сборка, ч</th>
                     <th style={thStyle("center")}>До СЦ, ч</th>
+                    <th style={thStyle("center")}>До покупателя, дн</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -621,6 +624,7 @@ function SuppliesSection({ supplies }) {
                         <td style={{ ...tdStyle("center"), color: scWarn ? C.warn : C.ink, fontWeight: scWarn ? 700 : 400 }}>
                           {r.scHours != null ? fmt1(r.scHours) : "—"}
                         </td>
+                        <BuyoutCell days={r.buyoutMedianDays} n={r.buyoutN} />
                       </tr>
                     );
                   })}
@@ -652,6 +656,27 @@ function SupplyStage({ status, closedAt }) {
     return <Badge color={C.faint}>без отметки</Badge>;
   }
   return <span style={{ color: C.faint }}>—</span>;
+}
+
+// BuyoutCell — «До покупателя, дн» в таблице поставок (buyoutMedianDays/
+// buyoutN, wbSuppliesOps §16.8). У ~40% поставок выкупов пока нет (заказ ещё
+// едет к покупателю) — это норма, не сбой: тихий C.faint текст, а не
+// предупреждение. Малая выборка (n<3) — тоже C.faint, но с числом и своим
+// title, чтобы не путать с «выкупов вовсе нет».
+function BuyoutCell({ days, n }) {
+  if (days == null) {
+    return (
+      <td style={{ ...tdStyle("center"), color: C.faint }} title="выкупов пока нет">
+        ещё едут
+      </td>
+    );
+  }
+  const low = n < 3;
+  return (
+    <td style={{ ...tdStyle("center"), color: low ? C.faint : C.ink }} title={low ? `мало выкупов (n=${n})` : `n=${n}`}>
+      {days}
+    </td>
+  );
 }
 
 // KpiRow/Kpi — локальные копии паттерна Сводки (SummaryPage.jsx:835-855),
