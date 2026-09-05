@@ -947,42 +947,64 @@ def update_ozon_delivered_dt(date_from=None):
     позднее начисление того же unit_number — например, задвоенный/скорректированный
     начисление) MIN внутри окна может оказаться ПОЗЖЕ настоящей ранней даты и
     затереть уже верное delivered_dt более поздним значением. None — вся история,
-    отбор не нужен (подзапрос упрощается)."""
+    отбор не нужен (подзапрос упрощается).
+
+    Задача 0 этапа 2 (жалоба 05.09.2026 «за вчера 0 продаж»): вторым UPDATE
+    в той же транзакции и по той же выборке d передатирует tenant.ozon_sales.
+    sale_dt писался как in_process_at (дата СОЗДАНИЯ заказа) — доставленная
+    вчера продажа могла быть датирована днём заказа тремя днями раньше, и
+    окно «вчера» по продажам Ozon почти всегда оказывалось пустым (у WB
+    sale_dt изначально из statistics-api — уже дата продажи). Возвращаемый
+    rowcount — сумма по обоим UPDATE (заказы + продажи); вызывающий код
+    (ozon_accruals.collect()) использует его только для лога."""
     if date_from:
-        sql = """
-            UPDATE tenant.ozon_orders o
-               SET delivered_dt = d.dt, updated_at = now()
-              FROM (SELECT unit_number, MIN(date)::text AS dt
-                      FROM tenant.ozon_accruals
-                     WHERE type_id IN (28, 29, 30)
-                       AND unit_number IS NOT NULL AND unit_number <> ''
+        cond = """
                        AND unit_number IN (
                            SELECT unit_number FROM tenant.ozon_accruals
                             WHERE type_id IN (28, 29, 30)
                               AND unit_number IS NOT NULL AND unit_number <> ''
                               AND date >= %s
-                       )
-                     GROUP BY unit_number) d
-             WHERE o.posting_number = d.unit_number
-               AND o.delivered_dt IS DISTINCT FROM d.dt
-        """
+                       )"""
     else:
-        sql = """
+        cond = ""
+    sql_orders = f"""
             UPDATE tenant.ozon_orders o
                SET delivered_dt = d.dt, updated_at = now()
               FROM (SELECT unit_number, MIN(date)::text AS dt
                       FROM tenant.ozon_accruals
                      WHERE type_id IN (28, 29, 30)
                        AND unit_number IS NOT NULL AND unit_number <> ''
+                       {cond}
                      GROUP BY unit_number) d
              WHERE o.posting_number = d.unit_number
                AND o.delivered_dt IS DISTINCT FROM d.dt
         """
+    # Продажи датируем выкупом (жалоба 05.09.2026: «за вчера 0 продаж» — sale_dt
+    # был датой создания заказа). Только delivered-строки; возвраты (cancelled)
+    # остаются на своей дате. Формат TEXT 'YYYY-MM-DD' совместим с потребителями
+    # (везде substr(sale_dt,1,10)). Σ revenue не меняется — только распределение
+    # по дням (сторож в Step 3).
+    sql_sales = f"""
+        UPDATE tenant.ozon_sales s
+           SET sale_dt = d.dt, updated_at = now()
+          FROM (SELECT unit_number, MIN(date)::text AS dt
+                  FROM tenant.ozon_accruals
+                 WHERE type_id IN (28, 29, 30)
+                   AND unit_number IS NOT NULL AND unit_number <> ''
+                   {cond}
+                 GROUP BY unit_number) d
+         WHERE s.posting_number = d.unit_number
+           AND s.is_return = 0
+           AND substr(s.sale_dt, 1, 10) IS DISTINCT FROM d.dt
+    """
     params = [date_from] if date_from else []
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.rowcount
+            cur.execute(sql_orders, params)
+            n_orders = cur.rowcount
+            cur.execute(sql_sales, params)
+            n_sales = cur.rowcount
+            return n_orders + n_sales
 
 
 # --- daily_stock (остатки FBO) ---
