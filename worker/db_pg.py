@@ -864,6 +864,18 @@ def upsert_wb_supplies_many(rows):
                                  bool_cols=["done"])
 
 
+# --- wb_fbs_tasks (FBS-задания WB, marketplace-api /api/v3/orders) ---
+_WB_FBS_TASKS_MAP = [
+    ("rid", "rid"), ("supply_id", "supplyId"),
+    ("created_at", "createdAt"), ("nm_id", "nmId"),
+]
+
+
+def upsert_wb_fbs_tasks_many(rows):
+    """FBS-задания WB (marketplace-api /api/v3/orders): связка rid↔supply_id."""
+    return _upsert_raw_multi_pk("wb_fbs_tasks", ["rid"], _WB_FBS_TASKS_MAP, rows)
+
+
 # --- finance_report (/v3/finance/transaction/list) ---
 _OZ_FIN_COLS = ["posting_id", "operation_id", "operation_type_name", "operation_type_id",
                 "operation_dt", "product_id", "item_spp", "item_category_name", "item_offer_id",
