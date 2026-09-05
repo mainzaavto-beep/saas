@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { wbSalesLocalityByWarehouse } from "@/lib/geoMetrics.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -493,31 +494,10 @@ async function buildWarehouseEfficiency(vel) {
   // «СПБ Шушары» vs «Склад СПБ Шушары Московское»). Точный JOIN теряет ~18% выручки.
   // Решение: LATERAL с приоритетом — точное совпадение, иначе подстрока (LIMIT 1).
   // Это связывает кластер склада с продажами, где бы он ни фигурировал под другим именем.
-  const salesByWh = await db.prepare(
-    `SELECT s.warehouse_name AS warehouse,
-            wh_l.region AS cluster,
-            COUNT(*) AS sales_qty,
-            COALESCE(SUM(s.for_pay), 0) AS sales_rub,
-            COUNT(*) FILTER (
-              WHERE COALESCE(rtc_ok.cluster, rtc_reg.cluster) = wh_l.region
-            ) AS local_qty
-     FROM sales s
-     LEFT JOIN shared.region_to_cluster rtc_ok
-       ON rtc_ok.region = s.okrug_name
-     LEFT JOIN shared.region_to_cluster rtc_reg
-       ON rtc_reg.region = s.region_name AND (s.okrug_name IS NULL OR s.okrug_name = '')
-     LEFT JOIN LATERAL (
-       SELECT region FROM shared.wb_warehouses
-       WHERE name = s.warehouse_name                       -- 1) точное совпадение
-          OR s.warehouse_name ILIKE '%' || name || '%'      -- 2) склад внутри имени продажи
-          OR name ILIKE '%' || s.warehouse_name || '%'      -- 3) имя продажи внутри склада
-       ORDER BY (name = s.warehouse_name) DESC, updated_at DESC
-       LIMIT 1
-     ) wh_l ON true
-     WHERE s.last_change_dt::date >= current_date - ?::int
-       AND s.warehouse_name IS NOT NULL AND s.warehouse_name <> ''
-     GROUP BY s.warehouse_name, wh_l.region`
-  ).all(vel);
+  // Вынесено в lib/geoMetrics.js (wbSalesLocalityByWarehouse) — переиспользуется
+  // каноном «Географии» (задача 2, спека geography-v2 §3). SQL не менялся,
+  // сверено бит-в-бит смоуком scripts (см. task-2-report).
+  const salesByWh = await wbSalesLocalityByWarehouse(db, { sinceDays: vel });
 
   // 3) Сшиваем остатки и продажи по имени склада, считаем производные метрики.
   // Кластер берём из остатков (если есть), иначе из продаж (LATERAL-мэтчинг).
