@@ -1,186 +1,178 @@
-// /api/cabinets/[id]/geography — География заказов и продаж (WB+Ozon).
-// Перенос data-presenter/api/geography/route.js (314 строк) с адаптацией под PG.
-// Источник: orders (заказы) + sales (продажи WB) GROUP BY okrug_name/warehouse_name.
-// Ozon: только region (город), продажи = заказы (нет гео-разреза продаж).
+// /api/cabinets/[id]/geography — «География» v2: канон + prev-окно + KPI.
+// Переписано с нуля (план 2026-09-05-geo-canon-vitrina, задача 3) поверх
+// гео-канона lib/geoMetrics.js (задача 2, коммит 3144bef) — «одна цифра
+// везде» с /pnl и /products-summary: заказы is_cancel=0, продажи WB
+// is_realization=1, продажи Ozon честные (tenant.ozon_sales, is_return=0).
+//
+// Контракт ответа v2 (Global Constraints плана — задачи 5-6 его потребляют,
+// сторож задачи 4 сверяет; менять только синхронно со всеми тремя):
+//   {
+//     period: {from,to}, prevPeriod: {from,to},
+//     kpi:     { localPct, speedWbDays, speedOzDays, fbsSharePct, scLagHours },
+//     prevKpi: { ...та же форма, за prevPeriod... },   // null-поля при пустом prev
+//     byRegion:    [{ name, ordersRub, ordersQty, salesRub, salesQty }],  // сорт. ordersRub+salesRub desc
+//     byWarehouse: [{ name, ordersRub, ordersQty, salesRub, salesQty }],
+//     locality: { wb:   { rows: [{ whCluster, buyerCluster, qty }], localPct, mappedPct },
+//                 ozon: { rows: [{ whFo,      buyerFo,      qty }], localPct, mappedPct } },
+//     speed:    { wb: [{ okrug, scheme, medianDays, n }], ozon: [{ fo, medianDays, n }] },
+//     facets:   { brand: [{value,count}], group: [{value,count}], nm: [{id,label,count}] },
+//   }
+//
+// mp=wb|ozon — платформа, которой нет, отдаётся locality как
+// { rows: [], localPct: null, mappedPct: null }, speed — как [].
+// scheme=all|fbo|fbs — ВАЛИДИРУЕТСЯ на входе (находка ревью задачи 2): любое
+// иное значение ломает SQL в geoMetrics-хелперах (WB_SCHEME_SQL[scheme] даёт
+// undefined) — падаем на «all», а не пробрасываем сырой параметр.
+//
+// prev-окно считается ТЕМ ЖЕ кодом (collectAll), стыком назад (паттерн
+// products-summary/route.js:117-129), но БЕЗ byRegion/byWarehouse/locality.
+// rows/speed/facets — только kpi (kpiOnly:true) — тяжёлые запросы не дублируем.
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { defaultPeriod } from "@/lib/period.js";
+import {
+  wbGeoSummary, ozGeoSummary,
+  wbOrdersLocalityMatrix, ozOrdersLocalityMatrix,
+  wbSpeedByOkrug, ozSpeedByFo,
+  wbSpeedOverall, ozSpeedOverall,
+  wbFbsShare, ozFbsShare,
+  wbSupplyLagHours,
+} from "@/lib/geoMetrics.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const EMPTY = "Не указан";
+const EMPTY_LOCALITY = { rows: [], localPct: null, mappedPct: null };
+const UNMAPPED = "Не определено";
 
 export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const mp = url.searchParams.get("mp") || "all";
-  const period = url.searchParams.get("period") || "all";
-  const fromQ = url.searchParams.get("from") || "";
-  const toQ = url.searchParams.get("to") || "";
-  const q = (url.searchParams.get("q") || "").trim().toLowerCase();
-  const nm = url.searchParams.get("nm") || "";
-  const brand = url.searchParams.get("brand") || "";
-  const group = url.searchParams.get("group") || "";
-  const mps = cabinet.marketplaces || ["wb", "ozon"];
+  // Находка ревью задачи 2: scheme вне {all,fbo,fbs} рождает битый SQL
+  // в geoMetrics-хелперах (WB_SCHEME_SQL[scheme] → undefined). Валидируем.
+  const rawScheme = url.searchParams.get("scheme") || "all";
+  const scheme = ["fbo", "fbs"].includes(rawScheme) ? rawScheme : "all";
+  const def = defaultPeriod(30);
+  const from = url.searchParams.get("from") || def.from;
+  const to = url.searchParams.get("to") || def.to;
+  const filters = {
+    scheme,
+    nmId: url.searchParams.get("nm") || "",
+    brand: url.searchParams.get("brand") || "",
+    group: url.searchParams.get("group") || "",
+    q: (url.searchParams.get("q") || "").trim(),
+  };
 
-  let from = fromQ, to = toQ;
-  if (period !== "all" && /^\d{4}-\d{2}$/.test(period)) {
-    const [y, m] = period.split("-").map(Number);
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    from = `${period}-01`;
-    to = `${period}-${String(lastDay).padStart(2, "0")}`;
-  }
+  // prev-окно ТЕМ ЖЕ кодом (паттерн products-summary/route.js:117-129).
+  const N = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+  const prevTo = shiftDateUTC(from, -1);
+  const prevFrom = shiftDateUTC(prevTo, -(N - 1));
 
-  let byRegion = [], byWarehouse = [], range = { from: null, to: null };
-  const months = new Set();
-  const facets = { brand: [], group: [], nm: [] };
-
-  if (mp !== "ozon" && mps.includes("wb")) {
-    const wb = await collectWB({ from, to, q, nm, brand, group });
-    byRegion = mergeByName(byRegion, wb.byRegion);
-    byWarehouse = mergeByName(byWarehouse, wb.byWarehouse);
-    if (wb.range.from && (!range.from || wb.range.from < range.from)) range.from = wb.range.from;
-    if (wb.range.to && (!range.to || wb.range.to > range.to)) range.to = wb.range.to;
-    for (const m of wb.months) months.add(m);
-    facets.brand = mergeFacets(facets.brand, wb.facets.brand);
-    facets.group = mergeFacets(facets.group, wb.facets.group);
-    facets.nm = mergeFacets(facets.nm, wb.facets.nm);
-  }
-  if (mp !== "wb" && mps.includes("ozon")) {
-    const oz = await collectOzon({ from, to, q, nm, brand, group });
-    byRegion = mergeByName(byRegion, oz.byRegion);
-    byWarehouse = mergeByName(byWarehouse, oz.byWarehouse);
-    if (oz.range.from && (!range.from || oz.range.from < range.from)) range.from = oz.range.from;
-    if (oz.range.to && (!range.to || oz.range.to > range.to)) range.to = oz.range.to;
-    for (const m of oz.months) months.add(m);
-    facets.brand = mergeFacets(facets.brand, oz.facets.brand);
-    facets.group = mergeFacets(facets.group, oz.facets.group);
-    facets.nm = mergeFacets(facets.nm, oz.facets.nm);
-  }
-
-  byRegion.sort((a, b) => (b.ordersRub + b.salesRub) - (a.ordersRub + a.salesRub));
-  byWarehouse.sort((a, b) => (b.ordersRub + b.salesRub) - (a.ordersRub + a.salesRub));
+  const cur = await collectAll(mp, { from, to, ...filters });
+  const prev = await collectAll(mp, { from: prevFrom, to: prevTo, ...filters, kpiOnly: true });
 
   return NextResponse.json({
-    period: range,
-    months: [...months].sort(),
-    byRegion, byWarehouse, facets,
+    period: { from, to }, prevPeriod: { from: prevFrom, to: prevTo },
+    kpi: cur.kpi, prevKpi: prev.kpi,
+    byRegion: cur.byRegion, byWarehouse: cur.byWarehouse,
+    locality: cur.locality, speed: cur.speed,
+    facets: cur.facets,
   });
 });
 
-// ---------- WB ----------
-async function collectWB({ from, to, q, nm, brand, group }) {
-  const db = new DatabaseSync("wb", { readOnly: true });
-  const conds = ["o.order_dt <> ''"];
-  const params = [];
-  if (from) { conds.push("substr(o.order_dt,1,10) >= ?"); params.push(from); }
-  if (to)   { conds.push("substr(o.order_dt,1,10) <= ?"); params.push(to); }
-  if (nm)    { conds.push("o.nm_id = ?"); params.push(Number(nm)); }
-  if (brand) { conds.push("o.brand = ?"); params.push(brand); }
-  if (group) { conds.push("o.subject = ?"); params.push(group); }
-  if (q) {
-    conds.push("(LOWER(o.supplier_article) LIKE ? OR LOWER(CAST(o.nm_id AS TEXT)) LIKE ? OR LOWER(COALESCE(a.name,'')) LIKE ? OR LOWER(o.brand) LIKE ?)");
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+// Сдвиг даты 'YYYY-MM-DD' на N дней в UTC — точная копия
+// products-summary/route.js:245-249 (там локальная, не экспортируется;
+// дублируем с этой ссылкой, а не импортируем приватную функцию).
+function shiftDateUTC(dateStr, deltaDays) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// collectAll(mp, opts) — ЕДИНСТВЕННОЕ место расчёта (и текущего окна, и
+// prev). opts.kpiOnly=true пропускает byRegion/byWarehouse/детальную speed/
+// facets — это тяжёлые запросы, prev-окну хватает kpi (сам kpi всё равно
+// считается ТЕМИ ЖЕ функциями geoMetrics, что и для текущего окна).
+async function collectAll(mp, opts) {
+  const { from, to, scheme, nmId, brand, group, q, kpiOnly } = opts;
+  const wantWb = mp !== "ozon";
+  const wantOz = mp !== "wb";
+  const wbDb = wantWb ? new DatabaseSync("wb", { readOnly: true }) : null;
+  const ozDb = wantOz ? new DatabaseSync("ozon", { readOnly: true }) : null;
+
+  // Локальность нужна ВСЕГДА (и для kpi.localPct, и для секции 3 в full-режиме).
+  const wbLoc = wantWb ? await wbOrdersLocalityMatrix(wbDb, { from, to, scheme }) : null;
+  const ozLoc = wantOz ? await ozOrdersLocalityMatrix(ozDb, { from, to, scheme }) : null;
+
+  // KPI-компоненты — тоже всегда (лёгкие агрегаты без GROUP BY по разрезу).
+  const wbFast = wantWb ? await wbSpeedOverall(wbDb, { from, to }) : null;
+  const ozFast = wantOz ? await ozSpeedOverall(ozDb, { from, to }) : null;
+  const wbShare = wantWb ? await wbFbsShare(wbDb, { from, to }) : null;
+  const ozShare = wantOz ? await ozFbsShare(ozDb, { from, to }) : null;
+  const scLag = wantWb ? await wbSupplyLagHours(wbDb, { from, to }) : null;
+
+  const kpi = buildKpi({ wbLoc, ozLoc, wbFast, ozFast, wbShare, ozShare, scLag });
+
+  if (kpiOnly) {
+    return { kpi };
   }
-  const where = conds.join(" AND ");
-  const articleJoin = `LEFT JOIN articles a ON a.nm_id = o.nm_id`;
 
-  const range = await db.prepare(`SELECT MIN(substr(order_dt,1,10)) a, MAX(substr(order_dt,1,10)) b FROM orders WHERE order_dt <> ''`).get();
-  const monthRows = await db.prepare(`SELECT DISTINCT substr(order_dt,1,7) m FROM orders WHERE order_dt <> '' ORDER BY m`).all();
-  const months = monthRows.map((r) => r.m).filter(Boolean);
+  // Полные сводки/разрезы — только для текущего окна.
+  const wbSum = wantWb ? await wbGeoSummary(wbDb, { from, to, scheme, nmId, brand, group, q }) : null;
+  const ozSum = wantOz ? await ozGeoSummary(ozDb, { from, to, scheme, nmId, brand, group, q }) : null;
+  const wbSpeedRows = wantWb ? await wbSpeedByOkrug(wbDb, { from, to }) : [];
+  const ozSpeedRows = wantOz ? await ozSpeedByFo(ozDb, { from, to }) : [];
 
-  const ordersRegion = await db.prepare(
-    `SELECT COALESCE(NULLIF(o.okrug_name,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(o.price_with_disc),0) rub FROM orders o ${articleJoin} WHERE ${where} GROUP BY o.okrug_name`
-  ).all(...params);
-  const ordersWh = await db.prepare(
-    `SELECT COALESCE(NULLIF(o.warehouse_name,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(o.price_with_disc),0) rub FROM orders o ${articleJoin} WHERE ${where} GROUP BY o.warehouse_name`
-  ).all(...params);
+  const byRegion = mergeByName(wbSum?.byRegion || [], ozSum?.byRegion || []);
+  const byWarehouse = mergeByName(wbSum?.byWarehouse || [], ozSum?.byWarehouse || []);
+  byRegion.sort((a, b) => (b.ordersRub + b.salesRub) - (a.ordersRub + a.salesRub));
+  byWarehouse.sort((a, b) => (b.ordersRub + b.salesRub) - (a.ordersRub + a.salesRub));
 
-  // Продажи — по sale_dt.
-  const sConds = ["s.sale_dt <> ''"];
-  const sParams = [];
-  if (from) { sConds.push("substr(s.sale_dt,1,10) >= ?"); sParams.push(from); }
-  if (to)   { sConds.push("substr(s.sale_dt,1,10) <= ?"); sParams.push(to); }
-  if (nm)    { sConds.push("s.nm_id = ?"); sParams.push(Number(nm)); }
-  if (brand) { sConds.push("s.brand = ?"); sParams.push(brand); }
-  if (group) { sConds.push("s.subject = ?"); sParams.push(group); }
-  if (q) {
-    sConds.push("(LOWER(s.supplier_article) LIKE ? OR LOWER(CAST(s.nm_id AS TEXT)) LIKE ? OR LOWER(COALESCE(a.name,'')) LIKE ? OR LOWER(s.brand) LIKE ?)");
-    sParams.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
-  }
-  const sWhere = sConds.join(" AND ");
-  const salesRegion = await db.prepare(
-    `SELECT COALESCE(NULLIF(s.okrug_name,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(s.finished_price),0) rub FROM sales s LEFT JOIN articles a ON a.nm_id = s.nm_id WHERE ${sWhere} GROUP BY s.okrug_name`
-  ).all(...sParams);
-  const salesWh = await db.prepare(
-    `SELECT COALESCE(NULLIF(s.warehouse_name,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(s.finished_price),0) rub FROM sales s LEFT JOIN articles a ON a.nm_id = s.nm_id WHERE ${sWhere} GROUP BY s.warehouse_name`
-  ).all(...sParams);
-
-  // Фасеты.
-  const facetRows = await db.prepare(`SELECT o.brand, o.subject, o.nm_id, o.supplier_article, a.name FROM orders o LEFT JOIN articles a ON a.nm_id = o.nm_id WHERE o.order_dt <> ''`).all();
-  const facets = buildFacets(facetRows, "wb");
+  const facets = await buildFacets({ wbDb, ozDb, from, to });
 
   return {
-    byRegion: zipGeo(ordersRegion, salesRegion),
-    byWarehouse: zipGeo(ordersWh, salesWh),
-    range: { from: range?.a || null, to: range?.b || null },
-    months, facets,
+    kpi,
+    byRegion, byWarehouse,
+    locality: {
+      wb: wbLoc || EMPTY_LOCALITY,
+      ozon: ozLoc || EMPTY_LOCALITY,
+    },
+    speed: { wb: wbSpeedRows, ozon: ozSpeedRows },
+    facets,
   };
 }
 
-// ---------- Ozon ----------
-async function collectOzon({ from, to, q, nm, brand, group }) {
-  const db = new DatabaseSync("ozon", { readOnly: true });
-  const conds = ["o.order_dt <> ''"];
-  const params = [];
-  if (from) { conds.push("substr(o.order_dt,1,10) >= ?"); params.push(from); }
-  if (to)   { conds.push("substr(o.order_dt,1,10) <= ?"); params.push(to); }
-  if (nm)    { conds.push("o.product_id = ?"); params.push(Number(nm)); }
-  if (brand) { conds.push("p.brand = ?"); params.push(brand); }
-  if (group) { conds.push("p.category = ?"); params.push(group); }
-  if (q) {
-    conds.push("(LOWER(o.offer_id) LIKE ? OR LOWER(CAST(o.product_id AS TEXT)) LIKE ? OR LOWER(COALESCE(p.name,'')) LIKE ?)");
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
-  }
-  const where = conds.join(" AND ");
-  const articleJoin = `LEFT JOIN products p ON p.product_id = o.product_id`;
-
-  const range = await db.prepare(`SELECT MIN(substr(order_dt,1,10)) a, MAX(substr(order_dt,1,10)) b FROM orders WHERE order_dt <> ''`).get();
-  const monthRows = await db.prepare(`SELECT DISTINCT substr(order_dt,1,7) m FROM orders WHERE order_dt <> '' ORDER BY m`).all();
-  const months = monthRows.map((r) => r.m).filter(Boolean);
-
-  const ordersRegion = await db.prepare(
-    `SELECT COALESCE(NULLIF(o.region,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(o.total),0) rub FROM orders o ${articleJoin} WHERE ${where} GROUP BY o.region`
-  ).all(...params);
-  const ordersWh = await db.prepare(
-    `SELECT COALESCE(NULLIF(o.warehouse,''),'${EMPTY}') name, COUNT(*) qty, COALESCE(SUM(o.total),0) rub FROM orders o ${articleJoin} WHERE ${where} GROUP BY o.warehouse`
-  ).all(...params);
-
-  const facetRows = await db.prepare(`SELECT o.product_id, p.brand, p.category, p.name, o.offer_id FROM orders o LEFT JOIN products p ON p.product_id = o.product_id WHERE o.order_dt <> ''`).all();
-  const facets = buildFacets(facetRows, "ozon");
-
+// buildKpi/weightedLocalPct — дословно из брифа задачи 3 плана.
+function buildKpi({ wbLoc, ozLoc, wbFast, ozFast, wbShare, ozShare, scLag }) {
+  // Локальность: взвешенно по замапленным штукам обеих площадок (Σ local / Σ mapped
+  // пересчитывается из rows матриц — та же формула, что в withLocalityTotals).
+  const localPct = weightedLocalPct([wbLoc, ozLoc].filter(Boolean));
+  const fbsQty = (wbShare?.fbsQty ?? 0) + (ozShare?.fbsQty ?? 0);
+  const totalQty = (wbShare?.totalQty ?? 0) + (ozShare?.totalQty ?? 0);
   return {
-    byRegion: zipGeo(ordersRegion, ordersRegion), // Ozon: продажи = заказы (нет гео продаж)
-    byWarehouse: zipGeo(ordersWh, ordersWh),
-    range: { from: range?.a || null, to: range?.b || null },
-    months, facets,
+    localPct,
+    speedWbDays: wbFast?.medianDays ?? null,   // wbSpeedOverall (Task 2)
+    speedOzDays: ozFast?.medianDays ?? null,   // ozSpeedOverall (Task 2)
+    fbsSharePct: totalQty > 0 ? Math.round((fbsQty * 1000) / totalQty) / 10 : null,
+    scLagHours: scLag?.medianHours ?? null,
   };
 }
 
-// ---------- хелперы ----------
-function zipGeo(orders, sales) {
-  const map = new Map();
-  for (const o of orders) {
-    map.set(o.name, { name: o.name, ordersRub: o.rub || 0, ordersQty: o.qty || 0, salesRub: 0, salesQty: 0 });
+function weightedLocalPct(parts) {
+  let local = 0, mapped = 0;
+  for (const p of parts) for (const r of p.rows) {
+    const q = Number(r.qty) || 0;
+    const wh = r.whCluster ?? r.whFo, buyer = r.buyerCluster ?? r.buyerFo;
+    if (wh !== UNMAPPED && buyer !== UNMAPPED) {
+      mapped += q;
+      if (wh === buyer) local += q;
+    }
   }
-  for (const s of sales) {
-    const cur = map.get(s.name) || { name: s.name, ordersRub: 0, ordersQty: 0, salesRub: 0, salesQty: 0 };
-    cur.salesRub = s.rub || 0; cur.salesQty = s.qty || 0;
-    map.set(s.name, cur);
-  }
-  return [...map.values()];
+  return mapped > 0 ? Math.round((local * 1000) / mapped) / 10 : null;
 }
 
+// mergeByName — перенос из старого роута (geography/route.js, дословно).
 function mergeByName(a, b) {
   const map = new Map();
   for (const r of a) map.set(r.name, { ...r });
@@ -193,7 +185,40 @@ function mergeByName(a, b) {
   return [...map.values()];
 }
 
-function buildFacets(rows, mp) {
+// buildFacets — перенос из старого роута, но ОКНО обязательно (полный скан
+// таблицы заказов без границ дат — слишком тяжело; facets только для
+// текущего окна, prev их не считает — collectAll(kpiOnly) сюда не заходит).
+async function buildFacets({ wbDb, ozDb, from, to }) {
+  const facets = { brand: [], group: [], nm: [] };
+  if (wbDb) {
+    const rows = await wbDb.prepare(
+      `SELECT o.brand, o.subject, o.nm_id, o.supplier_article, a.name
+       FROM orders o LEFT JOIN articles a ON a.nm_id = o.nm_id
+       WHERE substr(o.order_dt,1,10) >= ? AND substr(o.order_dt,1,10) <= ?`
+    ).all(from, to);
+    const wbFacets = buildFacetsFromRows(rows, "wb");
+    facets.brand = mergeFacets(facets.brand, wbFacets.brand);
+    facets.group = mergeFacets(facets.group, wbFacets.group);
+    facets.nm = mergeFacets(facets.nm, wbFacets.nm);
+  }
+  if (ozDb) {
+    const rows = await ozDb.prepare(
+      `SELECT o.product_id, p.brand, p.category, p.name, o.offer_id
+       FROM orders o LEFT JOIN products p ON p.product_id = o.product_id
+       WHERE substr(o.order_dt,1,10) >= ? AND substr(o.order_dt,1,10) <= ?`
+    ).all(from, to);
+    const ozFacets = buildFacetsFromRows(rows, "ozon");
+    facets.brand = mergeFacets(facets.brand, ozFacets.brand);
+    facets.group = mergeFacets(facets.group, ozFacets.group);
+    facets.nm = mergeFacets(facets.nm, ozFacets.nm);
+  }
+  return facets;
+}
+
+// buildFacetsFromRows/mergeFacets — перенос из старого роута (дословно,
+// переименовано buildFacets→buildFacetsFromRows чтобы не конфликтовать
+// с async-обёрткой buildFacets выше).
+function buildFacetsFromRows(rows, mp) {
   const brands = new Map(), groups = new Map(), nms = new Map();
   for (const r of rows) {
     if (mp === "wb") {
@@ -214,9 +239,9 @@ function buildFacets(rows, mp) {
 }
 
 function mergeFacets(a, b) {
-  const map = new Map(a.map((x) => [x.value || x.id, x]));
+  const map = new Map(a.map((x) => [x.value ?? x.id, x]));
   for (const x of b) {
-    const key = x.value || x.id;
+    const key = x.value ?? x.id;
     const cur = map.get(key);
     if (cur) cur.count = (cur.count || 0) + (x.count || 0);
     else map.set(key, x);
