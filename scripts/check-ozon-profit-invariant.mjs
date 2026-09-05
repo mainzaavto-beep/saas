@@ -30,8 +30,11 @@
 //    (tenant.ozon_accruals). Допуск — 1 ₽, без альтернативы по проценту (в
 //    отличие от lib/reference.js::compare — здесь порог единственный, как
 //    прямо требует бриф задачи 6) — но применяется к ОСТАТКУ после вычета
-//    ДВУХ диагностированных сумм — «исходящей» и «входящей» упаковки на
-//    стыке недель (см. ниже и проверку 2), а не к сырой разнице напрямую.
+//    ТРЁХ диагностированных сумм — «исходящей» и «входящей» упаковки на
+//    стыке недель (см. ниже и проверку 2) и Σ класса §13 «comps≠accrued»
+//    (docs/ozon-accrual-reconciliation.md, попавшая в окно этой недели —
+//    находка 05.09.2026, см. CONSISTENCY_CLASS_WINDOW_SQL и докстроку
+//    «СТАБИЛЬНОСТЬ КЛАССА» ниже), а не к сырой разнице напрямую.
 //
 //    order_costs фильтруется по COALESCE(sale_dt, return_dt), а НЕ по голому
 //    sale_dt — тот же приём, что уже применяется в
@@ -497,18 +500,59 @@ const AD_SPEND_SQL = `
 // внутренне согласован — тождество seller_price=sale_price+coinvestment+
 // bonus держится, проверено на всех возвратных строках класса).
 //
-// СТАБИЛЬНОСТЬ КЛАССА (обоснование решения «без порога» — прямое требование
-// брифа задачи 3): после ПОЛНОГО пересчёта истории обоих кабинетов
-// 2026-08-18 (§10-12 этого документа — вся таблица переписана заново из
-// начислений) класс остался РОВНО 60 строк, максимальная дата аномалии —
-// 2026-06-16, свежих (июль-август 2026) аномалий НЕТ ни одной, хотя
-// пересчёт коснулся вообще всех дат таблицы (max дата любой строки —
-// 2026-08-18). Класс НЕ растёт — заморожен ~2 месяца несмотря на полную
-// пересборку — поэтому порог роста НЕ введён (брифу требуется числовое
-// обоснование стабильности, а не рост, чтобы порог не добавлять; см. отчёт
-// задачи 3). Если класс когда-либо начнёт расти (новые даты появятся в
-// выводе), это будет видно ГЛАЗАМИ на каждом прогоне — строка печатается
-// ВСЕГДА, а не только при нарушении.
+// СТАБИЛЬНОСТЬ КЛАССА — ОБНОВЛЕНО 05.09.2026 (расследование остатка −4500 ₽
+// Проверки 1, неделя 2026-08-24..30, кабинет 1; см. также worker-коммит
+// d62f1dd «fix(worker): ozon_order_costs — сверка согласованности учитывает
+// обнуление cost_value_retail на возвратах»). ИСХОДНОЕ заявление ниже (бриф
+// задачи 3, 2026-08-18/19) было: после ПОЛНОГО пересчёта истории обоих
+// кабинетов 2026-08-18 класс остался РОВНО 60 строк, максимальная дата
+// аномалии — 2026-06-16, свежих (июль-август 2026) аномалий НЕТ ни одной.
+// ЭТО БОЛЬШЕ НЕ ВЕРНО и не будет верно снова — у класса ДВЕ независимые
+// причины (§13.2 docs/ozon-accrual-reconciliation.md), и у них РАЗНАЯ
+// динамика:
+//   • Случай «А» (is_return=0, тождество seller_price=sale_price+
+//     coinvestment+bonus не держится на части commission-блоков —
+//     особенность данных Ozon, не наш баг, ~45 строк) — по-прежнему БЕЗ
+//     роста, максимальная дата всё ещё 2026-06-16 на 05.09.2026.
+//   • Случай «Б» (is_return=1, возврат РЕАЛЬНО ПРОДАННОГО юнита —
+//     cost_value_retail сознательно обнуляется build_order_costs на любом
+//     возврате, а seller_price честно ненулевой и выпадает из comps) —
+//     класс ЖИВОЙ и растёт с КАЖДЫМ таким возвратом: это не разовая
+//     аномалия данных, а структурное следствие продуктового решения об
+//     обнулении. На 05.09.2026 в классе уже 62 строки (было 60) — две
+//     новые, обе кабинет 1, обе августовские (постинги 48502768-0261-3 и
+//     0150512174-0208-3, найдены расследованием −4500 ₽ Проверки 1).
+// Деньги/profit НЕ задеты ни случаем А, ни случаем Б (SUM(accrued) не
+// меняется, см. докстроку выше) — расхождение только в 6 независимо
+// читаемых компонентах.
+//
+// Живой сборщик (worker/collectors/ozon_order_costs.py, коммит d62f1dd,
+// 2026-09-05) с этой даты БОЛЬШЕ НЕ ФЛАГАЕТ случай «Б» в своей собственной
+// внутренней проверке consistency_ok — та проверка починена сдвигом
+// ожидания на Σ seller_price для is_return=1 (симметрично обнулению
+// cost_value_retail). Денежная арифметика (cost_value_retail/commission/
+// services/logistics/acquiring/loyalty/cost/profit — всё, что пишется в
+// БД) правкой d62f1dd НЕ изменена ни на копейку — исправлен только
+// внутренний индикатор сборщика (consistency_ok нигде не пишется в БД).
+// Случай «А» правкой d62f1dd НЕ затронут — по-прежнему флагается и
+// сборщиком, и этим классом. Это значит: САМ факт роста случая «Б» —
+// больше НЕ сигнал регресса сборщика (сборщик его больше не считает
+// нарушением), но денежный разрыв в 6 компонентах для панели (роуты,
+// складывающие компоненты сами, а не читающие готовый profit) остаётся, и
+// ЭТОТ офлайн-класс (уровня scripts, читает уже записанные значения) —
+// единственное место, где он по-прежнему виден и посчитан.
+//
+// Порог роста для класса по-прежнему НЕ введён: Check 1 теперь явно находит
+// строки класса, ПОПАВШИЕ В ОКНО проверяемой недели (CONSISTENCY_CLASS_
+// WINDOW_SQL), печатает их и вычитает их знаковую сумму из остатка ПЕРЕД
+// сравнением с допуском (см. блок Проверки 1 ниже) — поэтому рост случая
+// «Б» сам по себе больше не создаёт ложных РАСХОЖДЕНИЙ в Check 1 неделя за
+// неделей. Но эта справочная строка (по ВСЕЙ истории, не только окну
+// недель) печатается ВСЕГДА — рост случая «Б» виден ГЛАЗАМИ на каждом
+// прогоне (n растёт от 62 дальше). Этот сторож остаётся ВТОРЫМ ЭШЕЛОНОМ для
+// случая «А»: отдельной автоматической проверки роста именно случая «А» нет
+// — если он тоже начнёт расти, это будет видно здесь же, в общей
+// Σ|расхождение| и n, но без разбивки по причине.
 const CONSISTENCY_CLASS_SQL = `
   SELECT count(*) AS n,
          COALESCE(SUM(ABS((cost_value_retail - commission - services - logistics - acquiring - loyalty)
@@ -516,6 +560,32 @@ const CONSISTENCY_CLASS_SQL = `
          MAX(COALESCE(sale_dt, return_dt)) AS max_dt
   FROM tenant.ozon_order_costs
   WHERE cabinet_id = $1
+    AND ABS((cost_value_retail - commission - services - logistics - acquiring - loyalty)
+            - (profit + COALESCE(cost, 0))) > 0.01`;
+
+// Windowed-версия класса выше — Проверка 1, находка 05.09.2026
+// (расследование остатка −4500 ₽, неделя 2026-08-24..30, кабинет 1;
+// /tmp/.../invariant-check1-investigation.md). ТА ЖЕ сигнатура членства
+// класса, что и в CONSISTENCY_CLASS_SQL выше (идентичное выражение,
+// идентичный допуск 0,01 ₽) — добавлены только (а) фильтр по кабинету и
+// COALESCE(sale_dt, return_dt) BETWEEN (строка класса попала именно в
+// проверяемую неделю) и (б) ЗНАКОВАЯ (не ABS) сумма плюс список постингов:
+// Проверка 1 ниже печатает эти строки явно и вычитает их знаковую сумму из
+// остатка ДО сравнения с допуском. Класс — задокументированная (§13.2
+// docs/ozon-accrual-reconciliation.md, случай «Б») причина расхождения
+// order_part (comps) с SUM(accrued) на возвратах реально проданных юнитов
+// (cost_value_retail сознательно обнуляется на возврате, seller_price
+// «выпадает» из comps) — без этого вычитания Check 1 видит такой остаток
+// как «загадочное» РАСХОЖДЕНИЕ, хотя он целиком объясняется давно известным
+// классом (см. также обновлённую докстроку СТАБИЛЬНОСТЬ КЛАССА ниже).
+const CONSISTENCY_CLASS_WINDOW_SQL = `
+  SELECT count(*) AS n,
+         COALESCE(SUM((cost_value_retail - commission - services - logistics - acquiring - loyalty)
+                       - (profit + COALESCE(cost, 0))), 0) AS signed_sum,
+         array_agg(posting_number ORDER BY posting_number) AS postings
+  FROM tenant.ozon_order_costs
+  WHERE cabinet_id = $1
+    AND COALESCE(sale_dt, return_dt) BETWEEN $2::text AND $3::text
     AND ABS((cost_value_retail - commission - services - logistics - acquiring - loyalty)
             - (profit + COALESCE(cost, 0))) > 0.01`;
 
@@ -541,11 +611,12 @@ try {
 
     const byCabinet = {};
     for (const cabinetId of CABINETS) {
-      const [{ rows: [inv] }, { rows: [ad] }] = await Promise.all([
+      const [{ rows: [inv] }, { rows: [ad] }, { rows: [cc] }] = await Promise.all([
         pool.query(INVARIANT_SQL, [cabinetId, dateFrom, dateTo, [...NONITEM_PROMO_TYPE_IDS]]),
         pool.query(AD_SPEND_SQL, [cabinetId, dateFrom, dateTo]),
+        pool.query(CONSISTENCY_CLASS_WINDOW_SQL, [cabinetId, dateFrom, dateTo]),
       ]);
-      byCabinet[cabinetId] = { inv, ad };
+      byCabinet[cabinetId] = { inv, ad, cc };
     }
 
     let periodViolations = 0;
@@ -570,7 +641,7 @@ try {
     );
     const perCabinet = {};
     for (const cabinetId of CABINETS) {
-      const { inv } = byCabinet[cabinetId];
+      const { inv, cc } = byCabinet[cabinetId];
       const orderPart = num(inv.order_part);
       const cabinetPart = num(inv.cabinet_part);
       const promoPart = num(inv.promo_part);
@@ -589,16 +660,28 @@ try {
       const otherPeriodSum = num(inv.other_period_s), otherPeriodN = Number(inv.other_period_n);
       const inboundSum = num(inv.inbound_sum);
       const inboundN = Number(inv.inbound_n);
+      const classN = Number(cc.n);
+      const classSum = num(cc.signed_sum);
+      const classPostings = cc.postings || [];
       perCabinet[cabinetId] = { accrualTotal, unresolvedSum, unresolvedN, noRowSum, noRowN, nullDateSum, nullDateN, otherPeriodSum, otherPeriodN, inboundSum, inboundN };
 
       // Остаток = сырая разница + ИСХОДЯЩАЯ утечка (unresolvedSum, «other_period»
       // и соседи — деньги ЭТОЙ недели, упакованные в строку ДРУГОЙ недели) −
       // ВХОДЯЩАЯ утечка (inboundSum — деньги ДРУГИХ недель, упакованные в строку
       // ЭТОЙ недели, задача 6 плана «ремонт данных прибыли Ozon», зеркальная
-      // поправка к исходящей, см. комментарий у CTE inbound в INVARIANT_SQL).
-      // Обе печатаются ВСЕГДА (не только при красной строке) — защита от
-      // самообмана, рост любой из категорий виден глазами независимо от вердикта.
-      const residual = diff + unresolvedSum - inboundSum;
+      // поправка к исходящей, см. комментарий у CTE inbound в INVARIANT_SQL) −
+      // Σ класса §13 «comps≠accrued» (classSum, CONSISTENCY_CLASS_WINDOW_SQL,
+      // находка 05.09.2026), ПОПАВШАЯ В ОКНО этой недели — известная,
+      // задокументированная (docs/ozon-accrual-reconciliation.md §13.2, случай
+      // «Б») причина рассинхрона order_part с SUM(accrued) на возвратах
+      // реально проданных юнитов; без этого вычитания такие строки выглядят
+      // «загадочным» РАСХОЖДЕНИЕМ, хотя давно объяснены справочным блоком в
+      // конце файла (там — по ВСЕЙ истории, здесь — только попавшее в окно).
+      // Все три поправки печатаются ВСЕГДА (не только при красной строке) —
+      // защита от самообмана, рост любой из категорий виден глазами независимо
+      // от вердикта.
+      const rawResidual = diff + unresolvedSum - inboundSum;
+      const residual = rawResidual - classSum;
       const ok = Math.abs(residual) <= INVARIANT_TOL_RUB;
       if (!ok) periodViolations++;
       console.log(
@@ -621,7 +704,15 @@ try {
         + `«упаковка на стыке недель», task-6-report.md): ${inboundN} строк(и) начислений, `
         + `Σ=${fmtRub(inboundSum)} ₽`
       );
-      console.log(`    остаток после вычета обеих утечек (исходящей и входящей): ${fmtRub(residual)} ₽  ` + (ok ? 'ok' : 'РАСХОЖДЕНИЕ (необъяснённая находка)'));
+      console.log(
+        `    объяснено классом §13 «comps≠accrued» (docs/ozon-accrual-reconciliation.md, `
+        + `случай «Б» — возврат реально проданного юнита, cost_value_retail сознательно `
+        + `обнулён, seller_price выпал из comps; справочный блок в конце файла — по всей `
+        + `истории, здесь — только строки, попавшие в это окно): ${classN} строк(и), `
+        + `Σ=${fmtRub(classSum)} ₽`
+        + (classN > 0 ? `, постинги: ${classPostings.join(', ')}` : '')
+      );
+      console.log(`    остаток после вычета обеих утечек и класса §13: ${fmtRub(residual)} ₽  ` + (ok ? 'ok' : 'РАСХОЖДЕНИЕ (необъяснённая находка)'));
     }
     console.log('');
 
@@ -716,7 +807,7 @@ try {
   // которого сам profit и построен) — расхождение может задеть только
   // отдельно читаемые компоненты (commission/logistics/acquiring/
   // cost_value_retail) в тех роутах панели, что складывают их сами.
-  console.log('─── Справочно: расхождение компонентной раскладки (cost_value_retail−commission−logistics−acquiring−loyalty ≠ SUM(accrued), ВСЯ ИСТОРИЯ, не окно недель; profit не затронут, порога нет — класс стабилен, см. docs/ozon-accrual-reconciliation.md §13) ───');
+  console.log('─── Справочно: расхождение компонентной раскладки (cost_value_retail−commission−logistics−acquiring−loyalty ≠ SUM(accrued), ВСЯ ИСТОРИЯ, не окно недель; profit не затронут; порога нет — случай «А» стабилен, случай «Б» растёт с каждым возвратом проданного юнита (см. докстроку CONSISTENCY_CLASS_SQL); Check 1 выше уже вычитает строки, попавшие в окно недели, docs/ozon-accrual-reconciliation.md §13) ───');
   console.log(pad('кабинет', 10) + padL('строк', 10) + padL('Σ|расхождение|, ₽', 20) + padL('последняя дата', 16));
   for (const cabinetId of CABINETS) {
     const { rows: [c] } = await pool.query(CONSISTENCY_CLASS_SQL, [cabinetId]);
