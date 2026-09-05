@@ -1,11 +1,13 @@
 #!/bin/bash
 # run_saas_collect.sh — параметризуемый запуск SAAS-воркера для systemd-таймеров.
-#   saas-worker.service  → run_saas_collect.sh main    (4×/день, −2..сегодня)
-#   saas-stocks.service  → run_saas_collect.sh stocks  (1×/день, снимок)
+#   saas-worker.service       → run_saas_collect.sh main    (4×/день, −2..сегодня)
+#   saas-stocks.service       → run_saas_collect.sh stocks  (1×/день, снимок)
+#   saas-sku-ad-night.service → run_saas_collect.sh skuad   (1×/ночь, ozon_sku_ad)
 #
 # Аргументы:
 #   $1 = режим: "main" (14 сборщиков, без остатков) | "stocks" (только остатки)
-#   $2 = дней назад FROM (по умолчанию: main=2, stocks=0)
+#        | "skuad" (только ozon_sku_ad, ночной тик)
+#   $2 = дней назад FROM (по умолчанию: main=2, stocks=0, skuad=2)
 #   $3 = дней назад TO   (по умолчанию: 0 = сегодня)
 set -uo pipefail
 export PYTHONIOENCODING=utf-8
@@ -53,13 +55,27 @@ METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
 # (таймер saas-references, Mon 06:00). wb_references пишет в shared.* (без RLS).
 REFERENCES_COLLECTORS="wb_references,ozon_references"
+# 2026-09-05: отдельный ночной тик ТОЛЬКО для ozon_sku_ad (реклама Ozon по
+# товарам). Сборщик уже стоит в MAIN_COLLECTORS выше, но у него своё «умное»
+# дневное окно очереди Performance API — SKIP_WINDOW_MSK=(4,16) в
+# worker/collectors/ozon_sku_ad.py (задача «наблюдаемость воркера»,
+# 2026-08-23). Все три утренних тика saas-worker (05:15/09:00/12:00) попадают
+# в это окно и мягко скипаются (см. STALE_FALLBACK_H в том же файле) —
+# реально сборщик отрабатывал только вечерний тик 17:00. Ночных тиков у
+# saas-worker нет, а хозяин подтвердил: данные Ozon за вчера доступны у них
+# уже утром, лаг «до вечера» — это дыра в НАШЕМ расписании, а не ограничение
+# API (проверено 2026-09-05: campaign-реклама за вчера уже собрана к 06:06,
+# per-SKU — нет). Этот режим гоняется в 03:30 MSK — вне SKIP_WINDOW_MSK,
+# сборщик реально соберёт данные, а не скипнет тик.
+SKUAD_COLLECTORS="ozon_sku_ad"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;
   stocks)     COLLECTORS="$STOCKS_COLLECTORS";     DAYS_FROM="${DAYS_FROM:-0}" ;;
   metrics30m) COLLECTORS="$METRICS30M_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
   references) COLLECTORS="$REFERENCES_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
-  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references)" >&2; exit 1 ;;
+  skuad)      COLLECTORS="$SKUAD_COLLECTORS";      DAYS_FROM="${DAYS_FROM:-2}" ;;
+  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references|skuad)" >&2; exit 1 ;;
 esac
 
 # Диапазон дат: FROM = сегодня − DAYS_FROM, TO = сегодня − DAYS_TO.

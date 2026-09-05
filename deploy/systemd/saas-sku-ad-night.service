@@ -1,0 +1,34 @@
+[Unit]
+Description=SAAS SKU-Ad Night — реклама Ozon по товарам, ночной тик (1×/сутки)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Только ozon_sku_ad. Сборщик уже стоит в MAIN_COLLECTORS у saas-worker, но
+# у него своё дневное окно очереди Performance API — SKIP_WINDOW_MSK=(4,16)
+# MSK в worker/collectors/ozon_sku_ad.py (2026-08-23). Все три утренних тика
+# saas-worker (05:15/09:00/12:00) в это окно попадают и мягко скипаются —
+# реально собирал только вечерний тик 17:00, поэтому реклама за вчера
+# появлялась в панели только вечером. Ночных тиков у saas-worker нет.
+# Хозяин подтвердил: данные Ozon за вчера доступны утром — это наша дыра
+# в расписании, а не ограничение API (проверено 2026-09-05: campaign-реклама
+# за вчера уже собрана к 06:06, per-SKU — нет). Таймер запускает этот юнит
+# в 03:30 MSK — вне SKIP_WINDOW_MSK (4-16), сборщик реально отработает.
+Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
+# Симметрия с saas-worker: явный TZ защищает окно MSK ozon_sku_ad
+# (SKIP_WINDOW_MSK) от переезда сервера на другой часовой пояс — сейчас
+# совпадает с системным Europe/Moscow, но сборщик полагается на
+# datetime.now() = MSK неявно.
+Environment=TZ=Europe/Moscow
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh skuad
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-sku-ad-night
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target
