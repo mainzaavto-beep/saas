@@ -127,6 +127,9 @@ function Spark({ series }) {
 export default function SummaryPage({ cabinetId }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  // loading — индикатор ПОВТОРНОЙ загрузки (смена периода/МП), без полного
+  // размонтирования страницы (см. фикс ниже: setData(null) убран из эффекта).
+  const [loading, setLoading] = useState(true);
   // Кабинетные расходы (№27) — отдельный источник (не входят в маржу SKU).
   const [cab, setCab] = useState(null);
 
@@ -159,11 +162,19 @@ export default function SummaryPage({ cabinetId }) {
   }, [mp, dateFrom, dateTo]);
 
   useEffect(() => {
-    setData(null); setError(null);
+    // ⚠️ ФИКС (жалоба владельца, класс бага «PeriodPicker сбрасывался»):
+    // раньше здесь стоял setData(null) на КАЖДУЮ смену qs (в т.ч. смену
+    // гранулярности/«Вчера» в PeriodPicker) → guard `if (!data) return
+    // <Centered>…` ниже размонтировал ВСЮ страницу, включая PeriodPicker,
+    // его внутреннее состояние (gran/anchor) гибло, и при ремонтировании
+    // пикер откатывался на дефолт (месяц). Паттерн — как в OrdersPage.jsx:
+    // data не трогаем при повторных загрузках, только флаг loading.
+    setLoading(true); setError(null);
     fetch(`/api/cabinets/${cabinetId}/products-summary` + (qs ? "?" + qs : ""))
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setData(d)))
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
   }, [cabinetId, qs]);
 
   // Кабинетные расходы (№27): те же platform/period, что у products-summary.
@@ -320,6 +331,9 @@ export default function SummaryPage({ cabinetId }) {
   };
 
   if (error) return <Centered>⚠️ Ошибка: {error}</Centered>;
+  // Полноэкранный Centered — только для самого первого захода (data ещё нет).
+  // Повторные загрузки (смена периода/МП) больше не размонтируют страницу —
+  // см. loading-индикатор у заголовка ниже.
   if (!data) return <Centered>Загрузка сводки по товарам…</Centered>;
 
   const t = data.totals || {};   // серверные итоги по ВСЕМ товарам (для кабинетных плиток — реклама/ДРР).
@@ -348,6 +362,7 @@ export default function SummaryPage({ cabinetId }) {
           {data.count} товаров · период {period.from || "—"} → {period.to || "—"} ({period.days || "?"} дн.)
           {ozStockDate && <> · <span title="У Ozon API не отдаёт историю остатков — показан последний доступный снимок">остатки Ozon на {ozStockDate}</span></>}
           {" "}· <span style={{ color: C.faint }}>кликните товар, чтобы открыть его детальную сводку</span>
+          {loading && <span style={{ marginLeft: 8, color: C.faint }}>Обновление…</span>}
         </p>
       </div>
 
