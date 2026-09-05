@@ -53,6 +53,78 @@
 
 ---
 
+### Task 0: sale_dt Ozon = дата доставки (жалоба владельца 05.09: «за вчера 0 продаж»)
+
+**Files:**
+- Modify: `worker/db_pg.py` (функция `update_ozon_delivered_dt`)
+- Modify: `worker/collectors/ozon_sales.py` (только докстрока — честность семантики)
+
+**Interfaces:**
+- Consumes: механизм задачи 5 этапа 1 (`update_ozon_delivered_dt`, вызывается в конце `ozon_accruals.collect()`).
+- Produces: `ozon_sales.sale_dt` = дата фактической выдачи (последняя миля) для delivered-строк; потребители (`substr(sale_dt,1,10)`) совместимы.
+
+Причина: `sale_dt = in_process_at` (дата создания заказа) → продажа «доставлена 04.09» датируется днём заказа (01–03.09), и окно «вчера» по продажам Ozon всегда ≈ 0. Продажа должна датироваться выкупом — как у WB (`sale_dt` из statistics-api = дата продажи).
+
+- [ ] **Step 1: Расширить `update_ozon_delivered_dt`** — после существующего UPDATE `ozon_orders` добавить второй UPDATE в той же функции (та же выборка `d`):
+
+```python
+    # Продажи датируем выкупом (жалоба 05.09.2026: «за вчера 0 продаж» — sale_dt
+    # был датой создания заказа). Только delivered-строки; возвраты (cancelled)
+    # остаются на своей дате. Формат TEXT 'YYYY-MM-DD' совместим с потребителями
+    # (везде substr(sale_dt,1,10)). Σ revenue не меняется — только распределение
+    # по дням (сторож в Step 3).
+    sql_sales = f"""
+        UPDATE tenant.ozon_sales s
+           SET sale_dt = d.dt, updated_at = now()
+          FROM (SELECT unit_number, MIN(date)::text AS dt
+                  FROM tenant.ozon_accruals
+                 WHERE type_id IN (28, 29, 30)
+                   AND unit_number IS NOT NULL AND unit_number <> ''
+                   {cond}
+                 GROUP BY unit_number) d
+         WHERE s.posting_number = d.unit_number
+           AND s.is_return = 0
+           AND substr(s.sale_dt, 1, 10) IS DISTINCT FROM d.dt
+    """
+```
+Выполнить вторым `cur.execute` в той же транзакции; вернуть суммарный rowcount двух UPDATE (формат возврата не менять — один int). Докстроку функции дополнить.
+
+- [ ] **Step 2: Докстрока ozon_sales.py** — дописать: «sale_dt при записи = in_process_at (предварительно); после каждого сбора начислений delivered-строки передатируются на день фактической выдачи (update_ozon_delivered_dt)».
+
+- [ ] **Step 3: Бэкфилл + сторож сумм** (админ-psql, вся история, с контролем инварианта):
+
+```bash
+PGPASSFILE=/root/.pgpass-admin psql -h localhost -U postgres -d saas <<'SQL'
+BEGIN;
+CREATE TEMP TABLE _chk AS SELECT cabinet_id, ROUND(SUM(revenue)::numeric,2) rev, COUNT(*) n
+  FROM tenant.ozon_sales GROUP BY 1;
+UPDATE tenant.ozon_sales s SET sale_dt = d.dt, updated_at = now()
+  FROM (SELECT cabinet_id, unit_number, MIN(date)::text AS dt FROM tenant.ozon_accruals
+         WHERE type_id IN (28,29,30) AND unit_number IS NOT NULL AND unit_number <> ''
+         GROUP BY 1,2) d
+ WHERE s.cabinet_id = d.cabinet_id AND s.posting_number = d.unit_number
+   AND s.is_return = 0 AND substr(s.sale_dt,1,10) IS DISTINCT FROM d.dt;
+SELECT c.cabinet_id, c.rev AS rev_before, x.rev AS rev_after, c.n AS n_before, x.n AS n_after
+  FROM _chk c JOIN (SELECT cabinet_id, ROUND(SUM(revenue)::numeric,2) rev, COUNT(*) n
+                      FROM tenant.ozon_sales GROUP BY 1) x USING (cabinet_id);
+COMMIT;
+SQL
+```
+Expected: `UPDATE N` (сотни/тысячи), rev_before = rev_after и n_before = n_after у всех кабинетов бит-в-бит (иначе ROLLBACK руками и разбор — но UPDATE дат суммы менять не может).
+
+- [ ] **Step 4: Смоук воркера** — `set -a; . /etc/saas-worker.env; set +a; cd /opt/agents/saas && python3 -m worker.orchestrator --all --collectors ozon_accruals --date-from 2026-09-02 --date-to 2026-09-04`: exit 0, в БД `SELECT COUNT(*) FROM tenant.ozon_sales WHERE cabinet_id=1 AND substr(sale_dt,1,10)='2026-09-04' AND is_return=0;` — больше нуля (вчерашние выдачи встали на вчера).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add worker/db_pg.py worker/collectors/ozon_sales.py
+git commit -m "fix(worker): sale_dt Ozon = дата фактической выдачи (последняя миля) — «за вчера 0 продаж» починено"
+```
+
+⚠️ Координация: файл `worker/collectors/ozon_accruals.py` этой задачей НЕ трогается (вызов уже есть с этапа 1), но задача стартует ТОЛЬКО после завершения фикс-волны 429 от 05.09 (она правит `ozon_accruals.py`/`db_pg`-соседний код) — контролёр следит за порядком.
+
+---
+
 ### Task 1: Миграция 048 — справочники «город→ФО» и «кластер→ФО»
 
 **Files:**
