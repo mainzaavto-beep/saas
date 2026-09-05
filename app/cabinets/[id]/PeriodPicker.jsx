@@ -15,8 +15,12 @@ import { C } from "@/lib/palette.js";
 // Родитель хранит только from/to (value используется лишь как исходное
 // сидирование полей «Интервала» при монтировании — источник правды по
 // гранулярности/якорю живёт внутри компонента, как и в эталоне).
-// Дефолт — день «вчера» (сегодня финансово недособран, конвенция панели,
-// см. lib/period.js).
+// Дефолт компонента — gran="month" (текущий месяц), КАК НА ГЛАВНОЙ
+// (OverviewClient.jsx:93, тот же выбор — «первое впечатление» не должно
+// сужаться с ~30 дней до 1 дня). Кнопка «Вчера» остаётся — быстрый переход
+// на день (сегодня финансово недособран, конвенция панели, см. lib/period.js).
+// defaultGran/defaultAnchor — пропы для переопределения стартовой
+// гранулярности/якоря, если конкретной странице нужен другой дефолт.
 
 const GRANS = [
   { id: "day", label: "День" },
@@ -73,9 +77,9 @@ function computePeriod(gran, anchor) {
   return { from, to, label };
 }
 
-export default function PeriodPicker({ value, onChange }) {
-  const [gran, setGran] = useState("day");
-  const [anchor, setAnchor] = useState(() => yesterday());
+export default function PeriodPicker({ value, onChange, defaultGran = "month", defaultAnchor }) {
+  const [gran, setGran] = useState(defaultGran);
+  const [anchor, setAnchor] = useState(() => defaultAnchor || ymd(new Date()));
   // Поля «Интервала» — независимое состояние (как в эталоне), сидируются
   // один раз из value (если родитель его передал), иначе — «вчера».
   const [customFrom, setCustomFrom] = useState(() => value?.from || yesterday());

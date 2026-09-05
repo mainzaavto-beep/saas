@@ -64,7 +64,8 @@ export default function GeoPage({ cabinetId }) {
   const [mp, setMp] = useState("all");           // all | wb | ozon
   const [scheme, setScheme] = useState("all");   // all | fbo | fbs
   // Период — через PeriodPicker (день/неделя/месяц/год/интервал, стрелки
-  // ‹/›, «Вчера»), тот же удобный контрол, что и на Главной; дефолт — «вчера».
+  // ‹/›, «Вчера»), тот же удобный контрол, что и на Главной; дефолт — месяц
+  // (как на Главной, OverviewClient.jsx:93), «Вчера» — быстрый переход на день.
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [q, setQ] = useState("");
@@ -97,7 +98,7 @@ export default function GeoPage({ cabinetId }) {
   if (error) return <Centered>{error}</Centered>;
 
   // Период больше не имеет «нейтрального» состояния (PeriodPicker всегда
-  // держит явный день/неделю/месяц/интервал, дефолт — «вчера») — из
+  // держит явный день/неделю/месяц/интервал, дефолт — месяц) — из
   // «активных фильтров»/сброса период больше не участвует.
   const hasActiveFilters = mp !== "all" || scheme !== "all" || q ||
     nm || brand || group;
