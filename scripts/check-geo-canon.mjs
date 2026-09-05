@@ -117,6 +117,25 @@
 //      независимый вызов здесь — намеренно отдельный SQL-запрос, не
 //      переиспользование переменной п.2, чтобы проверка 6 не зависела от
 //      состояния, вычисленного проверкой 2).
+//   7. FBS-отгрузки WB (wbSuppliesOps, tenant.wb_supplies, миграция 047) —
+//      канон через withTenant (DatabaseSync('wb',...)) против независимого
+//      SQL saas_ro (bypass RLS, явный cabinet_id — та же дисциплина, что и
+//      проверки 1-6):
+//        (а) total = COUNT(*) FROM tenant.wb_supplies WHERE cabinet_id=$1
+//            AND closed_at IS NOT NULL AND closed_at::date BETWEEN $2,$3;
+//        (б) medianScHours = percentile_cont(0.5) тем же условием +
+//            scan_dt IS NOT NULL; допуск 0,1ч (не 0,01, как в остальных
+//            проверках) — JS-медиана канона считается НАД округлёнными до
+//            0,1ч строками (scHours из SQL уже ROUND(...,1)), а
+//            percentile_cont независимого SQL — над сырыми секундами;
+//            на чётных выборках JS-медиана (усреднение соседних элементов
+//            невозможно — берётся ближайший по формуле floor(p*(n-1)+0.5))
+//            и percentile_cont (честная интерполяция середины) могут
+//            разойтись на полшага — отсюда более широкий допуск;
+//        (в) stuckCount = независимый COUNT с тем же CASE-условием
+//            (done, scan_dt IS NULL, closed_at в окне [3;14) дней от now()).
+//      Кабинет без WB-данных в окне (1008) → total=0, medianScHours=null,
+//      stuckCount=0 с обеих сторон = PASS.
 //
 // Использование:
 //   node scripts/check-geo-canon.mjs --cabinet 1
@@ -131,7 +150,7 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 }
 
 const { withTenant, DatabaseSync } = await import('../lib/db.js');
-const { wbGeoSummary, ozGeoSummary, wbOrdersLocalityMatrix, ozOrdersLocalityMatrix, warehouseFuzzyLateral } = await import('../lib/geoMetrics.js');
+const { wbGeoSummary, ozGeoSummary, wbOrdersLocalityMatrix, ozOrdersLocalityMatrix, warehouseFuzzyLateral, wbSuppliesOps } = await import('../lib/geoMetrics.js');
 const { wbOrdersCount } = await import('../lib/wbMetrics.js');
 const { ozOrdersCount } = await import('../lib/ozonMetrics.js');
 const { defaultPeriod } = await import('../lib/period.js');
@@ -541,10 +560,79 @@ async function runGoldenMappingChecks() {
   console.log('');
 }
 
+// ═══════════════════ ПРОВЕРКА 7: FBS-ОТГРУЗКИ WB (wbSuppliesOps) ═══════════════════
+async function runSuppliesOpsChecks() {
+  console.log(`Сторож канона FBS-отгрузок WB (wbSuppliesOps) — кабинет ${CABINET_ID}, период ${FROM}..${TO}`);
+  console.log('');
+
+  const canon = await withTenant(CABINET_ID, async () => {
+    const db = new DatabaseSync('wb', { readOnly: true });
+    return wbSuppliesOps(db, { from: FROM, to: TO });
+  });
+  console.log(`wbSuppliesOps: total=${canon.total}, medianBuildHours=${canon.medianBuildHours}, medianScHours=${canon.medianScHours}, p90ScHours=${canon.p90ScHours}, stuckCount=${canon.stuckCount}, noScanOldCount=${canon.noScanOldCount}`);
+  console.log('');
+
+  // (а) total — независимый COUNT(*), тот же фильтр окна, что в wbSuppliesOps.
+  const { rows: [totalRow] } = await roPool.query(
+    `SELECT COUNT(*) AS n FROM tenant.wb_supplies
+     WHERE cabinet_id = $1 AND closed_at IS NOT NULL
+       AND closed_at::date BETWEEN $2 AND $3`,
+    [CABINET_ID, FROM, TO]
+  );
+  const indTotal = num(totalRow.n);
+  verdict(
+    'FBS-отгрузки WB: total = COUNT(*) независимый SQL saas_ro',
+    Math.abs(canon.total - indTotal) <= TOL,
+    `канон=${canon.total}, независимо=${indTotal}`
+  );
+
+  // (б) medianScHours — percentile_cont(0.5) над сырыми секундами (не над
+  // округлёнными до 0,1ч строками канона) — допуск 0,1ч, см. докстроку файла п.7.
+  const MEDIAN_TOL = 0.1;
+  const { rows: [medRow] } = await roPool.query(
+    `SELECT percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (scan_dt - closed_at)) / 3600.0
+           ) AS med
+     FROM tenant.wb_supplies
+     WHERE cabinet_id = $1 AND closed_at IS NOT NULL AND scan_dt IS NOT NULL
+       AND closed_at::date BETWEEN $2 AND $3`,
+    [CABINET_ID, FROM, TO]
+  );
+  const indMedianScHours = medRow.med === null ? null : Number(medRow.med);
+  verdict(
+    'FBS-отгрузки WB: medianScHours ≈ percentile_cont(0.5) независимый SQL (допуск 0,1ч)',
+    canon.medianScHours === null
+      ? indMedianScHours === null
+      : Math.abs(canon.medianScHours - indMedianScHours) <= MEDIAN_TOL,
+    `канон=${canon.medianScHours}, независимо=${indMedianScHours === null ? null : indMedianScHours.toFixed(2)}`
+  );
+
+  // (в) stuckCount — независимый COUNT с тем же CASE-условием (done,
+  // scan_dt IS NULL, closed_at в окне [3;14) дней от now() — те же пороги,
+  // что SUPPLY_STUCK_MIN_DAYS/SUPPLY_STUCK_MAX_DAYS в lib/geoMetrics.js).
+  const { rows: [stuckRow] } = await roPool.query(
+    `SELECT COUNT(*) AS n FROM tenant.wb_supplies
+     WHERE cabinet_id = $1 AND closed_at IS NOT NULL
+       AND closed_at::date BETWEEN $2 AND $3
+       AND done AND scan_dt IS NULL
+       AND closed_at < now() - interval '3 days'
+       AND closed_at >= now() - interval '14 days'`,
+    [CABINET_ID, FROM, TO]
+  );
+  const indStuck = num(stuckRow.n);
+  verdict(
+    'FBS-отгрузки WB: stuckCount = COUNT(*) независимый SQL с тем же CASE-условием',
+    Math.abs(canon.stuckCount - indStuck) <= TOL,
+    `канон=${canon.stuckCount}, независимо=${indStuck}`
+  );
+  console.log('');
+}
+
 try {
   await runWbChecks();
   await runOzonChecks();
   await runGoldenMappingChecks();
+  await runSuppliesOpsChecks();
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.stack || e.message}`);
   await roPool.end().catch(() => {});
