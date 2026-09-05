@@ -83,8 +83,12 @@ export default function GeoPage({ cabinetId }) {
     p.set("mp", mp);
     p.set("scheme", scheme);
     if (period !== "all" && !presetRange) p.set("period", period);
-    if (from && presetRange) p.set("from", from);
-    if (to && presetRange) p.set("to", to);
+    // Пред-существующий баг, находка ревью 05.09: условие "&& presetRange"
+    // не пускало ручные даты в query, потому что onChange инпутов "От"/"До"
+    // сам гасит presetRange (см. обработчики ниже) — ручной ввод дат был
+    // фактически нерабочим. from/to валидны сами по себе, без пресета.
+    if (from) p.set("from", from);
+    if (to) p.set("to", to);
     if (q) p.set("q", q);
     if (nm) p.set("nm", nm);
     if (brand) p.set("brand", brand);
