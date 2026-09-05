@@ -126,6 +126,11 @@ class OzonClient:
                     wait = min(float(reset), 60.0)
                 else:
                     wait = _backoff_delay(attempt)
+                # 05.09.2026: Ozon стал отдавать крошечный Retry-After — все 5
+                # попыток сгорали за 4с и исчерпание билось почти сразу.
+                # Пол ожидания — наш экспоненциальный бэкофф: заголовок Ozon
+                # уважаем, но не короче нижнего предела. Потолок 60с как был.
+                wait = max(wait, _backoff_delay(attempt))
                 time.sleep(wait)
                 continue
 

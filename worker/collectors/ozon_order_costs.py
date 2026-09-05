@@ -938,10 +938,19 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
         if result.pop("immature"):
             immature_count += 1
             sum_immature_accrued += round(sum(_num(r.get("accrued")) for r in unit_rows), 2)
-            print(f"  незрелый юнит без commission-блока (моложе "
-                  f"{MATURITY_THRESHOLD_DAYS} дн., деньги начислены, но Ozon ещё не "
-                  f"финализировал) — строка НЕ записана: unit_number={unit_number}",
-                  file=sys.stderr, flush=True)
+            # 05.09.2026: сама по себе эта ветка mismatches не поднимает — но
+            # per-unit print в stderr почти всегда оказывался ПОСЛЕДНЕЙ строкой
+            # (при живом потоке заказов свежий незрелый юнит есть всегда), а
+            # оркестратор в PARTIAL-статусе показывает именно err[-1]. Итог:
+            # настоящая причина PARTIAL (например реальное расхождение
+            # согласованности у другого юнита) маскировалась этим текстом,
+            # и тик читался как «павший из-за незрелости» — хотя незрелость
+            # тут ни при чём, это дизайн-шум (юнит дозревает за
+            # MATURITY_THRESHOLD_DAYS, дописывается следующим прогоном в
+            # окне 45 дней, деньги не теряются). Убираем per-unit print,
+            # оставляем сводную info-строку после цикла — как sr-юниты,
+            # коммит 1c7be55. Побочный эффект: теперь err[-1] в PARTIAL
+            # покажет настоящую причину, если она есть.
             continue
         if result["product_id"] is None:
             no_product_count += 1
@@ -973,6 +982,10 @@ def collect(date_from=None, date_to=None, target_table=DEFAULT_TARGET_TABLE):
                       f"как есть: {unit_number}", file=sys.stderr, flush=True)
         order_costs_out.append(dict(result, _unit_number=unit_number))
         sum_order_accrued += sum(_num(r.get("accrued")) for r in unit_rows)
+
+    if immature_count:
+        print(f"  незрелых юнитов пропущено: {immature_count}, "
+              f"дозреют в следующих прогонах", flush=True)
 
     # Защитная сетка (defence in depth) поверх исключения exact_unit_numbers
     # из order_meta_by_base выше: если ДВЕ РАЗНЫЕ accrual-группы этого

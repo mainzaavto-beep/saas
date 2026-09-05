@@ -65,7 +65,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
-from ozon_client import OzonClient
+from ozon_client import OzonClient, OzonError
 
 
 def _amount(d):
@@ -268,12 +268,27 @@ def collect(date_from=None, date_to=None):
 
     # 1) справочник типов — сначала, чтобы уметь отличать незнакомые коды
     #    в строках начислений, которые разбираем следом.
-    raw_types = cli.accrual_types()
-    time.sleep(REQUEST_PAUSE_SEC)
-    type_rows = parse_accrual_types(raw_types)
-    written_types = db_pg.upsert_ozon_accrual_types(type_rows)
-    known_type_ids = {r["type_id"] for r in type_rows if r["type_id"] is not None}
-    print(f"  справочник типов: {len(raw_types)}, записано {written_types}", flush=True)
+    #    05.09.2026: Ozon участил 429 на этом руте (см. ozon_client._request —
+    #    крошечный Retry-After), справочник статичен (119 типов,
+    #    shared.ozon_accrual_types, миграция 040) — его недоступность не
+    #    повод ронять весь сборщик и терять начисления дня. При отказе
+    #    работаем на уже накопленном в БД кэше, без обновления справочника.
+    try:
+        raw_types = cli.accrual_types()
+        time.sleep(REQUEST_PAUSE_SEC)
+        type_rows = parse_accrual_types(raw_types)
+        written_types = db_pg.upsert_ozon_accrual_types(type_rows)
+        known_type_ids = {r["type_id"] for r in type_rows if r["type_id"] is not None}
+        print(f"  справочник типов: {len(raw_types)}, записано {written_types}", flush=True)
+    except OzonError as e:
+        print(f"  справочник типов недоступен ({e}), работаем на кэше "
+              f"shared.ozon_accrual_types", flush=True)
+        with db_pg.get_shared_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT type_id FROM shared.ozon_accrual_types")
+                known_type_ids = {row["type_id"] for row in cur.fetchall()
+                                   if row["type_id"] is not None}
+        print(f"  кэш типов: {len(known_type_ids)}", flush=True)
 
     # 2) по одному запросу на день, пауза между запросами — не быстрее
     #    1 запроса в секунду (проба показала code 8 на третьем подряд).
