@@ -295,6 +295,13 @@ export default function GeoPage({ cabinetId }) {
           </div>
         )}
 
+        {/* Секция 5 — FBS-отгрузки: поставки WB со стадиями создана→закрыта→
+            принята СЦ, висящие без приёмки подсвечены (contract v2 supplies,
+            route.js). Компонент сам возвращает null при supplies===null
+            (mp=ozon или отсутствии WB у кабинета) — секция скрывается
+            целиком, в отличие от секций 3-4, где Ozon-часть есть всегда. */}
+        {data && <SuppliesSection supplies={data.supplies} />}
+
         <div style={{ marginTop: 16, fontSize: 12, color: C.faint, textAlign: "center" }}>
           WB: заказы — из orders (price_with_disc), продажи — из sales (finished_price), разрез по округу/складу. Ozon: регион = город, разрез по кластерам/ФО. Продажи Ozon — по дате выкупа, из начислений. Источник: боевые БД WB+Ozon.
         </div>
@@ -546,12 +553,105 @@ function colorToToken(cVar) {
   return m ? m[1] : "line";
 }
 
-function EmptyIsland() {
+function EmptyIsland({ children }) {
   return (
     <div style={{ padding: "24px 0", textAlign: "center", color: C.faint, fontSize: 13 }}>
-      Копим данные с 28.08 — вернитесь позже
+      {children || "Копим данные с 28.08 — вернитесь позже"}
     </div>
   );
+}
+
+// Дата-время колонок таблицы поставок — свежее contract-поле уже строка
+// "YYYY-MM-DDTHH:MM:SS..." (::text каста в wbSuppliesOps), режем до минут и
+// меняем разделитель на пробел, как договорено в брифе задачи 3 (без
+// парсинга через Date — она нужна только для разницы в днях у SupplyStage).
+function fmtDT(iso) {
+  return iso ? iso.substr(0, 16).replace("T", " ") : "—";
+}
+
+// SuppliesSection — секция 5: поставки WB со стадиями создана→закрыта→
+// принята СЦ. supplies===null — mp=ozon или у кабинета нет WB (contract v2,
+// route.js) — секция не рендерится вовсе (единственная из секций 3-5, что
+// может исчезнуть целиком: у 3-4 Ozon-часть есть всегда).
+function SuppliesSection({ supplies }) {
+  if (!supplies) return null;
+  return (
+    <div style={{ marginTop: 32 }}>
+      <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>FBS-отгрузки</h2>
+      <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
+        Поставки WB: стадии создана → закрыта → принята СЦ, висящие без приёмки подсвечены.
+      </p>
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
+        {supplies.total === 0 ? (
+          <EmptyIsland>Поставок в выбранном окне нет</EmptyIsland>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 10, fontVariantNumeric: "tabular-nums" }}>
+              сборка {supplies.medianBuildHours != null ? `${fmt1(supplies.medianBuildHours)}ч` : "—"}
+              {" · "}до СЦ {supplies.medianScHours != null ? `${fmt1(supplies.medianScHours)}ч` : "—"}
+              {supplies.p90ScHours != null ? ` (p90 ${fmt1(supplies.p90ScHours)}ч)` : ""}
+              {" · "}висят без приёмки {supplies.stuckCount}{supplies.stuckCount > 0 ? "⚠" : ""}
+              {" · "}без отметки (старые) {supplies.noScanOldCount}
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                <thead>
+                  <tr>
+                    <th style={thStyle("left")}>Название</th>
+                    <th style={thStyle("left")}>Создана</th>
+                    <th style={thStyle("left")}>Закрыта</th>
+                    <th style={thStyle("left")}>Принята СЦ</th>
+                    <th style={thStyle("center")}>Сборка, ч</th>
+                    <th style={thStyle("center")}>До СЦ, ч</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {supplies.rows.map((r) => {
+                    // Подсветка выброса: время до скана СЦ выше p90 окна.
+                    const scWarn = r.scHours != null && supplies.p90ScHours != null && r.scHours > supplies.p90ScHours;
+                    return (
+                      <tr key={r.supplyId}>
+                        <td style={tdStyle("left")}>{r.name}</td>
+                        <td style={tdStyle("left")}>{fmtDT(r.createdAt)}</td>
+                        <td style={tdStyle("left")}>{fmtDT(r.closedAt)}</td>
+                        <td style={tdStyle("left")}>
+                          {r.status === "scanned" ? fmtDT(r.scanDt) : <SupplyStage status={r.status} closedAt={r.closedAt} />}
+                        </td>
+                        <td style={tdStyle("center")}>{r.buildHours != null ? fmt1(r.buildHours) : "—"}</td>
+                        <td style={{ ...tdStyle("center"), color: scWarn ? C.warn : C.ink, fontWeight: scWarn ? 700 : 400 }}>
+                          {r.scHours != null ? fmt1(r.scHours) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: C.faint, marginTop: 10 }}>
+              WB проставляет отметку приёмки не для всех типов сдачи (например, через ПВЗ) — «без отметки» не значит «потеряна»; тревога — только свежие поставки без приёмки 3-14 дней.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// SupplyStage — статус приёмки СЦ для незасканенных поставок (status≠'scanned',
+// см. wbSuppliesOps): 'stuck' — свежая поставка без скана 3-14 дней от
+// closedAt (тревога, C.neg, счётчик дней от даты закрытия); 'no_scan_old' —
+// хвост старше 14 дней, WB не всегда проставляет скан для этого типа сдачи —
+// это НЕ тревога (C.faint); 'awaiting' — закрыта менее 3 дней назад, ещё рано
+// считать висящей — просто тире.
+function SupplyStage({ status, closedAt }) {
+  if (status === "stuck") {
+    const days = closedAt ? Math.max(0, Math.floor((Date.now() - new Date(closedAt).getTime()) / 86400000)) : "?";
+    return <Badge color={C.neg}>нет приёмки, {days}д</Badge>;
+  }
+  if (status === "no_scan_old") {
+    return <Badge color={C.faint}>без отметки</Badge>;
+  }
+  return <span style={{ color: C.faint }}>—</span>;
 }
 
 // KpiRow/Kpi — локальные копии паттерна Сводки (SummaryPage.jsx:835-855),
