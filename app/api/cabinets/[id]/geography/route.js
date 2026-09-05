@@ -16,6 +16,12 @@
 //                 ozon: { rows: [{ whFo,      buyerFo,      qty }], localPct, mappedPct } },
 //     speed:    { wb: [{ okrug, scheme, medianDays, n }], ozon: [{ fo, medianDays, n }] },
 //     facets:   { brand: [{value,count}], group: [{value,count}], nm: [{id,label,count}] },
+//     supplies: { rows: [{ supplyId, name, createdAt, closedAt, scanDt, done,
+//                           buildHours, scHours, status }],
+//                 medianBuildHours, medianScHours, p90ScHours,
+//                 stuckCount, noScanOldCount, total }
+//               | null при mp=ozon / отсутствии WB у кабинета (см. wantWb);
+//                 не считается для prevKpi (kpiOnly пропускает).
 //   }
 //
 // mp=wb|ozon — платформа, которой нет (ни по query, ни по cabinet.
@@ -40,6 +46,7 @@ import {
   wbSpeedOverall, ozSpeedOverall,
   wbFbsShare, ozFbsShare,
   wbSupplyLagHours,
+  wbSuppliesOps,
 } from "@/lib/geoMetrics.js";
 
 export const runtime = "nodejs";
@@ -88,6 +95,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     byRegion: cur.byRegion, byWarehouse: cur.byWarehouse,
     locality: cur.locality, speed: cur.speed,
     facets: cur.facets,
+    supplies: cur.supplies,
   });
 });
 
@@ -136,6 +144,11 @@ async function collectAll({ wantWb, wantOz }, opts) {
   const wbSpeedRows = wantWb ? await wbSpeedByOkrug(wbDb, { from, to }) : [];
   const ozSpeedRows = wantOz ? await ozSpeedByFo(ozDb, { from, to }) : [];
 
+  // FBS-отгрузки (задача 2 плана 2026-09-05-geo-fbs-ops) — только WB (Ozon
+  // FBS вне рамок этапа), только текущее окно (kpiOnly уже вернулся выше,
+  // !opts.kpiOnly здесь для явности контракта, а не как рабочий гейт).
+  const supplies = wantWb && !opts.kpiOnly ? await wbSuppliesOps(wbDb, { from, to }) : null;
+
   const byRegion = mergeByName(wbSum?.byRegion || [], ozSum?.byRegion || []);
   const byWarehouse = mergeByName(wbSum?.byWarehouse || [], ozSum?.byWarehouse || []);
   byRegion.sort((a, b) => (b.ordersRub + b.salesRub) - (a.ordersRub + a.salesRub));
@@ -152,6 +165,7 @@ async function collectAll({ wantWb, wantOz }, opts) {
     },
     speed: { wb: wbSpeedRows, ozon: ozSpeedRows },
     facets,
+    supplies,
   };
 }
 
