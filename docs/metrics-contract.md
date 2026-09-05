@@ -2124,11 +2124,11 @@ FBO** (`ozSpeedByFo`/`ozSpeedOverall`, `lib/geoMetrics.js:267-283,
 (`byRegion`/`byWarehouse`/детальная `speed`/`facets`) не дублируются для
 prev-окна, но сами KPI-компоненты (`wbOrdersLocalityMatrix`,
 `wbSpeedOverall` и т.д.) вызываются РОВНО той же функцией, что и для
-текущего окна (`geography/route.js:44-46,116-118`) — дрейф формулы между
+текущего окна (`geography/route.js:82-83,111-131`) — дрейф формулы между
 `kpi` и `prevKpi` структурно невозможен, как и у `prevTotals`.
 
 **`kpi.localPct` — взвешенный агрегат ОБЕИХ площадок**
-(`weightedLocalPct`, `geography/route.js:158-171`): Σ`local`/Σ`mapped`
+(`weightedLocalPct`, `geography/route.js:174-185`): Σ`local`/Σ`mapped`
 пересчитывается заново из строк обеих матриц (WB `whCluster`/
 `buyerCluster`, Ozon `whFo`/`buyerFo`) — НЕ среднее двух процентов
 `localPct(WB)`/`localPct(Ozon)` (простое усреднение процентов с разным
@@ -2142,10 +2142,10 @@ prev-окна, но сами KPI-компоненты (`wbOrdersLocalityMatrix`,
 паттерн, что у Обзора: площадка, которой у кабинета нет (ни физически, ни
 по `mp`-параметру), не гоняет SQL вхолостую и отдаёт `locality`/`speed`
 пустыми, а не нулями, вычисленными по несуществующим данным
-(`geography/route.js:67-71`, `EMPTY_LOCALITY`).
+(`geography/route.js:73-75`, `EMPTY_LOCALITY`).
 
 **`scheme=all|fbo|fbs`** валидируется на входе — любое иное значение
-падает на `all` (`geography/route.js:52-55`), а не пробрасывается в SQL
+падает на `all` (`geography/route.js:56-57`), а не пробрасывается в SQL
 (находка ревью задачи 2 плана: невалидное значение ломало
 `WB_SCHEME_SQL[scheme]` внутри `wbSchemeCond`/`ozSchemeCond`,
 `lib/geoMetrics.js:18-28`, до `undefined`).

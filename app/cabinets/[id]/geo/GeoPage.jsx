@@ -19,23 +19,25 @@ const fmtFull = (iso) => {
   const [y, m, d] = iso.split("-");
   return `${d}.${m}.${y}`;
 };
-const monthLabel = (m) => {
-  const names = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
-  const [y, mm] = m.split("-");
-  return `${names[+mm - 1]} ${y}`;
-};
 const fmt1 = (v) => v.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 
 // Дельта к прошлому окну — копия паттерна Сводки (SummaryPage.jsx:50-63);
 // общего kpi-компонента в проекте нет, копируем по конвенции задачи.
 // pp=true — дельта в процентных пунктах, иначе — относительный % изменения.
-// Для метрик «меньше = лучше» (дни/часы) вызывающий код передаёт аргументы
-// в обратном порядке delta(prev, cur) — см. комментарии у соответствующих плашек.
-function delta(cur, prev, { pp = false } = {}) {
+// invert=true — для метрик «меньше = лучше» (дни/часы): величина СЧИТАЕТСЯ
+// как обычно, от (cur-prev)/|prev| (аргументы передаются в естественном
+// порядке delta(cur, prev, ...)), а направление/цвет переворачиваются —
+// снижение дней окрашивается в «хорошо» (зелёная стрелка вверх). Находка
+// ревью финал-волны: старый вызов delta(prev, cur) одновременно переворачивал
+// И направление, И базу знаменателя — 10→5 дн давало «▲100%» вместо
+// корректных «величина 50%, направление — улучшение».
+function delta(cur, prev, { pp = false, invert = false } = {}) {
   if (cur == null || prev == null || !prev) return null;
   const d = pp ? cur - prev : ((cur - prev) / Math.abs(prev)) * 100;
   if (!isFinite(d) || Math.abs(d) < 0.05) return null;
-  return { dir: d >= 0 ? "up" : "down", text: `${Math.abs(d).toFixed(1)}${pp ? " пп" : "%"}` };
+  const rawDir = d >= 0 ? "up" : "down";
+  const dir = invert ? (rawDir === "up" ? "down" : "up") : rawDir;
+  return { dir, text: `${Math.abs(d).toFixed(1)}${pp ? " пп" : "%"}` };
 }
 
 const inputStyle = {
@@ -60,7 +62,6 @@ export default function GeoPage({ cabinetId }) {
   // Фильтры
   const [mp, setMp] = useState("all");           // all | wb | ozon
   const [scheme, setScheme] = useState("all");   // all | fbo | fbs
-  const [period, setPeriod] = useState("all");   // all | YYYY-MM
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [presetRange, setPresetRange] = useState(""); // week | month | ""
@@ -80,14 +81,12 @@ export default function GeoPage({ cabinetId }) {
     const from0 = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);   // по вчера, как lib/period.js
     setFrom(from0);
     setTo(to0);
-    setPeriod("all"); // пресет месяца-имени несовместим со свободным диапазоном
   }, [presetRange]);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     p.set("mp", mp);
     p.set("scheme", scheme);
-    if (period !== "all" && !presetRange) p.set("period", period);
     // Пред-существующий баг, находка ревью 05.09: условие "&& presetRange"
     // не пускало ручные даты в query, потому что onChange инпутов "От"/"До"
     // сам гасит presetRange (см. обработчики ниже) — ручной ввод дат был
@@ -99,7 +98,7 @@ export default function GeoPage({ cabinetId }) {
     if (brand) p.set("brand", brand);
     if (group) p.set("group", group);
     return p.toString();
-  }, [mp, scheme, period, from, to, presetRange, q, nm, brand, group]);
+  }, [mp, scheme, from, to, presetRange, q, nm, brand, group]);
 
   useEffect(() => {
     setData(null);
@@ -112,10 +111,10 @@ export default function GeoPage({ cabinetId }) {
   const font = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
   if (error) return <Centered>{error}</Centered>;
 
-  const hasActiveFilters = mp !== "all" || scheme !== "all" || period !== "all" || presetRange || q ||
+  const hasActiveFilters = mp !== "all" || scheme !== "all" || presetRange || q ||
     nm || brand || group;
   const resetFilters = () => {
-    setMp("all"); setScheme("all"); setPeriod("all"); setPresetRange(""); setFrom(""); setTo("");
+    setMp("all"); setScheme("all"); setPresetRange(""); setFrom(""); setTo("");
     setQ(""); setNm(""); setBrand(""); setGroup("");
   };
 
@@ -146,7 +145,7 @@ export default function GeoPage({ cabinetId }) {
             label="Локальность"
             value={kpi.localPct != null ? `${fmt1(kpi.localPct)}%` : "—"}
             color={localColor}
-            title="Доля продаж, где склад и покупатель — в одном кластере/округе (WB+Ozon вместе). С августа 2026 WB не детализирует склад отгрузки («Склад WB РФ» вместо конкретного) — на свежих окнах показатель фактически определяется Ozon."
+            title="Доля заказов, где склад и покупатель — в одном кластере/округе (WB+Ozon вместе). С августа 2026 WB не детализирует склад отгрузки («Склад WB РФ» вместо конкретного) — на свежих окнах показатель фактически определяется Ozon."
             delta={delta(kpi.localPct, prevKpi.localPct, { pp: true })}
             sub={kpi.localPct == null ? "копим данные" : null}
           />
@@ -154,16 +153,16 @@ export default function GeoPage({ cabinetId }) {
             label="Скорость WB"
             value={kpi.speedWbDays != null ? `${fmt1(kpi.speedWbDays)} дн` : "—"}
             title="До выкупа — прокси, WB не отдаёт дату доставки"
-            // Инверсия: меньше дней — лучше, поэтому cur/prev переданы в
-            // обратном порядке (снижение показывает зелёную стрелку вверх).
-            delta={delta(prevKpi.speedWbDays, kpi.speedWbDays)}
+            // Инверсия: меньше дней — лучше, поэтому invert:true (снижение
+            // показывает зелёную стрелку вверх, величина — от |prev| как обычно).
+            delta={delta(kpi.speedWbDays, prevKpi.speedWbDays, { invert: true })}
             sub={kpi.speedWbDays == null ? "копим данные" : null}
           />
           <Kpi
             label="Скорость Ozon"
             value={kpi.speedOzDays != null ? `${fmt1(kpi.speedOzDays)} дн` : "—"}
             title="До выдачи, только FBO"
-            delta={delta(prevKpi.speedOzDays, kpi.speedOzDays)}
+            delta={delta(kpi.speedOzDays, prevKpi.speedOzDays, { invert: true })}
             sub={kpi.speedOzDays == null ? "копим данные" : null}
           />
           <Kpi
@@ -177,7 +176,7 @@ export default function GeoPage({ cabinetId }) {
             label="Отгрузка на СЦ"
             value={kpi.scLagHours != null ? `${fmt1(kpi.scLagHours)} ч` : "—"}
             title="WB, медиана времени «закрыта → скан на СЦ»"
-            delta={delta(prevKpi.scLagHours, kpi.scLagHours)}
+            delta={delta(kpi.scLagHours, prevKpi.scLagHours, { invert: true })}
             sub={kpi.scLagHours == null ? "копим данные" : null}
           />
         </KpiRow>
@@ -203,13 +202,7 @@ export default function GeoPage({ cabinetId }) {
             ))}
           </Seg>
 
-          <Field label="Период (быстрый)">
-            <select value={period} onChange={(e) => { setPeriod(e.target.value); setPresetRange(""); }} disabled={!!presetRange} style={{ ...selectStyle, opacity: presetRange ? 0.5 : 1 }}>
-              <option value="all">Всё время</option>
-              {(data?.months || []).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-            </select>
-          </Field>
-          <Field label="или окно по вчера">
+          <Field label="Окно по вчера">
             <select value={presetRange} onChange={(e) => setPresetRange(e.target.value)} style={selectStyle}>
               <option value="">— вручную —</option>
               <option value="week">7 дней</option>
@@ -217,10 +210,10 @@ export default function GeoPage({ cabinetId }) {
             </select>
           </Field>
           <Field label="От">
-            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPresetRange(""); setPeriod("all"); }} style={inputStyle} />
+            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPresetRange(""); }} style={inputStyle} />
           </Field>
           <Field label="До">
-            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPresetRange(""); setPeriod("all"); }} style={inputStyle} />
+            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPresetRange(""); }} style={inputStyle} />
           </Field>
 
           <Field label="Товар / артикул">
@@ -278,7 +271,7 @@ export default function GeoPage({ cabinetId }) {
           <div style={{ marginTop: 32 }}>
             <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>Локальность: склад → покупатель</h2>
             <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
-              Доля продаж, где отгрузка и покупатель — в одном кластере/округе. Диагональ (совпадение) обведена.
+              Доля заказов, где отгрузка и покупатель — в одном кластере/округе. Диагональ (совпадение) обведена.
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))", gap: 16 }}>
               {mp !== "ozon" && (
@@ -289,7 +282,7 @@ export default function GeoPage({ cabinetId }) {
                   buyerKey="buyerCluster"
                   localPct={data.locality.wb.localPct}
                   mappedPct={data.locality.wb.mappedPct}
-                  note="7 укрупнённых кластеров WB: Юг+Кавказ и Сибирь+ДВ слиты — так устроена карта WB"
+                  note="7 укрупнённых кластеров WB: Юг+Кавказ и Сибирь+ДВ слиты — так устроена карта WB. С августа 2026 WB отдаёт вместо конкретного склада плейсхолдер «Склад WB РФ» — фаззи-мэппинг на справочник его не узнаёт, поэтому такие строки уходят в общую «Не определено» вместе с прочими незамапленными складами (решение ревью финал-волны: не различаем их отдельной подписью оси — не отличить дёшево от прочих причин немэппинга без нового SQL-подсчёта; см. тултип «замаплено»)."
                 />
               )}
               {mp !== "wb" && (
@@ -386,7 +379,11 @@ function LocalityMatrix({ title, rows, whKey, buyerKey, localPct, mappedPct, not
         <Badge color={localColor}>лок. {localPct != null ? fmt1(localPct) : "—"}%</Badge>
         <Badge
           color={mappedLow ? C.warn : C.faint}
-          title={mappedLow ? "часть городов не распознана — хвост справочника 048" : undefined}
+          title={mappedLow
+            ? (title === "WB"
+                ? "WB с августа 2026 не раскрывает склад отгрузки (плейсхолдер «Склад WB РФ») — локальность по детализированным строкам"
+                : "часть городов не распознана — хвост справочника 048")
+            : undefined}
         >
           замаплено {mappedPct != null ? fmt1(mappedPct) : "—"}%
         </Badge>
@@ -421,8 +418,11 @@ function LocalityMatrix({ title, rows, whKey, buyerKey, localPct, mappedPct, not
                         style={{
                           padding: "4px 8px", textAlign: "center", minWidth: 56,
                           background: qty > 0 ? soft("accent", clamp((qty / max) * 60, 4, 60)) : "transparent",
+                          // borderBottom всегда шёл ПОСЛЕ border в объекте стилей и
+                          // перекрывал нижнюю грань диагонали цветом сетки (находка
+                          // ревью финал-волны) — на диагонали нижняя грань тоже C.pos.
                           border: isDiag ? `1px solid ${C.pos}` : "1px solid transparent",
-                          borderBottom: `1px solid ${C.line}`,
+                          borderBottom: isDiag ? `1px solid ${C.pos}` : `1px solid ${C.line}`,
                         }}
                       >
                         {qty > 0 ? num(qty) : "—"}

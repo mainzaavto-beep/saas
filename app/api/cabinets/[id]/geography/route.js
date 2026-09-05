@@ -63,7 +63,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     nmId: url.searchParams.get("nm") || "",
     brand: url.searchParams.get("brand") || "",
     group: url.searchParams.get("group") || "",
-    q: (url.searchParams.get("q") || "").trim(),
+    q: (url.searchParams.get("q") || "").trim().toLowerCase(), // lib оборачивает колонку в LOWER(), не параметр — регистр гасим тут
   };
 
   // Гейт площадок кабинета (находка ревью, фикс-раунд 1): паттерн
