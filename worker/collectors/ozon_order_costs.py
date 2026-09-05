@@ -640,7 +640,30 @@ def build_order_costs(accrual_rows: list, meta: dict, costs: dict, today: str = 
 
     comps = round(cost_value_retail - commission_sum - services_sum - logistics_sum
                   - acquiring_sum - loyalty_sum, 2)
-    consistency_ok = abs(comps - sum_accrued) <= _CONSISTENCY_TOLERANCE
+
+    # Починка самой ПРОВЕРКИ согласованности, НЕ денежной арифметики —
+    # cost_value_retail (и все остальные компоненты выше, идущие в БД) этой
+    # правкой не меняются ни на копейку. §13 docs/ozon-accrual-
+    # reconciliation.md, случай «Б»; расследование 05.09.2026 (два живых
+    # постинга кабинета 1, 0150512174-0208-3 и 48502768-0261-3): деньги
+    # верны (profit == SUM(accrued), сверено вручную), рвалась только
+    # СВЕРКА — она по-прежнему ждёт cost_value_retail == Σ seller_price, а
+    # строкой выше он НАМЕРЕННО обнулён для ЛЮБОГО возврата (политика
+    # владельца 2026-08-21, см. комментарий у cost_value_retail). Для
+    # is_return=1 расхождение при этом ВСЕГДА равно ровно ∓Σ seller_price
+    # commission-блоков юнита (алгебраически: без обнуления comps совпал бы
+    # с SUM(accrued) день-в-день) — «возвращаем» эту сумму ТОЛЬКО внутри
+    # самой проверки (return_offset ни в comps, ни в cost_value_retail, ни в
+    # какую записываемую колонку не идёт), зеркаля семантику офлайн-сторожа
+    # scripts/check-ozon-profit-invariant.mjs (комментарий у
+    # CONSISTENCY_CLASS_SQL: «cost_value_retail сознательно обнуляется для
+    # ЛЮБОГО возврата... расхождение здесь равно ИМЕННО seller_price»).
+    # Случай «А» (is_return=0, собственная особенность данных Ozon —
+    # тождество seller_price=sale_price+coinvestment+bonus не держится на
+    # части commission-блоков, не растёт с 2026-06-16) этой правкой НЕ
+    # затрагивается — по-прежнему флагается как расхождение.
+    return_offset = round(seller_price, 2) if is_return else 0.0
+    consistency_ok = abs((comps + return_offset) - sum_accrued) <= _CONSISTENCY_TOLERANCE
 
     # posting_number: резолвленный tenant.ozon_orders.posting_number (см.
     # resolve_meta), а НЕ сырой unit_number начислений напрямую — потребители
