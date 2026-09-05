@@ -1,9 +1,14 @@
 "use client";
-import { C } from "@/lib/palette.js";
+import { C, soft } from "@/lib/palette.js";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
+// Дублируем метку незамапленной пары — источник lib/geoMetrics.js:16 (серверный
+// файл, импортировать в клиентский компонент нельзя), значение фиксировано
+// контрактом v2 (route.js:49).
+const UNMAPPED = "Не определено";
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 const money = (n) => `${Math.round(n).toLocaleString("ru-RU")} ₽`;
 const moneyShort = (n) =>
@@ -266,6 +271,57 @@ export default function GeoPage({ cabinetId }) {
           </div>
         )}
 
+        {/* Секция 3 — матрица локальности склад→покупатель. Две площадки
+            считаются раздельно (locality.wb/locality.ozon из API v2) — при
+            mp-фильтре показываем только выбранную площадку. */}
+        {data && (
+          <div style={{ marginTop: 32 }}>
+            <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>Локальность: склад → покупатель</h2>
+            <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
+              Доля продаж, где отгрузка и покупатель — в одном кластере/округе. Диагональ (совпадение) обведена.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))", gap: 16 }}>
+              {mp !== "ozon" && (
+                <LocalityMatrix
+                  title="WB"
+                  rows={data.locality.wb.rows}
+                  whKey="whCluster"
+                  buyerKey="buyerCluster"
+                  localPct={data.locality.wb.localPct}
+                  mappedPct={data.locality.wb.mappedPct}
+                  note="7 укрупнённых кластеров WB: Юг+Кавказ и Сибирь+ДВ слиты — так устроена карта WB"
+                />
+              )}
+              {mp !== "wb" && (
+                <LocalityMatrix
+                  title="Ozon"
+                  rows={data.locality.ozon.rows}
+                  whKey="whFo"
+                  buyerKey="buyerFo"
+                  localPct={data.locality.ozon.localPct}
+                  mappedPct={data.locality.ozon.mappedPct}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Секция 4 — скорость доставки: WB fbo/fbs по округам, Ozon fbo по ФО. */}
+        {data && (
+          <div style={{ marginTop: 32 }}>
+            <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>Скорость доставки</h2>
+            <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
+              Медианные дни от заказа до выкупа/выдачи, по округам и федеральным округам.
+            </p>
+            <SpeedTable
+              wbRows={mp !== "ozon" ? data.speed.wb : []}
+              ozRows={mp !== "wb" ? data.speed.ozon : []}
+              showWb={mp !== "ozon"}
+              showOz={mp !== "wb"}
+            />
+          </div>
+        )}
+
         <div style={{ marginTop: 16, fontSize: 12, color: C.faint, textAlign: "center" }}>
           WB: заказы — из orders (price_with_disc), продажи — из sales (finished_price), разрез по округу/складу. Ozon: регион = город, разрез по кластерам/ФО. Продажи Ozon — по дате выкупа, из начислений. Источник: боевые БД WB+Ozon.
         </div>
@@ -292,6 +348,228 @@ function ChartCard({ title, rows, dataKey, color, fmt, short }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+// LocalityMatrix — секция 3: матрица склад→покупатель (WB: кластеры,
+// Ozon: ФО). Оси строятся из уникальных значений rows на клиенте — сервер
+// не гарантирует порядок и полный охват осей после фильтра.
+function LocalityMatrix({ title, rows, whKey, buyerKey, localPct, mappedPct, note }) {
+  const { whVals, buyerVals, cellMap, max } = useMemo(() => {
+    const whSet = new Set(), buyerSet = new Set();
+    const cellMap = new Map();
+    let max = 0;
+    for (const r of rows) {
+      const wh = r[whKey], buyer = r[buyerKey], qty = Number(r.qty) || 0;
+      whSet.add(wh);
+      buyerSet.add(buyer);
+      cellMap.set(`${wh} ${buyer}`, qty);
+      if (qty > max) max = qty;
+    }
+    // «Не определено» — последним по обеим осям, остальное по алфавиту.
+    const ordered = (set) => {
+      const arr = [...set].filter((v) => v !== UNMAPPED).sort((a, b) => a.localeCompare(b, "ru"));
+      if (set.has(UNMAPPED)) arr.push(UNMAPPED);
+      return arr;
+    };
+    return { whVals: ordered(whSet), buyerVals: ordered(buyerSet), cellMap, max };
+  }, [rows, whKey, buyerKey]);
+
+  const localColor = localPct == null ? C.faint : localPct >= 30 ? C.pos : localPct >= 10 ? C.warn : C.neg;
+  const mappedLow = mappedPct != null && mappedPct < 85;
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: note ? 4 : 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{title}</div>
+        <Badge color={localColor}>лок. {localPct != null ? fmt1(localPct) : "—"}%</Badge>
+        <Badge
+          color={mappedLow ? C.warn : C.faint}
+          title={mappedLow ? "часть городов не распознана — хвост справочника 048" : undefined}
+        >
+          замаплено {mappedPct != null ? fmt1(mappedPct) : "—"}%
+        </Badge>
+      </div>
+      {note && <div style={{ fontSize: 11, color: C.faint, marginBottom: 10 }}>{note}</div>}
+      {rows.length === 0 ? (
+        <EmptyIsland />
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 12, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+            <thead>
+              <tr>
+                <th style={{ position: "sticky", left: 0, zIndex: 1, background: C.surface, padding: "4px 10px", textAlign: "left", color: C.faint, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>
+                  склад ＼ покупатель
+                </th>
+                {buyerVals.map((b) => (
+                  <th key={b} style={{ padding: "4px 8px", textAlign: "center", color: C.faint, fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{b}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {whVals.map((wh) => (
+                <tr key={wh}>
+                  <td style={{ position: "sticky", left: 0, zIndex: 1, background: C.surface, padding: "4px 10px", fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>{wh}</td>
+                  {buyerVals.map((buyer) => {
+                    const qty = cellMap.get(`${wh} ${buyer}`) || 0;
+                    const isDiag = wh === buyer && wh !== UNMAPPED;
+                    return (
+                      <td
+                        key={buyer}
+                        title={`${wh} → ${buyer}: ${num(qty)}`}
+                        style={{
+                          padding: "4px 8px", textAlign: "center", minWidth: 56,
+                          background: qty > 0 ? soft("accent", clamp((qty / max) * 60, 4, 60)) : "transparent",
+                          border: isDiag ? `1px solid ${C.pos}` : "1px solid transparent",
+                          borderBottom: `1px solid ${C.line}`,
+                        }}
+                      >
+                        {qty > 0 ? num(qty) : "—"}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SpeedTable — секция 4: WB округ×схема (fbo/fbs медианы рядом), Ozon ФО×медиана
+// (только fbo — у рФБС нет данных о доставке, см. geoMetrics.js:269).
+function SpeedTable({ wbRows, ozRows, showWb, showOz }) {
+  const wbByOkrug = useMemo(() => {
+    const map = new Map();
+    for (const r of wbRows) {
+      const cur = map.get(r.okrug) || { okrug: r.okrug };
+      cur[r.scheme] = { medianDays: r.medianDays, n: r.n };
+      map.set(r.okrug, cur);
+    }
+    return [...map.values()].sort((a, b) => a.okrug.localeCompare(b.okrug, "ru"));
+  }, [wbRows]);
+
+  const ozSorted = useMemo(
+    () => [...ozRows].sort((a, b) => a.fo.localeCompare(b.fo, "ru")),
+    [ozRows]
+  );
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))", gap: 16 }}>
+      {showWb && (
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>WB: FBO vs FBS, по округам</div>
+          <div style={{ fontSize: 11, color: C.faint, marginBottom: 10 }}>до выкупа (прокси): включает время на ПВЗ до выкупа</div>
+          {wbByOkrug.length === 0 ? (
+            <EmptyIsland />
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+              <thead>
+                <tr>
+                  <th style={thStyle("left")}>округ</th>
+                  <th style={thStyle("center")}>FBO</th>
+                  <th style={thStyle("center")}>FBS</th>
+                  <th style={thStyle("center")}>Δ fbs−fbo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {wbByOkrug.map((r) => {
+                  const fbo = r.fbo, fbs = r.fbs;
+                  const diff = fbo?.medianDays != null && fbs?.medianDays != null ? fbs.medianDays - fbo.medianDays : null;
+                  const diffColor = diff != null && diff > 1 ? C.neg : C.faint;
+                  return (
+                    <tr key={r.okrug}>
+                      <td style={tdStyle("left")}>{r.okrug}</td>
+                      <SpeedCell cell={fbo} />
+                      <SpeedCell cell={fbs} />
+                      <td style={{ ...tdStyle("center"), color: diffColor, fontWeight: 600 }}>
+                        {diff != null ? `${diff > 0 ? "+" : ""}${fmt1(diff)} дн` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      {showOz && (
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Ozon: до выдачи, по ФО</div>
+          <div style={{ fontSize: 11, color: C.faint, marginBottom: 10 }}>
+            до выдачи, по начислениям последней мили; FBS (рФБС) возится продавцом — данных о доставке нет
+          </div>
+          {ozSorted.length === 0 ? (
+            <EmptyIsland />
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+              <thead>
+                <tr>
+                  <th style={thStyle("left")}>ФО</th>
+                  <th style={thStyle("center")}>медиана</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ozSorted.map((r) => (
+                  <tr key={r.fo}>
+                    <td style={tdStyle("left")}>{r.fo}</td>
+                    <SpeedCell cell={r} />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpeedCell({ cell }) {
+  if (!cell || cell.medianDays == null) return <td style={tdStyle("center")}>—</td>;
+  const low = cell.n < 5;
+  return (
+    <td style={{ ...tdStyle("center"), color: low ? C.faint : C.ink }} title={low ? `мало данных (n=${cell.n})` : `n=${cell.n}`}>
+      {fmt1(cell.medianDays)} дн
+    </td>
+  );
+}
+
+function thStyle(align) {
+  return { padding: "4px 8px", textAlign: align, color: C.faint, fontWeight: 600, borderBottom: `1px solid ${C.line}` };
+}
+function tdStyle(align) {
+  return { padding: "4px 8px", textAlign: align, borderBottom: `1px solid ${C.line}` };
+}
+
+function Badge({ color, title, children }) {
+  return (
+    <span
+      title={title}
+      style={{
+        display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 20,
+        fontSize: 11, fontWeight: 700, color, background: soft(colorToToken(color), 16),
+        border: `1px solid ${soft(colorToToken(color), 40)}`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+// Badge получает уже резолвленный C.* (строка "var(--token)") — вытаскиваем
+// имя токена обратно для soft(), которая принимает голое имя переменной.
+function colorToToken(cVar) {
+  const m = /var\(--(\w+)\)/.exec(cVar || "");
+  return m ? m[1] : "line";
+}
+
+function EmptyIsland() {
+  return (
+    <div style={{ padding: "24px 0", textAlign: "center", color: C.faint, fontSize: 13 }}>
+      Копим данные с 28.08 — вернитесь позже
     </div>
   );
 }
