@@ -133,9 +133,19 @@
 //            и percentile_cont (честная интерполяция середины) могут
 //            разойтись на полшага — отсюда более широкий допуск;
 //        (в) stuckCount = независимый COUNT с тем же CASE-условием
-//            (done, scan_dt IS NULL, closed_at в окне [3;14) дней от now()).
+//            (done, scan_dt IS NULL, закрыта в окне [3;14) дней от now()).
+//        (г) buyoutMedianDaysOverall (время до покупателя, задача 2 плана
+//            2026-09-05-geo-fbs-buyout-time) = percentile_cont(0.5) над
+//            независимым SQL по тем же парам wb_fbs_tasks⋈wb_supplies⋈
+//            wb_sales (rid==srid, is_realization=1, дни в [0;60]); допуск
+//            0,1 дн — та же nearest-rank-vs-percentile_cont поправка, что
+//            и у medianScHours в п.(б) (JS-медиана канона над целыми днями
+//            nearest-rank, независимый SQL — честная интерполяция).
+//        (д) Σ buyoutN (по rows) = независимый COUNT(*) пар из того же SQL,
+//            что и (г).
 //      Кабинет без WB-данных в окне (1008) → total=0, medianScHours=null,
-//      stuckCount=0 с обеих сторон = PASS.
+//      stuckCount=0, buyoutMedianDaysOverall=null, Σ buyoutN=0 с обеих
+//      сторон = PASS.
 //
 // Использование:
 //   node scripts/check-geo-canon.mjs --cabinet 1
@@ -625,6 +635,41 @@ async function runSuppliesOpsChecks() {
     Math.abs(canon.stuckCount - indStuck) <= TOL,
     `канон=${canon.stuckCount}, независимо=${indStuck}`
   );
+
+  // (г)+(д) Время до покупателя — независимый SQL по тем же buyout-парам,
+  // что второй запрос wbSuppliesOps (rid==srid, is_realization=1, [0;60]дн).
+  const BUYOUT_MEDIAN_TOL = 0.1;
+  const { rows: [buyoutRow] } = await roPool.query(
+    `SELECT percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY (substr(s.sale_dt,1,10)::date - w.closed_at::date)
+           ) AS med,
+           COUNT(*) AS n
+     FROM tenant.wb_fbs_tasks t
+     JOIN tenant.wb_supplies w ON w.cabinet_id = t.cabinet_id AND w.supply_id = t.supply_id
+     JOIN tenant.wb_sales s ON s.cabinet_id = t.cabinet_id AND s.srid = t.rid AND s.is_realization = 1
+     WHERE t.cabinet_id = $1 AND t.supply_id IS NOT NULL
+       AND w.closed_at IS NOT NULL
+       AND w.closed_at::date BETWEEN $2 AND $3
+       AND (substr(s.sale_dt,1,10)::date - w.closed_at::date) BETWEEN 0 AND 60`,
+    [CABINET_ID, FROM, TO]
+  );
+  const indBuyoutMedian = buyoutRow.med === null ? null : Number(buyoutRow.med);
+  const indBuyoutN = num(buyoutRow.n);
+  const rowsBuyoutN = canon.rows.reduce((acc, r) => acc + (r.buyoutN || 0), 0);
+  console.log(`buyout: overall=${canon.buyoutMedianDaysOverall}, Σ buyoutN=${rowsBuyoutN}`);
+  verdict(
+    'FBS-отгрузки WB: buyoutMedianDaysOverall ≈ percentile_cont(0.5) независимый SQL (допуск 0,1дн)',
+    canon.buyoutMedianDaysOverall === null
+      ? indBuyoutMedian === null
+      : Math.abs(canon.buyoutMedianDaysOverall - indBuyoutMedian) <= BUYOUT_MEDIAN_TOL,
+    `канон=${canon.buyoutMedianDaysOverall}, независимо=${indBuyoutMedian === null ? null : indBuyoutMedian.toFixed(2)}`
+  );
+  verdict(
+    'FBS-отгрузки WB: Σ buyoutN (rows) = COUNT(*) независимый SQL (те же пары)',
+    Math.abs(rowsBuyoutN - indBuyoutN) <= TOL,
+    `канон=${rowsBuyoutN}, независимо=${indBuyoutN}`
+  );
+
   console.log('');
 }
 
