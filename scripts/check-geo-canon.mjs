@@ -42,24 +42,64 @@
 //      по (posting_number, product_id) — этот JOIN может ТЕРЯТЬ строки
 //      продаж без сматченного заказа; если проверка 4 расходится, смотреть
 //      именно туда (JOIN, не INNER vs LEFT). Допуск 0,01.
-//   5. Локальность (WB и Ozon зеркально): Σ qty матрицы (все ячейки,
-//      включая «Не определено») = независимый COUNT/SUM незакансельных
-//      заказов окна (WB — с непустым складом, как в самой матрице; Ozon —
-//      без доп. фильтра, как в ozOrdersLocalityMatrix); localPct и mappedPct
-//      пересчитаны СОБСТВЕННОЙ функцией этого скрипта (не импортом
-//      withLocalityTotals — она не экспортируется из geoMetrics.js и в
-//      любом случае должна быть независимой реализацией той же математики)
-//      над СОБСТВЕННЫМ SQL (та же форма JOIN, что в geoMetrics.js, но через
-//      roPool/saas_ro с явным cabinet_id — тот же стандарт «независимости»,
-//      что уже принят в check-profit-canon.mjs, где независимые запросы
-//      тоже дословно повторяют форму SQL канона, но идут по другому
-//      подключению и минуют RLS). Допуск: qty — 0,01 (целые), localPct/
-//      mappedPct — 0,1 (обе стороны округляют до 1 знака одной и той же
-//      формулой round1).
+//   5. Локальность (WB и Ozon зеркально) — ЧЕСТНО про границы независимости
+//      (фикс-раунд 1 ревью): мэппинг-ЯДРО (fuzzy JOIN склад→кластер,
+//      справочники кластер→ФО/округ) контролируется НЕ повторной
+//      SQL-реализацией того же JOIN (первая версия сторожа дословно
+//      копировала LATERAL-fuzzy и кластерные JOIN из lib/geoMetrics.js —
+//      тавтология: баг самого мэппинга давал бы одинаково неверный
+//      результат в обеих копиях и остался бы незамеченным), а ОТДЕЛЬНЫМИ
+//      золотыми кейсами (проверка 5б ниже, точечные запросы к справочникам
+//      + один поведенческий вызов настоящего warehouseFuzzyLateral).
+//      Полная независимая переимплементация fuzzy-логики сознательно НЕ
+//      делается — две fuzzy-реализации (канон и «независимая копия»)
+//      законно разойдутся на границах (частичные совпадения, регистр,
+//      скобки) и сторож будет флапать без реального регресса.
+//      Проверка 5 (эта) отвечает только за то, что МОЖЕТ быть независимым
+//      без копирования JOIN:
+//        (i) Σ qty матрицы (все ячейки, включая «Не определено») =
+//            независимый COUNT/SUM незакансельных заказов окна (WB — с
+//            непустым складом, как в самой матрице; Ozon — без доп.
+//            фильтра, как в ozOrdersLocalityMatrix) — БЕЗ JOIN к
+//            справочникам, чистый фильтр по tenant-таблице заказов;
+//        (ii) localPct/mappedPct пересчитаны СОБСТВЕННОЙ арифметической
+//            функцией этого скрипта (computeLocalityIndependent) НАД
+//            ГОТОВЫМИ rows канона (canon.locMatrix.rows — теми самыми
+//            ячейками whCluster×buyerCluster/whFo×buyerFo, которые уже
+//            посчитал wbOrdersLocalityMatrix/ozOrdersLocalityMatrix) — это
+//            ловит регресс в АРИФМЕТИКЕ процентов/округления
+//            (withLocalityTotals в geoMetrics.js, не экспортируется —
+//            переизобретаем математику отдельно), но НЕ в самом мэппинге
+//            склад→кластер (за это отвечает проверка 5б).
+//      Допуск: local/mapped/total — 0,01 (целые), localPct/mappedPct —
+//      0,01 (сравниваются ПОСЛЕ одинакового round1 с обеих сторон —
+//      фактически строгое равенство, а не дополнительный допуск на
+//      расхождение мэппинга).
 //      Пороги (скорректировано по плану, НЕ 85%): mappedPct(Ozon) ≥ 60 —
 //      отдельная проверка (пустой city у части FBO). mappedPct(WB) БЕЗ
 //      порога — деградация «Склад WB РФ» с августа задокументирована в
 //      плане, здесь только печатается для видимости, не валит сторож.
+//   5б. Золотые кейсы мэппинга (фикс-раунд 1 ревью, см. проверку 5 выше) —
+//      точечные запросы к справочникам БЕЗ fuzzy и без geoMetrics.js,
+//      значения зафиксированы прямыми SELECT по факту (проверены вручную
+//      2026-09-05 перед вшиванием в сторож):
+//        - Ozon: shared.ozon_clusters.warehouse_name = 'ЖУКОВСКИЙ_РФЦ' →
+//          cluster_name = 'Москва, МО и Дальние регионы' →
+//          shared.ozon_cluster_fo.fo = 'Центральный';
+//        - shared.ru_geo_fo: 'Ульяновск' → 'Приволжский', 'Санкт-Петербург'
+//          → 'Северо-Западный';
+//        - WB: shared.region_to_cluster: 'Центральный федеральный округ' →
+//          'Центральный';
+//        - WB fuzzy (поведенческий, единственный кейс, где вызывается
+//          НАСТОЯЩИЙ канон, не переизобретение): warehouseFuzzyLateral
+//          (импорт из lib/geoMetrics.js — та же функция, что использует
+//          wbOrdersLocalityMatrix) на литеральной строке
+//          'Самара (Новосемейкино)' обязан вернуть region склада
+//          'Новосемейкино' (region='Приволжский') из shared.wb_warehouses —
+//          именно тот случай неточного совпадения имён, ради которого
+//          fuzzy-LATERAL и был введён (см. докстроку warehouseFuzzyLateral
+//          в geoMetrics.js: точный JOIN терял ~18% выручки на этой паре
+//          имён). Упавший золотой кейс = FAIL сторожа.
 //   6. Кросс-канонная: Σ wbGeoSummary.byRegion.ordersQty = wbOrdersCount(db,
 //      {from,to}) РОВНО — обе функции считают COUNT(*) заказов WB с
 //      is_cancel=0 в одном и том же окне (wbOrdersCount фильтрует по
@@ -91,12 +131,11 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 }
 
 const { withTenant, DatabaseSync } = await import('../lib/db.js');
-const { wbGeoSummary, ozGeoSummary, wbOrdersLocalityMatrix, ozOrdersLocalityMatrix } = await import('../lib/geoMetrics.js');
+const { wbGeoSummary, ozGeoSummary, wbOrdersLocalityMatrix, ozOrdersLocalityMatrix, warehouseFuzzyLateral } = await import('../lib/geoMetrics.js');
 const { wbOrdersCount } = await import('../lib/wbMetrics.js');
 const { ozOrdersCount } = await import('../lib/ozonMetrics.js');
 const { defaultPeriod } = await import('../lib/period.js');
 
-const EMPTY = 'Не указан';
 const UNMAPPED = 'Не определено';
 
 function parseArgs(argv) {
@@ -115,8 +154,10 @@ const args = parseArgs(process.argv.slice(2));
 const CABINET_ID = args.cabinet;
 const FROM = args.from;
 const TO = args.to;
-const TOL = 0.01; // ₽/шт — тот же базовый допуск, что и в check-profit-canon.mjs
-const PCT_TOL = 0.1; // п.п. — localPct/mappedPct округлены до 1 знака одной формулой с обеих сторон
+const TOL = 0.01; // ₽/шт/п.п. — единый допуск брифа (для процентов: сравниваем ПОСЛЕ
+// одинакового round1 с обеих сторон, поэтому 0,01 — это фактически строгое
+// равенство округлённых значений, а не дополнительный допуск на мэппинг;
+// см. фикс-раунд 1 ревью в докстроке файла, проверка 5).
 const OZ_MAPPED_MIN = 60; // % — скорректированный порог из плана (не 85, пустой city у части FBO)
 
 const fmtRub = (n) => Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -238,41 +279,27 @@ async function runWbChecks() {
     `матрица=${matrixQtySum}, независимо=${indLocCount}`
   );
 
-  const { rows: locRowsWb } = await roPool.query(
-    `SELECT COALESCE(wh_l.region, $4) AS "whCluster",
-            COALESCE(rtc_ok.cluster, rtc_reg.cluster, $4) AS "buyerCluster",
-            COUNT(*) AS qty
-     FROM tenant.wb_orders o
-     LEFT JOIN shared.region_to_cluster rtc_ok ON rtc_ok.region = o.okrug_name
-     LEFT JOIN shared.region_to_cluster rtc_reg
-       ON rtc_reg.region = o.region_name AND (o.okrug_name IS NULL OR o.okrug_name = '')
-     LEFT JOIN LATERAL (
-       SELECT region FROM shared.wb_warehouses
-       WHERE name = o.warehouse_name
-          OR o.warehouse_name ILIKE '%' || name || '%'
-          OR name ILIKE '%' || o.warehouse_name || '%'
-       ORDER BY (name = o.warehouse_name) DESC, updated_at DESC
-       LIMIT 1
-     ) wh_l ON true
-     WHERE o.cabinet_id = $1
-       AND substr(o.order_dt,1,10) >= $2 AND substr(o.order_dt,1,10) <= $3
-       AND o.is_cancel = 0 AND o.warehouse_name <> ''
-     GROUP BY 1, 2`,
-    [CABINET_ID, FROM, TO, UNMAPPED]
-  );
-  const indLocWb = computeLocalityIndependent(locRowsWb, 'whCluster', 'buyerCluster');
+  // ⚠️ Фикс-раунд 1 ревью: здесь БОЛЬШЕ НЕТ повторного SQL с fuzzy-LATERAL
+  // и JOIN к shared.region_to_cluster — первая версия дословно копировала
+  // JOIN-цепочку wbOrdersLocalityMatrix, из-за чего проверка была
+  // тавтологичной (баг мэппинга дал бы одинаково неверный результат в
+  // обеих копиях). Вместо этого арифметика localPct/mappedPct пересчитана
+  // НАД ГОТОВЫМИ ячейками канона (canon.locMatrix.rows) — это ловит
+  // регресс в withLocalityTotals (округление/проценты), не в мэппинге
+  // склад→кластер (за мэппинг отвечает золотая проверка 5б ниже).
+  const indLocWb = computeLocalityIndependent(canon.locMatrix.rows, 'whCluster', 'buyerCluster');
   verdict(
-    'WB локальность: localPct независимый = canon.localPct',
+    'WB локальность: localPct независимый (арифметика над rows канона) = canon.localPct',
     canon.locMatrix.localPct === null
       ? indLocWb.localPct === null
-      : Math.abs(canon.locMatrix.localPct - indLocWb.localPct) <= PCT_TOL,
+      : Math.abs(canon.locMatrix.localPct - indLocWb.localPct) <= TOL,
     `канон=${canon.locMatrix.localPct}, независимо=${indLocWb.localPct} (mapped=${indLocWb.mapped}, local=${indLocWb.local})`
   );
   verdict(
-    'WB локальность: mappedPct независимый = canon.mappedPct (порога нет — деградация «Склад WB РФ» с августа задокументирована в плане)',
+    'WB локальность: mappedPct независимый (арифметика над rows канона) = canon.mappedPct (порога нет — деградация «Склад WB РФ» с августа задокументирована в плане)',
     canon.locMatrix.mappedPct === null
       ? indLocWb.mappedPct === null
-      : Math.abs(canon.locMatrix.mappedPct - indLocWb.mappedPct) <= PCT_TOL,
+      : Math.abs(canon.locMatrix.mappedPct - indLocWb.mappedPct) <= TOL,
     `канон=${canon.locMatrix.mappedPct}%, независимо=${indLocWb.mappedPct}% (total=${indLocWb.total})`
   );
   console.log('');
@@ -386,33 +413,24 @@ async function runOzonChecks() {
     `матрица=${matrixQtySum}, независимо=${indLocCount}`
   );
 
-  const { rows: locRowsOz } = await roPool.query(
-    `SELECT COALESCE(cf.fo, $4) AS "whFo",
-            COALESCE(g.fo, $4) AS "buyerFo",
-            COALESCE(SUM(o.qty),0) AS qty
-     FROM tenant.ozon_orders o
-     LEFT JOIN shared.ozon_clusters oc ON oc.warehouse_id = o.warehouse_id
-     LEFT JOIN shared.ozon_cluster_fo cf ON cf.cluster_name = oc.cluster_name
-     LEFT JOIN shared.ru_geo_fo g ON g.name = o.region
-     WHERE o.cabinet_id = $1
-       AND substr(o.order_dt,1,10) >= $2 AND substr(o.order_dt,1,10) <= $3
-       AND o.is_cancel = 0
-     GROUP BY 1, 2`,
-    [CABINET_ID, FROM, TO, UNMAPPED]
-  );
-  const indLocOz = computeLocalityIndependent(locRowsOz, 'whFo', 'buyerFo');
+  // ⚠️ Фикс-раунд 1 ревью (см. WB-версию выше и докстроку файла) — здесь
+  // тоже больше нет повторного SQL с JOIN к shared.ozon_clusters/
+  // ozon_cluster_fo/ru_geo_fo. Арифметика пересчитана НАД ГОТОВЫМИ ячейками
+  // канона (canon.locMatrix.rows), мэппинг склад→ФО проверяется золотыми
+  // кейсами 5б.
+  const indLocOz = computeLocalityIndependent(canon.locMatrix.rows, 'whFo', 'buyerFo');
   verdict(
-    'Ozon локальность: localPct независимый = canon.localPct',
+    'Ozon локальность: localPct независимый (арифметика над rows канона) = canon.localPct',
     canon.locMatrix.localPct === null
       ? indLocOz.localPct === null
-      : Math.abs(canon.locMatrix.localPct - indLocOz.localPct) <= PCT_TOL,
+      : Math.abs(canon.locMatrix.localPct - indLocOz.localPct) <= TOL,
     `канон=${canon.locMatrix.localPct}, независимо=${indLocOz.localPct} (mapped=${indLocOz.mapped}, local=${indLocOz.local})`
   );
   verdict(
-    'Ozon локальность: mappedPct независимый = canon.mappedPct',
+    'Ozon локальность: mappedPct независимый (арифметика над rows канона) = canon.mappedPct',
     canon.locMatrix.mappedPct === null
       ? indLocOz.mappedPct === null
-      : Math.abs(canon.locMatrix.mappedPct - indLocOz.mappedPct) <= PCT_TOL,
+      : Math.abs(canon.locMatrix.mappedPct - indLocOz.mappedPct) <= TOL,
     `канон=${canon.locMatrix.mappedPct}%, независимо=${indLocOz.mappedPct}% (total=${indLocOz.total})`
   );
   verdict(
@@ -445,9 +463,88 @@ async function runOzonChecks() {
   console.log('');
 }
 
+// ═══════════════════ ПРОВЕРКА 5б: ЗОЛОТЫЕ КЕЙСЫ МЭППИНГА ═══════════════════
+// Фикс-раунд 1 ревью (см. докстроку файла, проверка 5): мэппинг-ЯДРО
+// (fuzzy JOIN и справочники) НЕ переизобретается независимым SQL — вместо
+// этого несколько фиксированных пар «вход→ожидаемый выход», проверенных
+// ПРЯМЫМИ точечными запросами к shared.*-справочникам (без fuzzy, без
+// geoMetrics.js — просто SELECT по точному ключу) плюс ОДИН поведенческий
+// вызов настоящего warehouseFuzzyLateral (импорт из lib/geoMetrics.js —
+// та функция, что реально использует канон, не копия). Значения золотых
+// кейсов сверены вручную прямыми SELECT перед вшиванием в сторож
+// (2026-09-05, см. отчёт задачи). Кейсы не зависят от кабинета/периода —
+// проверяются один раз за прогон. Упавший кейс = FAIL (регресс справочника
+// или самой fuzzy-функции), не флап.
+async function runGoldenMappingChecks() {
+  console.log('Золотые кейсы мэппинга (справочники, без fuzzy-переизобретения)');
+  console.log('');
+
+  // ── Ozon: склад → кластер → ФО (двухшаговый JOIN двух точных ключей,
+  // без LIKE/ILIKE — оба справочника матчатся строгим равенством имени). ──
+  const { rows: [ozRow] } = await roPool.query(
+    `SELECT cf.fo AS fo, oc.cluster_name AS cluster_name
+     FROM shared.ozon_clusters oc
+     JOIN shared.ozon_cluster_fo cf ON cf.cluster_name = oc.cluster_name
+     WHERE oc.warehouse_name = 'ЖУКОВСКИЙ_РФЦ'`
+  );
+  verdict(
+    "золотой кейс Ozon: warehouse_name='ЖУКОВСКИЙ_РФЦ' → cluster_name='Москва, МО и Дальние регионы' → fo='Центральный'",
+    ozRow?.cluster_name === 'Москва, МО и Дальние регионы' && ozRow?.fo === 'Центральный',
+    `получено cluster_name=${JSON.stringify(ozRow?.cluster_name)}, fo=${JSON.stringify(ozRow?.fo)}`
+  );
+
+  // ── shared.ru_geo_fo: город → ФО, точный ключ. ──
+  const { rows: geoFoRows } = await roPool.query(
+    `SELECT name, fo FROM shared.ru_geo_fo WHERE name IN ('Ульяновск', 'Санкт-Петербург')`
+  );
+  const geoFoMap = new Map(geoFoRows.map((r) => [r.name, r.fo]));
+  verdict(
+    "золотой кейс ru_geo_fo: 'Ульяновск' → 'Приволжский'",
+    geoFoMap.get('Ульяновск') === 'Приволжский',
+    `получено ${JSON.stringify(geoFoMap.get('Ульяновск'))}`
+  );
+  verdict(
+    "золотой кейс ru_geo_fo: 'Санкт-Петербург' → 'Северо-Западный'",
+    geoFoMap.get('Санкт-Петербург') === 'Северо-Западный',
+    `получено ${JSON.stringify(geoFoMap.get('Санкт-Петербург'))}`
+  );
+
+  // ── WB: shared.region_to_cluster — округ → кластер, точный ключ. ──
+  const { rows: [rtcRow] } = await roPool.query(
+    `SELECT cluster FROM shared.region_to_cluster WHERE region = 'Центральный федеральный округ'`
+  );
+  verdict(
+    "золотой кейс region_to_cluster: 'Центральный федеральный округ' → 'Центральный'",
+    rtcRow?.cluster === 'Центральный',
+    `получено ${JSON.stringify(rtcRow?.cluster)}`
+  );
+
+  // ── WB fuzzy (поведенческий): НАСТОЯЩИЙ warehouseFuzzyLateral (импорт из
+  // lib/geoMetrics.js) на литеральной строке 'Самара (Новосемейкино)' —
+  // тот самый неточный случай имени, ради которого fuzzy-LATERAL и был
+  // введён (см. докстроку функции: точный JOIN терял ~18% выручки).
+  // Ожидание — region склада 'Новосемейкино' из shared.wb_warehouses. ──
+  const literal = "'Самара (Новосемейкино)'";
+  const { rows: [fuzzyRow] } = await roPool.query(
+    `SELECT wh_l.region AS region
+     FROM (SELECT 1) t
+     ${warehouseFuzzyLateral(literal)}`
+  );
+  const { rows: [directRow] } = await roPool.query(
+    `SELECT region FROM shared.wb_warehouses WHERE name = 'Новосемейкино'`
+  );
+  verdict(
+    "золотой кейс WB fuzzy (настоящий warehouseFuzzyLateral): 'Самара (Новосемейкино)' → region склада 'Новосемейкино'",
+    fuzzyRow?.region === directRow?.region && directRow?.region != null,
+    `fuzzy вернул region=${JSON.stringify(fuzzyRow?.region)}, прямой запрос по 'Новосемейкино'=${JSON.stringify(directRow?.region)}`
+  );
+  console.log('');
+}
+
 try {
   await runWbChecks();
   await runOzonChecks();
+  await runGoldenMappingChecks();
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.stack || e.message}`);
   await roPool.end().catch(() => {});
