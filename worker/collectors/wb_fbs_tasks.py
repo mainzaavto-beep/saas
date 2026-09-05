@@ -21,7 +21,7 @@ import db_pg
 WB_TOKEN = os.getenv("WB_TOKEN")
 ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders"
 PAGE_LIMIT = 1000
-WINDOW_DAYS = 30
+WINDOW_DAYS = int(os.getenv("SAAS_FBS_TASKS_WINDOW_DAYS", "30"))  # 90 для разового бэкфилла хвоста ленты
 MAX_ATTEMPTS = 4
 
 

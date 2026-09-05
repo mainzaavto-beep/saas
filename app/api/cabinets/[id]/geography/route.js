@@ -17,9 +17,11 @@
 //     speed:    { wb: [{ okrug, scheme, medianDays, n }], ozon: [{ fo, medianDays, n }] },
 //     facets:   { brand: [{value,count}], group: [{value,count}], nm: [{id,label,count}] },
 //     supplies: { rows: [{ supplyId, name, createdAt, closedAt, scanDt, done,
-//                           buildHours, scHours, status }],
+//                           buildHours, scHours, status,
+//                           buyoutMedianDays, buyoutN }],
 //                 medianBuildHours, medianScHours, p90ScHours,
-//                 stuckCount, noScanOldCount, total }
+//                 stuckCount, noScanOldCount, total,
+//                 buyoutMedianDaysOverall }
 //               | null при mp=ozon / отсутствии WB у кабинета (см. wantWb);
 //                 не считается для prevKpi (kpiOnly пропускает).
 //   }
