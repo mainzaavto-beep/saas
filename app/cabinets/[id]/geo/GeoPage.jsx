@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import PeriodPicker from "../PeriodPicker.jsx";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
@@ -62,35 +63,19 @@ export default function GeoPage({ cabinetId }) {
   // Фильтры
   const [mp, setMp] = useState("all");           // all | wb | ozon
   const [scheme, setScheme] = useState("all");   // all | fbo | fbs
+  // Период — через PeriodPicker (день/неделя/месяц/год/интервал, стрелки
+  // ‹/›, «Вчера»), тот же удобный контрол, что и на Главной; дефолт — «вчера».
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const [presetRange, setPresetRange] = useState(""); // week | month | ""
   const [q, setQ] = useState("");
   const [nm, setNm] = useState("");
   const [brand, setBrand] = useState("");
   const [group, setGroup] = useState("");
 
-  // Пресет «7/30 дней» — окно ПО ВЧЕРА (не от сегодня: сегодняшний день
-  // финансово недособран, решение владельца 2026-08-25). Формула — та же,
-  // что в lib/period.js defaultPeriod(), но импортировать её нельзя (файл
-  // серверный), поэтому дублируем расчёт.
-  useEffect(() => {
-    if (!presetRange) return;
-    const days = presetRange === "week" ? 7 : 30;
-    const to0 = new Date(Date.now() - 864e5).toISOString().slice(0, 10);            // по вчера, как lib/period.js
-    const from0 = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);   // по вчера, как lib/period.js
-    setFrom(from0);
-    setTo(to0);
-  }, [presetRange]);
-
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     p.set("mp", mp);
     p.set("scheme", scheme);
-    // Пред-существующий баг, находка ревью 05.09: условие "&& presetRange"
-    // не пускало ручные даты в query, потому что onChange инпутов "От"/"До"
-    // сам гасит presetRange (см. обработчики ниже) — ручной ввод дат был
-    // фактически нерабочим. from/to валидны сами по себе, без пресета.
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     if (q) p.set("q", q);
@@ -98,7 +83,7 @@ export default function GeoPage({ cabinetId }) {
     if (brand) p.set("brand", brand);
     if (group) p.set("group", group);
     return p.toString();
-  }, [mp, scheme, from, to, presetRange, q, nm, brand, group]);
+  }, [mp, scheme, from, to, q, nm, brand, group]);
 
   useEffect(() => {
     setData(null);
@@ -111,10 +96,13 @@ export default function GeoPage({ cabinetId }) {
   const font = "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
   if (error) return <Centered>{error}</Centered>;
 
-  const hasActiveFilters = mp !== "all" || scheme !== "all" || presetRange || q ||
+  // Период больше не имеет «нейтрального» состояния (PeriodPicker всегда
+  // держит явный день/неделю/месяц/интервал, дефолт — «вчера») — из
+  // «активных фильтров»/сброса период больше не участвует.
+  const hasActiveFilters = mp !== "all" || scheme !== "all" || q ||
     nm || brand || group;
   const resetFilters = () => {
-    setMp("all"); setScheme("all"); setPresetRange(""); setFrom(""); setTo("");
+    setMp("all"); setScheme("all");
     setQ(""); setNm(""); setBrand(""); setGroup("");
   };
 
@@ -202,19 +190,10 @@ export default function GeoPage({ cabinetId }) {
             ))}
           </Seg>
 
-          <Field label="Окно по вчера">
-            <select value={presetRange} onChange={(e) => setPresetRange(e.target.value)} style={selectStyle}>
-              <option value="">— вручную —</option>
-              <option value="week">7 дней</option>
-              <option value="month">30 дней</option>
-            </select>
-          </Field>
-          <Field label="От">
-            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPresetRange(""); }} style={inputStyle} />
-          </Field>
-          <Field label="До">
-            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPresetRange(""); }} style={inputStyle} />
-          </Field>
+          <PeriodPicker
+            value={{ from, to }}
+            onChange={({ from: f, to: t }) => { setFrom(f); setTo(t); }}
+          />
 
           <Field label="Товар / артикул">
             <select value={nm} onChange={(e) => setNm(e.target.value)} style={{ ...selectStyle, minWidth: 200 }}>

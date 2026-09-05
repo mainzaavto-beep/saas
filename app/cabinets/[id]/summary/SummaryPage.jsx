@@ -1,6 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { ALERT } from "@/lib/callout.js";
+import PeriodPicker from "../PeriodPicker.jsx";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -130,11 +131,11 @@ export default function SummaryPage({ cabinetId }) {
   const [cab, setCab] = useState(null);
 
   // Период и МП — управляют самим запросом к API (важно: разные колонки
-  // берутся по разным датам, это делает сервер).
-  // preset: "custom" — ручной от/до, либо один из быстрых пресетов.
+  // берутся по разным датам, это делает сервер). Период теперь выбирается
+  // через PeriodPicker (день/неделя/месяц/год/интервал, стрелки ‹/›, «Вчера»)
+  // — тот же удобный контрол, что и на Главной; дефолт компонента — «вчера».
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [preset, setPreset] = useState("default"); // default=30дн от MAX, custom=ручной
   const [mp, setMp] = useState("all");
   // Остальные фильтры — клиентские (по готовым агрегатам).
   const [brand, setBrand] = useState("__all__");
@@ -147,49 +148,6 @@ export default function SummaryPage({ cabinetId }) {
   const [sort, setSort] = useState({ key: "salesRub", dir: "desc" });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-
-  // Считает [from, to] для пресета в формате YYYY-MM-DD.
-  const presetToDates = (p) => {
-    const today = new Date();
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const ymd = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    if (p === "yesterday") {
-      const y = new Date(today); y.setDate(y.getDate() - 1);
-      return [iso(y), iso(y)];
-    }
-    if (p === "week") {
-      const w = new Date(today); w.setDate(w.getDate() - 6);
-      return [iso(w), iso(today)];
-    }
-    if (p === "thisMonth") {
-      return [ymd(today.getFullYear(), today.getMonth() + 1, 1), iso(today)];
-    }
-    if (p === "lastMonth") {
-      const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      const last = new Date(today.getFullYear(), today.getMonth(), 0);
-      return [ymd(first.getFullYear(), first.getMonth() + 1, 1), ymd(last.getFullYear(), last.getMonth() + 1, last.getDate())];
-    }
-    if (p === "thisYear") {
-      return [ymd(today.getFullYear(), 1, 1), iso(today)];
-    }
-    return ["", ""]; // default / custom
-  };
-
-  const onPresetChange = (p) => {
-    setPreset(p);
-    if (p === "default" || p === "custom") {
-      if (p === "default") { setDateFrom(""); setDateTo(""); }
-      return;
-    }
-    const [f, t] = presetToDates(p);
-    setDateFrom(f);
-    setDateTo(t);
-  };
-
-  const onManualDate = (which, val) => {
-    setPreset("custom");
-    if (which === "from") setDateFrom(val); else setDateTo(val);
-  };
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -338,10 +296,14 @@ export default function SummaryPage({ cabinetId }) {
 
   useEffect(() => { setPage(1); }, [brand, group, catSel, shop, q, pageSize, qs]);
 
-  const hasActiveFilters = mp !== "all" || preset !== "default" || dateFrom || dateTo ||
+  // Период больше не имеет «нейтрального» состояния (PeriodPicker всегда
+  // держит явный день/неделю/месяц/интервал, дефолт — «вчера») — в отличие
+  // от прежнего preset="default" (пусто → сервер сам решал 30 дней), поэтому
+  // из «активных фильтров»/сброса период больше не участвует.
+  const hasActiveFilters = mp !== "all" ||
     brand !== "__all__" || group !== "__all__" || catSel.size > 0 || shop !== "__all__" || q.trim();
   const resetFilters = () => {
-    setMp("all"); setPreset("default"); setDateFrom(""); setDateTo("");
+    setMp("all");
     setBrand("__all__"); setGroup("__all__"); setCatSel(new Set()); setShop("__all__"); setQ("");
   };
 
@@ -453,22 +415,10 @@ export default function SummaryPage({ cabinetId }) {
             ))}
           </Seg>
         </Field>
-        <Field label="Быстрый период">
-          <select value={preset} onChange={(e) => onPresetChange(e.target.value)} style={selectStyle}>
-            <option value="default">По умолчанию (30 дн)</option>
-            <option value="yesterday">Вчера</option>
-            <option value="week">Неделя (7 дн)</option>
-            <option value="thisMonth">Этот месяц</option>
-            <option value="lastMonth">Прошлый месяц</option>
-            <option value="thisYear">Этот год</option>
-            <option value="custom">Свободный…</option>
-          </select>
-        </Field>
-        <Field label="Период (точные даты)">
-          <input type="date" value={dateFrom} onChange={(e) => onManualDate("from", e.target.value)} style={inputStyle} />
-          <span style={{ color: C.faint, fontSize: 12 }}>—</span>
-          <input type="date" value={dateTo} onChange={(e) => onManualDate("to", e.target.value)} style={inputStyle} />
-        </Field>
+        <PeriodPicker
+          value={{ from: dateFrom, to: dateTo }}
+          onChange={({ from, to }) => { setDateFrom(from); setDateTo(to); }}
+        />
         <input
           value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Поиск: артикул, имя, бренд…"

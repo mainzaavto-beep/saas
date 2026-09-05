@@ -1,5 +1,6 @@
 "use client";
 import { C } from "@/lib/palette.js";
+import PeriodPicker from "../PeriodPicker.jsx";
 
 // /cabinets/[id]/orders — журнал заказов «как в Mpassistant» (22 колонки).
 // Полный перенос эталона data-presenter/app/products/orders/page.jsx с
@@ -112,14 +113,19 @@ export default function OrdersPage({ cabinetId }) {
     return arr;
   }, [data, brand, group, shop, orderNum, postingId]);
 
+  // Период больше не имеет «нейтрального» состояния (PeriodPicker всегда
+  // держит явный день/неделю/месяц/интервал, дефолт — «вчера») — из
+  // «активных фильтров»/сброса период больше не участвует (сброс dateFrom/
+  // dateTo без пересчёта пикера рассинхронизировал бы отображаемый период
+  // с реально отправляемым на сервер).
   const hasActiveFilters = mp !== "all" || status !== "all" || q.trim() ||
     brand !== "__all__" || group !== "__all__" || shop !== "__all__" ||
-    orderNum.trim() || postingId.trim() || dateFrom || dateTo;
+    orderNum.trim() || postingId.trim();
 
   const resetFilters = () => {
     setMp("all"); setStatus("all"); setQ("");
     setBrand("__all__"); setGroup("__all__"); setShop("__all__");
-    setOrderNum(""); setPostingId(""); setDateFrom(""); setDateTo("");
+    setOrderNum(""); setPostingId("");
   };
 
   // Тоталы по отфильтрованной выборке (для строки «Итого»).
@@ -185,11 +191,10 @@ export default function OrdersPage({ cabinetId }) {
 
       {/* Фильтры — ряд 2: период / бренд / группа / магазин / № заказа / № поставки + Сбросить */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        <Field label="Период">
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle }} />
-          <span style={{ color: C.faint, fontSize: 12 }}>—</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle }} />
-        </Field>
+        <PeriodPicker
+          value={{ from: dateFrom, to: dateTo }}
+          onChange={({ from, to }) => { setDateFrom(from); setDateTo(to); }}
+        />
         <Field label="Бренд">
           <select value={brand} onChange={(e) => setBrand(e.target.value)} style={selectStyle}>
             <option value="__all__">Все ({data.items.length})</option>
