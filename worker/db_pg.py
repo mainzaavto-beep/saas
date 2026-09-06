@@ -892,7 +892,13 @@ def upsert_wb_fbs_tasks_many(rows):
 def upsert_mp_seller_warehouses(platform, rows):
     """rows: [{warehouse_id, name, kind}]. Присутствующие → is_active=true,
     last_seen_at=now(); отсутствующие в ответе МП склады той же платформы → is_active=false
-    (склад удалён/скрыт в кабинете). first_seen_at не затирается."""
+    (склад удалён/скрыт в кабинете). first_seen_at не затирается.
+    Пустой rows ничего не пишет (защита от пустого/сдвинутого по форме ответа МП —
+    иначе деактивация ниже снесла бы весь справочник платформы; ревью задачи 5,
+    2026-09-06). Основной барьер — в самих сборщиках (ПРОПУСК до вызова), это —
+    defence in depth на случай прямого вызова с пустым rows."""
+    if not rows:
+        return 0
     cid = _cabinet_id()
     ids = [int(r["warehouse_id"]) for r in rows]
     with get_connection() as conn:

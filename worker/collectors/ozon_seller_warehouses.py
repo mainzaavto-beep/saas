@@ -1,7 +1,7 @@
 """
 SaaS-сборщик СКЛАДОВ ПРОДАВЦА Ozon → tenant.mp_seller_warehouses (platform='ozon').
 
-POST /v1/warehouse/list → [{warehouse_id, name, is_rfbs, status, ...}]. kind:
+POST /v2/warehouse/list → [{warehouse_id, name, is_rfbs, status, ...}]. kind:
 'rfbs' если is_rfbs, иначе 'fbs'. Тик references (weekly) + онбординг. Аргументы
 дат игнорируются. SAAS_PROBE=1 — печатает ответ и не пишет.
 """
@@ -38,10 +38,13 @@ def collect():
         print(f"[ozon_seller_warehouses] ПРОПУСК: Ozon API недоступен ({e}) (exit 0)", flush=True)
         return 0
     if _probe.is_probe():
-        _probe.dump("POST /v1/warehouse/list", data, n=10)
+        _probe.dump("POST /v2/warehouse/list", data, n=10)
         return 0
     db_pg.init()
     rows = parse_warehouses(data)
+    if not rows:
+        print("[ozon_seller_warehouses] ПРОПУСК: API вернул пусто (exit 0)", flush=True)
+        return 0
     written = db_pg.upsert_mp_seller_warehouses("ozon", rows)
     print(f"[ozon_seller_warehouses] складов {written}", flush=True)
     print(f"##OBS rows={written}", flush=True)

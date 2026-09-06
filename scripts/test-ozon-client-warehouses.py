@@ -20,10 +20,20 @@ def make_client(handler):
 
 ok = 0
 
-# 1) warehouse_list: список складов без обёртки
+# 1a) warehouse_list: список складов без обёртки, путь /v2 (v1 отключён Ozon 07.04.2026)
 cli, calls = make_client(lambda p, b, n: [{"warehouse_id": 1, "name": "A", "is_rfbs": False}])
 assert cli.warehouse_list() == [{"warehouse_id": 1, "name": "A", "is_rfbs": False}]
-assert calls[0][0] == "/v1/warehouse/list"
+assert calls[0][0] == "/v2/warehouse/list"
+ok += 1
+
+# 1b) warehouse_list: реальная форма ответа Ozon — список в "warehouses" (проба 06.09.2026)
+cli, calls = make_client(lambda p, b, n: {"warehouses": [{"warehouse_id": 2, "name": "B", "is_rfbs": True}]})
+assert cli.warehouse_list() == [{"warehouse_id": 2, "name": "B", "is_rfbs": True}]
+ok += 1
+
+# 1c) warehouse_list: fallback на "result" (форма других методов клиента), если "warehouses" нет
+cli, calls = make_client(lambda p, b, n: {"result": [{"warehouse_id": 3, "name": "C", "is_rfbs": False}]})
+assert cli.warehouse_list() == [{"warehouse_id": 3, "name": "C", "is_rfbs": False}]
 ok += 1
 
 # 2) stocks_by_warehouse_fbs: 250 sku → 3 пачки по 100, результат склеен

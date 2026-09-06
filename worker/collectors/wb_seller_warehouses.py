@@ -74,6 +74,9 @@ def collect():
         return 0
     db_pg.init()
     rows = parse_warehouses(data)
+    if not rows:
+        print("[wb_seller_warehouses] ПРОПУСК: API вернул пусто (exit 0)", flush=True)
+        return 0
     written = db_pg.upsert_mp_seller_warehouses("wb", rows)
     print(f"[wb_seller_warehouses] складов {written}", flush=True)
     print(f"##OBS rows={written}", flush=True)
