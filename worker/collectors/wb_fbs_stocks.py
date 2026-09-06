@@ -59,11 +59,12 @@ def fetch_warehouse_stocks(wid, barcodes):
     """Все пачки одного склада. None — если хоть одна пачка недоступна."""
     out = []
     for i in range(0, len(barcodes), CHUNK):
+        if i:
+            time.sleep(0.3)
         data = _post(STOCKS_URL.format(wid=wid), {"skus": barcodes[i:i + CHUNK]})
         if data is None:
             return None
         out.extend(data.get("stocks") or [])
-        time.sleep(0.3)
     return out
 
 
@@ -108,10 +109,14 @@ def collect():
         unknown += sum(1 for s in stocks if str(s.get("sku")) not in bc)
         rows.extend(aggregate(wid, stocks, bc, today))
     if _probe.mode() == "verify":
-        db_rows = db_pg.mp_fbs_stock_today("wb", today)
+        wid_set = set(wids)
+        all_db_rows = db_pg.mp_fbs_stock_today("wb", today)
+        db_rows = {k: v for k, v in all_db_rows.items() if k[0] in wid_set}
+        stale = len(all_db_rows) - len(db_rows)
         api = {(r["warehouse_id"], r["sku_key"]): r["present"] for r in rows}
         diff = [(k, api.get(k), db_rows.get(k)) for k in set(api) | set(db_rows) if api.get(k) != db_rows.get(k)]
-        print(f"[wb_fbs_stocks] verify: api={len(api)} db={len(db_rows)} Δ={len(diff)} {diff[:10]}", flush=True)
+        print(f"[wb_fbs_stocks] verify: api={len(api)} db={len(db_rows)} Δ={len(diff)} {diff[:10]}"
+              + (f" stale_db_rows={stale}" if stale else ""), flush=True)
         sys.exit(1 if diff else 0)
     n = db_pg.upsert_mp_fbs_stock_many(rows)
     print(f"[wb_fbs_stocks] складов {len(wids)}, строк {n}"
