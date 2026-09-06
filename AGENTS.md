@@ -186,6 +186,17 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   Канон: заказы = `COUNT(*) FROM orders WHERE is_cancel=0`; выручка =
   `SUM(retail_price_withdisc_rub)` из finance_report Продажа; комиссия =
   `commission_percent × retail_price_withdisc_rub / 100`.
+- **Выручка WB (переезд 06.09.2026): канон `revenue = Σ cost_value_withdisc`
+  (цена со скидкой продавца, `retail_price_withdisc_rub`), а не «к
+  перечислению» — решение владельца; см. `docs/metrics-contract.md` §1.1
+  («три цены»: `revenue`/`realized`/`payout`).
+- **Комиссия WB — нетто-вычет с 06.09**: `commission = realized − payout`;
+  отчётные `commissionReport`/`acquiringReport`/`loyaltyReport` — справочные,
+  разложение отчёта WB не сходится ни на одной строке (`docs/metrics-
+  contract.md` §2.1).
+- **Налоговая база WB — константа `WB_TAX_BASE`** (`lib/wbMetrics.js`,
+  сейчас `"realized"`) — одна точка переключения на `"revenue"`/`"payout"`;
+  двигает и базу НДС, не только УСН (`docs/metrics-contract.md` §9).
 - **СПП / цена сайта (канон с 2026-08-02):** `wb_prices.price_buyer`
   (= discountedPrice из API цен продавца) **НЕ включает СПП** — это цена после
   скидки ПРОДАВЦА, не цена сайта (доказано на nm 1181386677: API 8911 ₽,

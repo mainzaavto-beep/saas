@@ -48,7 +48,7 @@ SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas \
 
 | Файл | Ответственность |
 |---|---|
-| `db/migrations/053_stock_ledger.sql` | `stock_moves`, `stock_move_gaps`, `ff_transfer_docs`, `ff_transfer_lines`, начальное сальдо |
+| `db/migrations/054_stock_ledger.sql` | `stock_moves`, `stock_move_gaps`, `ff_transfer_docs`, `ff_transfer_lines`, начальное сальдо |
 | `lib/stockMoves.js` | Чистые константы/валидация движения (`KINDS`, `SRC_KINDS`, `normalizeMove`, `normalizeTransferDoc`) |
 | `lib/stockLedger.js` | `applyMove`, `applyTransfer` — единственная точка записи `ff_inventory.qty` в панели |
 | `app/api/cabinets/[id]/inventory/route.js` | `add`/`update_qty` через ledger; legacy `shipment` удалён; GET отдаёт `ledger` |
@@ -66,10 +66,10 @@ SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas \
 
 ---
 
-### Task 1: Миграция 053 — журнал движений, пробелы, перемещения, начальное сальдо
+### Task 1: Миграция 054 — журнал движений, пробелы, перемещения, начальное сальдо
 
 **Files:**
-- Create: `db/migrations/053_stock_ledger.sql`
+- Create: `db/migrations/054_stock_ledger.sql`
 
 **Interfaces:**
 - Produces: таблицы `tenant.stock_moves`, `tenant.stock_move_gaps`, `tenant.ff_transfer_docs`, `tenant.ff_transfer_lines`; уникальный индекс `stock_moves_src_uq (cabinet_id, src_kind, src_ref, kind)`; начальные движения `adjust` с `src_kind='manual'`, `src_ref='opening:<ff_inventory_id>'`.
@@ -77,7 +77,7 @@ SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas \
 - [ ] **Step 1: Написать миграцию**
 
 ```sql
--- 053_stock_ledger.sql — Склады 2.0, этап 2 «Учёт» (спека §3).
+-- 054_stock_ledger.sql — Склады 2.0, этап 2 «Учёт» (спека §3).
 -- Журнал движений поверх ff_inventory.qty: каждое изменение остатка — строка
 -- stock_moves; qty позиции = сумма движений (сторож scripts/check-warehouses-stage2.sql).
 -- stock_move_gaps — задания/постинги FBS, которые не удалось разнести (нет места,
@@ -169,7 +169,7 @@ END $$;
 -- миграция идёт под postgres, RLS не мешает). Повторный запуск — ON CONFLICT DO NOTHING.
 INSERT INTO tenant.stock_moves (cabinet_id, ff_inventory_id, location_id, kind, qty, src_kind, src_ref, moved_at, note)
 SELECT f.cabinet_id, f.id, f.location_id, 'adjust', f.qty, 'manual', 'opening:' || f.id, now(),
-       'начальное сальдо 2026-09-06 (миграция 053)'
+       'начальное сальдо 2026-09-06 (миграция 054)'
 FROM tenant.ff_inventory f
 WHERE f.qty <> 0
 ON CONFLICT (cabinet_id, src_kind, src_ref, kind) DO NOTHING;
@@ -180,7 +180,7 @@ COMMIT;
 - [ ] **Step 2 (контроллер): применить дважды, проверить**
 
 ```bash
-cd /opt/agents/saas && for i in 1 2; do PGPASSFILE=/root/.pgpass-admin psql -h localhost -U postgres -d saas -v ON_ERROR_STOP=1 -q -f db/migrations/053_stock_ledger.sql && echo "apply $i OK"; done
+cd /opt/agents/saas && for i in 1 2; do PGPASSFILE=/root/.pgpass-admin psql -h localhost -U postgres -d saas -v ON_ERROR_STOP=1 -q -f db/migrations/054_stock_ledger.sql && echo "apply $i OK"; done
 psql -h localhost -U saas_ro -d saas -Atc "SELECT COUNT(*) FROM pg_policies WHERE schemaname='tenant' AND tablename IN ('stock_moves','stock_move_gaps','ff_transfer_docs','ff_transfer_lines'); SELECT COUNT(*), SUM(qty) FROM tenant.stock_moves WHERE cabinet_id=1 AND src_ref LIKE 'opening:%'; SELECT COUNT(*) FILTER (WHERE f.qty <> COALESCE(m.s,0)) AS mismatch FROM tenant.ff_inventory f LEFT JOIN (SELECT ff_inventory_id, SUM(qty) s FROM tenant.stock_moves WHERE cabinet_id=1 GROUP BY 1) m ON m.ff_inventory_id=f.id WHERE f.cabinet_id=1"
 ```
 Expected: 8 политик; `12|5720` (по осмотру 06.09); `mismatch = 0`.
@@ -188,8 +188,8 @@ Expected: 8 политик; `12|5720` (по осмотру 06.09); `mismatch = 0
 - [ ] **Step 3: Commit**
 
 ```bash
-git add db/migrations/053_stock_ledger.sql
-git commit -m "feat(ledger): миграция 053 — журнал движений, пробелы FBS, перемещения ФФ→ФФ, начальное сальдо"
+git add db/migrations/054_stock_ledger.sql
+git commit -m "feat(ledger): миграция 054 — журнал движений, пробелы FBS, перемещения ФФ→ФФ, начальное сальдо"
 ```
 
 ---
@@ -1246,7 +1246,7 @@ git commit -m "test(ledger): sql-сторож этапа 2 «Учёт»"
 ```markdown
 ### 🆕 Склады 2.0 — этап 2 «Учёт» (с 2026-09-06)
 
-План `docs/superpowers/plans/2026-09-06-warehouses-stage2-ledger.md`. Миграция 053.
+План `docs/superpowers/plans/2026-09-06-warehouses-stage2-ledger.md`. Миграция 054.
 
 - **Журнал движений** `tenant.stock_moves` — единственный путь изменения `ff_inventory.qty`:
   панель — `lib/stockLedger.js` (`applyMove`, `applyTransfer`, внутри транзакции withTenant),
