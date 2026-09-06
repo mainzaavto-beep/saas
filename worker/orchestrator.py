@@ -379,6 +379,11 @@ def _env_for_shop(shop):
     # дневному окну (догон таймера после простоя 06.09.2026 попал в окно и
     # ушёл вхолостую). Не секрет, whitelist SAFE_INHERIT не трогаем.
     env["SAAS_RUN_KIND"] = RUN_KIND
+    # Режим пробы (задача 2 плана «Склады 2.0, этап 1»): SAAS_PROBE=1|verify —
+    # сборщик печатает сырой ответ / сверяет с БД и НЕ пишет. Не секрет,
+    # whitelist SAFE_INHERIT не трогаем — пробрасываем явно, как SAAS_RUN_KIND.
+    if os.environ.get("SAAS_PROBE"):
+        env["SAAS_PROBE"] = os.environ["SAAS_PROBE"]
     return env, mp
 
 
