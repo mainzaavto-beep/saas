@@ -20,6 +20,14 @@
 //       taxMode, revenue, expenses) + Σ cabinetCosts[].amount (знак —
 //       ТОТ ЖЕ контракт, что отдаёт канон: Ozon сырой знак как есть, WB
 //       инвертирован — см. докстроки ozProfitCabinet/wbProfitCabinet).
+//   ⚠️ У WB строк ДВЕ (переезд 06.09.2026, «выручка WB по цене со скидкой
+//   продавца»): прибыль — как выше, ПЛЮС отдельная строка «revenue =
+//   Σ cost_value_withdisc». Без неё еженедельный сторож переезд не
+//   защищает: прибыль WB собирается из order_costs.profit и не изменится,
+//   даже если выручку случайно вернут на cost_value_pay/cost_value_retail.
+//   Налоговая база WB здесь — та же, что в каноне (WB_TAX_BASE =
+//   "realized"): доход Σ cost_value_retail, расходы cogs+logistics+ads+
+//   нетто-вознаграждение (Σ retail − Σ pay).
 //   Допуск: 1 ₽. Печатается КАЖДАЯ строка (не только упавшие) — «все
 //   строки» из брифа задачи 6, чтобы зелёный статус был виден целиком, а
 //   не подразумевался по отсутствию вывода.
@@ -173,7 +181,9 @@ async function checkWb(cabinetId, taxMode) {
 
   const { rows: [rawRow] } = await roPool.query(
     `SELECT
-       COALESCE(SUM(cost_value_pay),0) AS revenue,
+       COALESCE(SUM(cost_value_withdisc),0) AS revenue,
+       COALESCE(SUM(cost_value_retail),0) AS realized,
+       COALESCE(SUM(cost_value_pay),0) AS payout,
        COALESCE(SUM(cost),0) AS cogs,
        COALESCE(SUM(logistics),0) AS logistics,
        COALESCE(SUM(profit),0) AS profit
@@ -195,11 +205,18 @@ async function checkWb(cabinetId, taxMode) {
     [cabinetId, FROM, TO]
   );
 
-  const indRevenue = num(rawRow.revenue);
+  // ⚠️ Переезд 06.09.2026 («выручка WB по цене со скидкой продавца»):
+  // налоговая база WB — WB_TAX_BASE = "realized" (Σ cost_value_retail), в
+  // расходы входит нетто-вознаграждение WB (Σ cost_value_retail −
+  // Σ cost_value_pay). До переезда база была Σ cost_value_pay без
+  // commission — если константу в lib/wbMetrics.js переключат обратно,
+  // здесь надо править синхронно (иначе строка упадёт на разницу налога).
+  const indRealized = num(rawRow.realized);
+  const indCommission = Math.round((indRealized - num(rawRow.payout)) * 100) / 100;
   const indRawProfit = num(rawRow.profit);
   const indAdSpend = num(adRow.s);
-  const indExpenses = num(rawRow.cogs) + num(rawRow.logistics) + indAdSpend;
-  const indTax = calcTotalTax(taxMode, indRevenue, indExpenses).total;
+  const indExpenses = num(rawRow.cogs) + num(rawRow.logistics) + indAdSpend + indCommission;
+  const indTax = calcTotalTax(taxMode, indRealized, indExpenses).total;
   const indCabinetSignedSum = -num(cabinetCostRows[0].s); // WB: сырой знак ПРОТИВОПОЛОЖЕН — канон инвертирует (см. wbProfitCabinet)
   const indProfit = Math.round((indRawProfit - indAdSpend - indTax + indCabinetSignedSum) * 100) / 100;
 
@@ -207,7 +224,17 @@ async function checkWb(cabinetId, taxMode) {
     `WB кабинет ${cabinetId}: wbProfitCabinet.profit = независимый SQL (Σ order_costs.profit − ad_spend − налог + Σ cabinetCosts)`,
     Math.abs(canon.profit - indProfit) <= TOL,
     `канон=${fmtRub(canon.profit)}, независимо=${fmtRub(indProfit)}, разница=${fmtRub(canon.profit - indProfit)} `
-    + `[SUM(order_costs.profit)=${fmtRub(indRawProfit)}, ad_spend=${fmtRub(indAdSpend)}, налог=${fmtRub(indTax)}, ΣcabinetCosts=${fmtRub(indCabinetSignedSum)}]`
+    + `[SUM(order_costs.profit)=${fmtRub(indRawProfit)}, ad_spend=${fmtRub(indAdSpend)}, налог=${fmtRub(indTax)} (база realized=${fmtRub(indRealized)}, расходы вкл. commission=${fmtRub(indCommission)}), ΣcabinetCosts=${fmtRub(indCabinetSignedSum)}]`
+  );
+
+  // Выручка кабинета — отдельная строка сверки: канон обязан отдавать Σ
+  // cost_value_withdisc (переезд 06.09.2026), а не «к перечислению».
+  const indRevenue = num(rawRow.revenue);
+  verdict(
+    `WB кабинет ${cabinetId}: wbProfitCabinet.revenue = независимый SQL (Σ cost_value_withdisc — цена со скидкой продавца)`,
+    Math.abs(num(canon.revenue) - indRevenue) <= TOL,
+    `канон=${fmtRub(num(canon.revenue))}, независимо=${fmtRub(indRevenue)}, разница=${fmtRub(num(canon.revenue) - indRevenue)} `
+    + `[realized=${fmtRub(indRealized)}, payout=${fmtRub(num(rawRow.payout))}]`
   );
 }
 

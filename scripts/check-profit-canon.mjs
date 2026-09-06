@@ -125,11 +125,29 @@
 //   1. wbProfitProduct(period).profit (без nmId) = независимому SQL
 //      SUM(wb_order_costs.profit) − SUM(ad_spend) − calcTotalTax(...).total,
 //      допуск 0,01 ₽. wb_order_costs.profit = cost_value_pay − cost −
-//      logistics (commission/acquiring/loyalty УЖЕ внутри cost_value_pay,
-//      не вычитаются повторно — см. докстроку wbProfitProduct).
-//   2. Слагаемые аддитивны: revenue(cost_value_pay)−cogs−logistics =
-//      независимому SUM(profit) (БЕЗ commission/acquiring/loyalty — они не
-//      участвуют в формуле WB, в отличие от Ozon), допуск 0,01 ₽.
+//      logistics (нетто-вознаграждение WB УЖЕ внутри cost_value_pay, не
+//      вычитается повторно — см. докстроку wbProfitProduct). ⚠️ ПЕРЕЕЗД
+//      06.09.2026 («выручка WB по цене со скидкой продавца»): независимый
+//      налог считается на ТОЙ ЖЕ базе, что канон (WB_TAX_BASE="realized"):
+//      calcTotalTax(taxMode, Σ cost_value_retail, cogs + logistics + ads +
+//      commission), где commission = Σ cost_value_retail − Σ cost_value_pay
+//      (нетто-вознаграждение). До переезда база была Σ cost_value_pay, а
+//      commission в расходы не входила — если WB_TAX_BASE переключат
+//      обратно, эту сумму надо править синхронно (иначе сторож упадёт и
+//      покажет РОВНО разницу налога).
+//   2. Тождества трёх цен (переезд 06.09.2026) — НА КАБИНЕТЕ И НА КАЖДОМ
+//      nm_id периода, допуск 0,02 ₽ (round2 по трём ценам + двум
+//      производным):
+//        revenue − spp − commission = payout   (revenue = Σ
+//          cost_value_withdisc, spp = revenue − realized, commission =
+//          realized − payout — см. wbAggRow в lib/wbMetrics.js);
+//        profitGross = rawProfit                (profitGross = revenue −
+//          spp − commission − cogs − logistics, алгебраически = payout −
+//          cogs − logistics = SUM(wb_order_costs.profit)).
+//      Плюс сверка каждого из трёх агрегатов с независимым SQL (Σ
+//      cost_value_withdisc / _retail / _pay, допуск 0,01 ₽) — тождества
+//      сами по себе выполнились бы и на нулях/на любой одной колонке,
+//      подставленной трижды.
 //   3. wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts[].
 //      amount (ЗНАК УЖЕ НОРМАЛИЗОВАН каноном — см. докстроку
 //      wbProfitCabinet в lib/wbMetrics.js: сырой знак в tenant.
@@ -206,6 +224,12 @@ const FROM = args.from;
 const TO = args.to;
 const TOL = 0.01; // ₽ — тот же допуск, что и «инвариант периода» check-ozon-profit-invariant.mjs
 const PRODUCT_SUM_TOL = 0.05; // ₽ — допуск для Σ по товарам/nm (много round2 подряд)
+// ₽ — допуск тождеств трёх цен WB (проверка 2, переезд 06.09.2026):
+// revenue/realized/payout округляются round2 каждая, spp и commission —
+// ещё раз, уже как разности; 0,01 ₽ был бы допуском в одну копейку на
+// пятикратно округлённом выражении. Тождества алгебраические — при
+// исправном каноне Δ = 0.
+const IDENT_TOL = 0.02;
 
 // Допуск №7 (Σ дней vs скаляр): до 3 округлений/день (VAT, УСН, profit —
 // см. ozDayProfit) по ≤0,005 ₽ + подневное округление Σ. На месячном окне
@@ -719,10 +743,18 @@ async function runWbChecks() {
 
     let sumByNm = 0;
     let sumByNmAds = 0;
+    // ── Проверка 2 (переезд 06.09.2026): тождества трёх цен на КАЖДОМ nm_id
+    // периода — худшее отклонение по обоим тождествам собирается здесь же,
+    // в уже существующем проходе по nm (второй SQL-круг не нужен). ──
+    const nmIdent = { worstPayout: 0, worstPayoutId: null, worstGross: 0, worstGrossId: null };
     for (const row of nmRows) {
       const pp = await wbProfitProduct(db, taxMode, { cabinetId: CABINET_ID, from: FROM, to: TO }, row.nm_id);
       sumByNm += pp.profit;
       sumByNmAds += pp.ads;
+      const dPayout = Math.abs(pp.revenue - pp.spp - pp.commission - pp.payout);
+      const dGross = Math.abs(pp.profitGross - pp.rawProfit);
+      if (dPayout >= nmIdent.worstPayout) { nmIdent.worstPayout = dPayout; nmIdent.worstPayoutId = row.nm_id; }
+      if (dGross >= nmIdent.worstGross) { nmIdent.worstGross = dGross; nmIdent.worstGrossId = row.nm_id; }
     }
 
     // ── Проверка №6 (симметрично Ozon): 5 случайных nm_id (или все, если
@@ -774,6 +806,7 @@ async function runWbChecks() {
       sumByNm: Math.round(sumByNm * 100) / 100,
       sumByNmAds: Math.round(sumByNmAds * 100) / 100,
       nmIds: nmRows.map((r) => r.nm_id),
+      nmIdent,
       batchVsScalar,
       dailyChecks,
     };
@@ -790,7 +823,9 @@ async function runWbChecks() {
   // файла п.6 WB-секции). ──
   const { rows: [rawRow] } = await roPool.query(
     `SELECT
-       COALESCE(SUM(cost_value_pay),0) AS revenue,
+       COALESCE(SUM(cost_value_withdisc),0) AS revenue,
+       COALESCE(SUM(cost_value_retail),0) AS realized,
+       COALESCE(SUM(cost_value_pay),0) AS payout,
        COALESCE(SUM(cost),0) AS cogs,
        COALESCE(SUM(commission),0) AS commission,
        COALESCE(SUM(acquiring),0) AS acquiring,
@@ -837,15 +872,26 @@ async function runWbChecks() {
     [CABINET_ID, FROM, TO]
   );
 
+  // Три цены — независимые суммы (переезд 06.09.2026): выручка по цене со
+  // скидкой продавца, «реализовано», «к перечислению». Производные spp и
+  // нетто-commission считаются ЗДЕСЬ ЗАНОВО, из этих сумм (канон не
+  // спрашивается — см. шапку файла про независимый SQL).
   const indRevenue = num(rawRow.revenue);
+  const indRealized = num(rawRow.realized);
+  const indPayout = num(rawRow.payout);
+  const indSpp = Math.round((indRevenue - indRealized) * 100) / 100;
+  const indCommission = Math.round((indRealized - indPayout) * 100) / 100;
   const indCogs = num(rawRow.cogs);
   const indLogistics = num(rawRow.logistics);
   const indRawProfit = num(rawRow.profit);
   const indAdSpend = num(adRow.s);
-  // Налоговая база — та же, что в wbProfitProduct: cogs + logistics + ads
-  // (commission/acquiring/loyalty уже внутри revenue=cost_value_pay).
-  const indExpenses = indCogs + indLogistics + indAdSpend;
-  const indTax = calcTotalTax(taxMode, indRevenue, indExpenses).total;
+  // Налоговая база — та же, что в wbTax (lib/wbMetrics.js, WB_TAX_BASE =
+  // "realized"): доход = Σ cost_value_retail, расходы = cogs + logistics +
+  // ads + нетто-вознаграждение WB (оно вычитается по пути от «реализовано»
+  // к «к перечислению», значит расход). До переезда 06.09.2026 здесь были
+  // база cost_value_pay и расходы без commission.
+  const indExpenses = indCogs + indLogistics + indAdSpend + indCommission;
+  const indTax = calcTotalTax(taxMode, indRealized, indExpenses).total;
   const indProfit = Math.round((indRawProfit - indAdSpend - indTax) * 100) / 100;
 
   // cabinetCosts: сырой знак у WB инвертирован относительно Ozon (см.
@@ -855,9 +901,10 @@ async function runWbChecks() {
   const negativeRawRows = cabinetCostRows.filter((r) => num(r.s) < 0);
 
   console.log('Независимый SQL (saas_ro):');
-  console.log(`  revenue(cost_value_pay)=${fmtRub(indRevenue)} cogs=${fmtRub(indCogs)} logistics=${fmtRub(indLogistics)}`);
+  console.log(`  revenue(cost_value_withdisc)=${fmtRub(indRevenue)} realized(cost_value_retail)=${fmtRub(indRealized)} payout(cost_value_pay)=${fmtRub(indPayout)}`);
+  console.log(`  spp(revenue−realized)=${fmtRub(indSpp)} commission-нетто(realized−payout)=${fmtRub(indCommission)} cogs=${fmtRub(indCogs)} logistics=${fmtRub(indLogistics)}`);
   console.log(`  SUM(profit) сырой (все строки, без фильтра is_return) = ${fmtRub(indRawProfit)}`);
-  console.log(`  ad_spend(кабинет) = ${fmtRub(indAdSpend)}, налог (calcTotalTax, база=revenue) = ${fmtRub(indTax)}`);
+  console.log(`  ad_spend(кабинет) = ${fmtRub(indAdSpend)}, налог (calcTotalTax, база=realized, расходы=cogs+logistics+ads+commission) = ${fmtRub(indTax)}`);
   console.log(`  profit независимый = SUM(profit) − ad_spend − налог = ${fmtRub(indProfit)}`);
   console.log(`  Σ cabinetCosts.amount (нормализованный знак, канон-контракт) = ${fmtRub(indCabinetSignedSum)}`);
   if (negativeRawRows.length) {
@@ -881,13 +928,44 @@ async function runWbChecks() {
     `канон=${fmtRub(canon.profitProduct.profit)}, независимо=${fmtRub(indProfit)}, разница=${fmtRub(canon.profitProduct.profit - indProfit)}`
   );
 
-  // ── Проверка 2: слагаемые аддитивны (revenue−cogs−logistics = сырой
-  // SUM(profit) — ppvz-модель, commission/acquiring/loyalty НЕ участвуют). ──
-  const compsProfit = canon.profitProduct.revenue - canon.profitProduct.cogs - canon.profitProduct.logistics;
+  // ── Проверка 2 (переезд 06.09.2026, «выручка WB по цене со скидкой
+  // продавца»): три цены и два тождества — на кабинете и на каждом nm.
+  // 2а — сами агрегаты канона = независимым суммам (без этого тождества
+  // прошли бы и на трёх одинаковых колонках);
+  // 2б — revenue − spp − commission = payout;
+  // 2в — profitGross = rawProfit (= SUM(wb_order_costs.profit)).
+  // Допуск тождеств 0,02 ₽: round2 сидит на трёх ценах и на двух
+  // производных (spp/commission) — 0,01 ₽ был бы допуском «в одну
+  // копейку» на пятикратно округлённом выражении. ──
+  const pp0 = canon.profitProduct;
   verdict(
-    'слагаемые аддитивны (ppvz-модель): revenue−cogs−logistics = SUM(wb_order_costs.profit)',
-    Math.abs(compsProfit - indRawProfit) <= TOL,
-    `по слагаемым=${fmtRub(compsProfit)}, независимый SUM(profit)=${fmtRub(indRawProfit)}, разница=${fmtRub(compsProfit - indRawProfit)}`
+    'три цены канона = независимый SQL: revenue=Σcost_value_withdisc, realized=Σcost_value_retail, payout=Σcost_value_pay',
+    Math.abs(pp0.revenue - indRevenue) <= TOL
+      && Math.abs(pp0.realized - indRealized) <= TOL
+      && Math.abs(pp0.payout - indPayout) <= TOL,
+    `revenue: канон=${fmtRub(pp0.revenue)} vs ${fmtRub(indRevenue)} (Δ=${fmtRub(pp0.revenue - indRevenue)}); `
+    + `realized: ${fmtRub(pp0.realized)} vs ${fmtRub(indRealized)} (Δ=${fmtRub(pp0.realized - indRealized)}); `
+    + `payout: ${fmtRub(pp0.payout)} vs ${fmtRub(indPayout)} (Δ=${fmtRub(pp0.payout - indPayout)})`
+  );
+
+  const identPayoutCab = pp0.revenue - pp0.spp - pp0.commission - pp0.payout;
+  verdict(
+    'тождество трёх цен: revenue − spp − commission = payout (кабинет и КАЖДЫЙ nm_id периода)',
+    Math.abs(identPayoutCab) <= IDENT_TOL && canon.nmIdent.worstPayout <= IDENT_TOL,
+    `кабинет: ${fmtRub(pp0.revenue)} − ${fmtRub(pp0.spp)} − ${fmtRub(pp0.commission)} = ${fmtRub(pp0.revenue - pp0.spp - pp0.commission)} vs payout=${fmtRub(pp0.payout)} (Δ=${fmtRub(identPayoutCab)}); `
+    + `по товарам: ${canon.nmCount} nm, макс |Δ| = ${fmtRub(canon.nmIdent.worstPayout)}`
+    + `${canon.nmIdent.worstPayoutId != null ? ` (nm_id=${canon.nmIdent.worstPayoutId})` : ''}, допуск ${fmtRub(IDENT_TOL)}`
+  );
+
+  const identGrossCab = pp0.profitGross - pp0.rawProfit;
+  verdict(
+    'тождество валовой прибыли: profitGross (revenue−spp−commission−cogs−logistics) = rawProfit = SUM(wb_order_costs.profit)',
+    Math.abs(identGrossCab) <= IDENT_TOL
+      && Math.abs(pp0.profitGross - indRawProfit) <= IDENT_TOL
+      && canon.nmIdent.worstGross <= IDENT_TOL,
+    `кабинет: profitGross=${fmtRub(pp0.profitGross)}, rawProfit=${fmtRub(pp0.rawProfit)} (Δ=${fmtRub(identGrossCab)}), независимый SUM(profit)=${fmtRub(indRawProfit)} (Δ=${fmtRub(pp0.profitGross - indRawProfit)}); `
+    + `по товарам: ${canon.nmCount} nm, макс |Δ| = ${fmtRub(canon.nmIdent.worstGross)}`
+    + `${canon.nmIdent.worstGrossId != null ? ` (nm_id=${canon.nmIdent.worstGrossId})` : ''}, допуск ${fmtRub(IDENT_TOL)}`
   );
 
   // ── Проверка 3: wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts (нормализованный знак) ──

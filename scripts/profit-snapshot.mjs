@@ -51,22 +51,28 @@ const { ozProfitProduct, ozProfitCabinet } = await import('../lib/ozonMetrics.js
 const { wbProfitProduct, wbProfitCabinet } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
-// Независимая проверочная сумма для revenueGross (задача «WB валовая
-// выручка справочной строкой», 2026-08-20) — ТОЛЬКО saas_ro (bypass RLS,
-// явный cabinet_id в каждом запросе), тот же паттерн, что
+// Независимые проверочные суммы WB — ТОЛЬКО saas_ro (bypass RLS, явный
+// cabinet_id в каждом запросе), тот же паттерн, что
 // scripts/check-profit-canon.mjs (docstring там же, «два разных
-// подключения»). НЕ вызывает lib/wbMetrics.js::wbRevenueGross — своя SQL с
-// нуля, иначе проверка была бы сверкой функции сама с собой.
+// подключения»). Канон НЕ спрашивается — своя SQL с нуля, иначе проверка
+// была бы сверкой функции сама с собой.
+// ⚠️ Переезд 06.09.2026 («выручка WB по цене со скидкой продавца»): поля
+// revenueGross у роутов больше НЕТ (wbRevenueGross удалена из канона) —
+// «реализовано» приехало в канон как c.realized (pnl.wb.realized), «к
+// перечислению» как c.payout (pnl.wb.payout / overview.kpi.netPay). Тот же
+// SQL по cost_value_retail, что сверял revenueGross, теперь сверяет
+// realized; payout добавлен вторым слагаемым того же запроса.
 const roPool = new pg.Pool(readonlyPgConfig());
-async function independentWbRevenueGross(cabinetId, from, to) {
+async function independentWbSums(cabinetId, from, to) {
   const { rows: [row] } = await roPool.query(
-    `SELECT COALESCE(SUM(cost_value_retail),0) AS v
+    `SELECT COALESCE(SUM(cost_value_retail),0) AS realized,
+            COALESCE(SUM(cost_value_pay),0) AS payout
      FROM tenant.wb_order_costs
      WHERE cabinet_id = $1
        AND substr(COALESCE(sale_dt, return_dt),1,10) BETWEEN $2 AND $3`,
     [cabinetId, from, to]
   );
-  return round2(row?.v || 0);
+  return { realized: round2(row?.realized || 0), payout: round2(row?.payout || 0) };
 }
 
 const BASE = 'http://127.0.0.1:3200'; // прод-порт (см. saas-verification-protocol), НЕ 3210
@@ -437,13 +443,14 @@ async function runVerify() {
           round2(pnlCanon.cabinetCosts.reduce((a, x) => a + x.amount, 0))
         ) && allOk;
 
-        // revenueGross (задача «WB валовая выручка справочной строкой»,
-        // 2026-08-20) — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB. Сверка НЕ
-        // с каноном (wbRevenueGross бы проверял сам себя), а с независимой
-        // SQL-суммой на saas_ro (см. independentWbRevenueGross выше).
+        // realized/payout — «реализовано» и «к перечислению», ТОЛЬКО у WB
+        // (переезд 06.09.2026, пришли на смену revenueGross). Сверка НЕ с
+        // каноном (он проверял бы сам себя), а с независимой SQL-суммой на
+        // saas_ro (см. independentWbSums выше).
         if (mp === 'wb') {
-          const indRevenueGross = await independentWbRevenueGross(cabinetId, from, to);
-          allOk = assertClose(`pnl.wb.revenueGross = независимый SQL(saas_ro)`, pnlWas?.revenueGross, indRevenueGross) && allOk;
+          const ind = await independentWbSums(cabinetId, from, to);
+          allOk = assertClose(`pnl.wb.realized = независимый SQL(saas_ro, Σ cost_value_retail)`, pnlWas?.realized, ind.realized) && allOk;
+          allOk = assertClose(`pnl.wb.payout = независимый SQL(saas_ro, Σ cost_value_pay)`, pnlWas?.payout, ind.payout) && allOk;
         }
 
         // overview
@@ -454,9 +461,12 @@ async function runVerify() {
         allOk = assertClose(`overview.kpi.profit`, ovJson.kpi?.profit, round2(pnlCanon.profit)) && allOk;
         allOk = assertClose(`overview.kpi.tax`, ovJson.kpi?.tax, round2(pnlCanon.tax)) && allOk;
         allOk = assertClose(`overview.kpi.adSpend`, ovJson.kpi?.adSpend, round2(pnlCanon.ads)) && allOk;
+        // overview.kpi несёт из трёх цен только «к перечислению» (netPay =
+        // c.payout); отдельного поля realized в KPI нет — оно сверяется
+        // выше на pnl. Тот же независимый SQL, тот же период.
         if (mp === 'wb') {
-          const indRevenueGross = await independentWbRevenueGross(cabinetId, from, to);
-          allOk = assertClose(`overview.kpi.revenueGross = независимый SQL(saas_ro)`, ovJson.kpi?.revenueGross, indRevenueGross) && allOk;
+          const ind = await independentWbSums(cabinetId, from, to);
+          allOk = assertClose(`overview.kpi.netPay = независимый SQL(saas_ro, Σ cost_value_pay)`, ovJson.kpi?.netPay, ind.payout) && allOk;
         }
 
         // Контрольные точки шлюза.
@@ -491,7 +501,7 @@ async function runVerify() {
   }
 
   console.log(`\n${allOk ? 'ВСЕ ПРОВЕРКИ ПРОШЛИ (ALL PASS)' : 'ЕСТЬ РАСХОЖДЕНИЯ (FAIL)'}`);
-  // roPool (независимая сверка revenueGross, saas_ro) — закрыть явно, иначе
+  // roPool (независимая сверка realized/payout, saas_ro) — закрыть явно, иначе
   // процесс висит на открытом соединении пула после process.exit не дойдя
   // (тот же приём, что check-profit-canon.mjs, roPool.end()).
   await roPool.end().catch(() => {});
