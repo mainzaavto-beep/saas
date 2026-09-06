@@ -179,6 +179,7 @@ WB_COLLECTORS = [
     #                  # нового кабинета на таймаут 1 час. Вернуть после фикса зависания.
     "wb_prices",
     "wb_stocks",
+    "wb_fbs_stocks",   # FBS-остатки складов продавца → tenant.mp_fbs_daily_stock (тик stocks)
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
     "wb_seller_warehouses",  # склады продавца → tenant.mp_seller_warehouses (references + онбординг)
     "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)

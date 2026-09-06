@@ -918,6 +918,34 @@ def seller_warehouse_ids(platform):
     return [int(r["warehouse_id"]) for r in rows]
 
 
+# --- mp_fbs_daily_stock (FBS-остатки складов продавца, план «Склады 2.0», этап 1) ---
+_MP_FBS_STOCK_COLS = ["platform", "warehouse_id", "sku_key", "date", "present", "reserved"]
+
+
+def upsert_mp_fbs_stock_many(rows):
+    return _batch_upsert("mp_fbs_daily_stock", ["platform", "warehouse_id", "sku_key", "date"],
+                         _MP_FBS_STOCK_COLS, rows)
+
+
+def wb_barcode_map():
+    """штрихкод → nm_id: карточки (wb_barcodes) ∪ заказы (wb_orders.barcode, на случай
+    карточек без размеров). Карточки приоритетнее."""
+    m = {}
+    for r in query("SELECT DISTINCT barcode, nm_id FROM tenant.wb_orders "
+                   "WHERE barcode IS NOT NULL AND nm_id IS NOT NULL"):
+        m[str(r["barcode"])] = int(r["nm_id"])
+    for r in query("SELECT barcode, nm_id FROM tenant.wb_barcodes"):
+        m[str(r["barcode"])] = int(r["nm_id"])
+    return m
+
+
+def mp_fbs_stock_today(platform, date):
+    """(warehouse_id, sku_key) → present за дату — для SAAS_PROBE=verify."""
+    return {(int(r["warehouse_id"]), int(r["sku_key"])): r["present"]
+            for r in query("SELECT warehouse_id, sku_key, present FROM tenant.mp_fbs_daily_stock "
+                           "WHERE platform=%s AND date=%s", (platform, date))}
+
+
 def wb_fbs_open_order_ids():
     """order_id заданий, у которых статус ещё может измениться (нет статуса
     или не финальный). Их и опрашивает часовой wb_fbs_status."""
