@@ -280,11 +280,11 @@ export default function PnlPage({ cabinetId }) {
                 <tbody>
                   {[
                     ["Выручка", "revenue"],
-                    // Скидка WB (СПП) — у Ozon spp всегда 0 (ozNetForm), колонка
-                    // Ozon покажет «0 ₽» симметрично прочим WB-специфичным полям.
+                    // Скидка WB (СПП) — у Ozon spp всегда 0 (ozNetForm); колонка
+                    // Ozon рендерится ниже как «—» (спец-случай key==="spp"), а не «0 ₽».
                     ["Скидка WB (СПП)", "spp"],
                     ["Себестоимость", "cogs"],
-                    ["Комиссия", "commission"],
+                    ["Вознаграждение МП", "commission"],
                     ["Логистика", "logistics"],
                     // Сборы Ozon — только у Ozon (data.wb.services не существует, money(undefined) → «—»
                     // для колонки WB, симметрично остальным Ozon-специфичным полям в этой таблице).
@@ -309,7 +309,7 @@ export default function PnlPage({ cabinetId }) {
                           style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}
                         >{label}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (wbVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(wbVal)}</td>
-                        <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (ozVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(ozVal)}</td>
+                        <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (ozVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{key === "spp" ? "—" : money(ozVal)}</td>
                       </tr>
                     );
                   })}
