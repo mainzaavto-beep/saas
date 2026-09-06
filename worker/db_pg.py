@@ -503,7 +503,8 @@ def upsert_sales_many(rows):
 
 
 _OC_COLS = ["srid", "nm_id", "sa_name", "is_return", "return_dt", "self_buyout", "order_dt",
-            "sale_dt", "cost_value_total", "cost_value_retail", "cost_value_pay", "commission",
+            "sale_dt", "cost_value_total", "cost_value_retail", "cost_value_withdisc",
+            "cost_value_pay", "commission",
             "acquiring", "logistics", "loyalty", "cost", "profit", "profit_alt", "qty"]
 
 

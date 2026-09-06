@@ -63,6 +63,8 @@ def _aggregate_sql(start, end):
         SUM(CASE WHEN f.supplier_oper_name IN ('Продажа','Возврат')
                  THEN COALESCE(f.retail_amount,0) ELSE 0 END) AS cost_value_retail,
         SUM(CASE WHEN f.supplier_oper_name IN ('Продажа','Возврат')
+                 THEN COALESCE(f.retail_price_withdisc_rub,0) ELSE 0 END) AS cost_value_withdisc,
+        SUM(CASE WHEN f.supplier_oper_name IN ('Продажа','Возврат')
                  THEN COALESCE(f.ppvz_for_pay,0) ELSE 0 END) AS cost_value_pay,
         SUM(CASE WHEN f.supplier_oper_name IN ('Продажа','Возврат')
                  THEN ABS(COALESCE(f.ppvz_sales_commission,0)) ELSE 0 END) AS commission,
@@ -83,6 +85,7 @@ def _aggregate_sql(start, end):
            o.order_dt, o.sale_dt,
            COALESCE(ord.total_price, o.cost_value_retail) AS cost_value_total,
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_retail END AS cost_value_retail,
+           CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_withdisc END AS cost_value_withdisc,
            CASE WHEN o.is_return = 1 THEN 0 ELSE o.cost_value_pay END AS cost_value_pay,
            o.commission, o.acquiring, o.logistics, o.loyalty,
            -- ПОЛИТИКА ВЛАДЕЛЬЦА 2026-08-21 (см. докстроку профита ниже, у
@@ -164,7 +167,7 @@ def _aggregate_sql(start, end):
                 pass
         r["self_buyout"] = sb
         # postgres возвращает Decimal/Int — приводим к float для consist
-        for k in ("cost_value_total", "cost_value_retail", "cost_value_pay",
+        for k in ("cost_value_total", "cost_value_retail", "cost_value_withdisc", "cost_value_pay",
                   "commission", "acquiring", "logistics", "loyalty", "cost"):
             if r.get(k) is not None:
                 r[k] = float(r[k])
