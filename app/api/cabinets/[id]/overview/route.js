@@ -7,8 +7,9 @@ import { defaultPeriod } from "@/lib/period.js";
 import {
   wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet,
   wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay, wbProfitProductBatch,
+  wbRawProfitCabinetByDay,
 } from "@/lib/wbMetrics.js";
-import { ozOrdersByDay, ozProfitCabinet } from "@/lib/ozonMetrics.js";
+import { ozOrdersByDay, ozProfitCabinet, ozRawProfitCabinetByDay } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 
 export const runtime = "nodejs";
@@ -21,7 +22,11 @@ export const dynamic = "force-dynamic";
 // netPay — «к перечислению» из канона (c.payout) у обеих площадок; прежний
 // локальный SQL по finance_report (ppvz_for_pay Продажа − |Возврат|) удалён:
 // он давал ту же величину другой датировкой (rr_dt против датировки канона)
-// и был вторым источником правды.
+// и был вторым источником правды. Дневной ряд netPay в timeseries ниже —
+// ИЗ ТОГО ЖЕ канона (wbRawProfitCabinetByDay/ozRawProfitCabinetByDay),
+// поэтому Σ столбиков графика = карточка KPI.
+// sold — с 06.09 из order_costs (wbSold переехал с ленты sales, «одна цифра
+// везде»): те же штуки, что показывает Сводка по товарам.
 // services — статья «Сборы Ozon» (§3.3 docs/metrics-contract.md, волна
 // 2026-08-25): расщеплено из logistics бэкфиллом задач 1-2 плана «Сборы
 // Ozon» — сборы физически теперь СВОЯ колонка order_costs, не часть
@@ -170,9 +175,12 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // profit < 0 за тот же период, сортировка по возрастанию profit, top-5.
     //
     // СОСТАВ ВИДЖЕТА МЕНЯЕТСЯ (ожидаемо, задокументировано для владельца):
-    //  1) канон-база — ppvz_for_pay через order_costs (wbRawProfitAggregate),
-    //     а не собственная агрегация finance_report — числа по общим товарам
-    //     отличаются от старых (другой источник, другой набор слагаемых);
+    //  1) канон-база — order_costs (wbRawProfitAggregate), а не собственная
+    //     агрегация finance_report: выручка = Σ cost_value_withdisc (цена со
+    //     скидкой продавца, спека 2026-09-06), из неё вычитаются СПП и
+    //     нетто-вознаграждение WB — прежний ppvz_for_pay это теперь НЕ база,
+    //     а результат (payout = revenue − spp − commission). Числа по общим
+    //     товарам отличаются от старых (другой источник, другие слагаемые);
     //  2) товары БЕЗ строки в cost_overrides раньше .filter()-ом молча
     //     выпадали из списка целиком (виджет «нет убыточных» на деле часто
     //     означал «не знаем себестоимость» — false negative). Теперь такие
@@ -261,8 +269,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   // --- Временной ряд для графика на Главной (по дням). ---
   // WB: выручка, маржинальная прибыль (sales − commission − acquiring − logistics −
   //   loyalty; БЕЗ себестоимости/рекламы/налога — их нет в finance_report по дням),
-  //   заказы (шт), сумма заказов (₽), комиссия, к перечислению (for_pay Продажа−Возврат).
-  // Ozon: заказы, выручка, комиссия (per-day прибыли/перечисления нет в данных).
+  //   заказы (шт), сумма заказов (₽), комиссия, к перечислению (канон, payout).
+  // Ozon: заказы, выручка, комиссия, к перечислению (канон, payout); прибыли
+  //   per-day нет в данных.
   //   Склеиваем по дате WB + Ozon, сортируем по возрасту.
   const TS_KEYS = ["revenue", "profit", "orders", "orderRub", "commission", "netPay"];
   const tsByDate = new Map(); // date -> {revenue, profit, ...}
@@ -291,26 +300,30 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // Сумма заказов ₽ (price_with_disc) по дням.
     const ordRub = await wbOrderRubByDay(db, { from, to });
     for (const [key, s] of ordRub) tsSet(key.split("|")[1], { orderRub: s });
-    // К перечислению (ppvz_for_pay) по дням: Продажа(+), Возврат(−).
-    for (const r of await db.prepare(
-      `SELECT substr(rr_dt,1,10) AS d,
-              SUM(CASE WHEN supplier_oper_name='Продажа' THEN ppvz_for_pay
-                       WHEN supplier_oper_name='Возврат'  THEN -ABS(ppvz_for_pay)
-                       ELSE 0 END) AS net
-       FROM finance_report
-       WHERE supplier_oper_name IN ('Продажа','Возврат')
-         AND rr_dt >= ? AND rr_dt <= ?
-       GROUP BY substr(rr_dt,1,10)`
-    ).all(from, toEnd)) {
-      tsSet(r.d, { netPay: r.net || 0 });
+    // К перечислению по дням — КАНОН (wbRawProfitCabinetByDay → payout =
+    // Σ cost_value_pay). Раньше здесь был свой SQL по finance_report
+    // (ppvz_for_pay: Продажа(+), Возврат(−)) с датировкой rr_dt — после
+    // переезда KPI netPay на канон (c.payout, датировка sale_dt/return_dt
+    // order_costs) Σ столбиков перестала сходиться с карточкой. Теперь оба
+    // числа — один SELECT с одной датировкой: Σ days.netPay = kpi.netPay.
+    for (const [d, agg] of await wbRawProfitCabinetByDay(db, { from, to })) {
+      tsSet(d, { netPay: agg.payout || 0 });
     }
   }
   if (mp !== "wb" && mps.includes('ozon')) {
     const db = new DatabaseSync('ozon', { readOnly: true });
     const ord = await ozOrdersByDay(db, { from, to });
     for (const [key, c] of ord) tsSet(key.split("|")[1], { orders: c });
+    // К перечислению по дням — КАНОН (ozRawProfitCabinetByDay → payout =
+    // revenue − commission − services − acquiring − loyalty, ozNetForm).
+    // Раньше у Ozon дневного «перечисления» не было вовсе, а KPI netPay был
+    // нулём; теперь KPI = c.payout, поэтому и ряд должен его нести, иначе
+    // Σ столбиков < карточки на всю Ozon-часть.
+    for (const [d, agg] of await ozRawProfitCabinetByDay(db, { from, to })) {
+      tsSet(d, { netPay: agg.payout || 0 });
+    }
     // Ozon: выручка + комиссия per-day из order_costs (cost_value_retail, commission).
-    // Прибыль/перечисление по дням не считаем (нет данных per-day).
+    // Прибыль по дням не считаем (нет данных per-day).
     for (const r of await db.prepare(
       `SELECT substr(COALESCE(sale_dt, return_dt),1,10) AS d,
               SUM(CASE WHEN is_return=0 THEN cost_value_retail ELSE 0 END) AS rev,
