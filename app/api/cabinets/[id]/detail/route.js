@@ -377,6 +377,11 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
   // вычитает (canon.ads при nmId — реальный расход, не 0).
   const adSp = Math.round(((totals.ad_edinaya_spend || 0) + (totals.ad_ruchnaya_spend || 0) + (totals.ad_cliki_spend || 0)) * 100) / 100;
   totals.revenue = fin.revenue; totals.cost = fin.cogs;
+  // «Три цены» канона (спека 2026-09-06). ⚠️ totals.spp ЗАНЯТО: это СПП в
+  // ПРОЦЕНТАХ из снимка карточки (строка 366 выше, MiniKpi «СПП %» в
+  // DetailPage) — рублёвая СПП канона отдаётся только в блоке fin ниже
+  // (fin.spp), перезаписывать процент рублями нельзя.
+  totals.realized = fin.realized; totals.payout = fin.payout;
   totals.commission = fin.commission; totals.logistics = fin.logistics;
   totals.acquiring = fin.acquiring; totals.loyalty = fin.loyalty;
   totals.returnLogistics = fin.returnLogistics;
@@ -413,6 +418,10 @@ async function collectWB(nm, from, to, toEnd, shopName, taxMode) {
     sales: wbSales, keywords,
     fin: {
       revenue: totals.revenue, cost: totals.cost, commission: totals.commission,
+      // spp/realized/payout — канон (fin = wbProfitProduct): скидка WB,
+      // реализовано, к перечислению. spp живёт ТОЛЬКО здесь (см. коммент у
+      // totals.realized выше — totals.spp это процент из снимка карточки).
+      spp: fin.spp, realized: fin.realized, payout: fin.payout,
       logistics: totals.logistics, acquiring: totals.acquiring, loyalty: totals.loyalty,
       returnLogistics: totals.returnLogistics,
       adSpend: totals.adSpend, tax: totals.tax, profit: totals.profit,
@@ -702,6 +711,11 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // реально заполнен по SKU), profit его теперь вычитает (симметрично WB).
   totals.tax = finPeriod.tax;
   totals.profit = finPeriod.profit;
+  // «Три цены» канона (спека 2026-09-06), симметрия с WB: у Ozon spp = 0,
+  // realized = revenue, payout = revenue − commission − services −
+  // acquiring − loyalty (lib/ozonMetrics.js:ozNetForm). spp — только в
+  // блоке fin ниже (в totals ключ spp у WB занят процентом из снимка).
+  totals.realized = finPeriod.realized; totals.payout = finPeriod.payout;
   totals.returnLogistics = finPeriod.returnLogistics;
   // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — периодный итог,
   // источник finPeriod.services (ozProfitProduct, канон задачи 3).
@@ -714,6 +728,7 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     sales: { total: ordTotal, localPct: null, byWarehouse: [], byCluster: [], byCity },
     fin: {
       revenue: totals.revenue, cost: finPeriod.cogs,
+      spp: finPeriod.spp, realized: finPeriod.realized, payout: finPeriod.payout,
       commission: finPeriod.commission, logistics: finPeriod.logistics,
       services: totals.services,
       acquiring: finPeriod.acquiring, loyalty: finPeriod.loyalty,

@@ -5,7 +5,7 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { defaultPeriod } from "@/lib/period.js";
 import {
-  wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet, wbRevenueGross,
+  wbOrdersCount, wbCancelCount, wbSold, wbProfitCabinet,
   wbFinanceByDay, wbOrdersByDay, wbOrderRubByDay, wbProfitProductBatch,
 } from "@/lib/wbMetrics.js";
 import { ozOrdersByDay, ozProfitCabinet } from "@/lib/ozonMetrics.js";
@@ -14,19 +14,21 @@ import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// revenueGross — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB (задача «WB
-// валовая выручка справочной строкой», 2026-08-20, решение владельца):
-// Σ cost_value_retail (lib/wbMetrics.js:wbRevenueGross), для сверки с
-// отчётами МП. Канон (revenue/profit = ppvz-нетто) не трогаем — отдельное
-// число рядом. У Ozon collectOzon его не заполняет (остаётся 0 из zeroKpi;
-// revenue Ozon уже валовая, см. докстроку lib/ozonMetrics.js).
+// revenue — валовая у ОБЕИХ площадок (спека «WB: выручка по цене со скидкой»,
+// 2026-09-06): у WB это Σ cost_value_withdisc (цена со скидкой продавца).
+// Справочное поле revenueGross (Σ cost_value_retail) удалено вместе с
+// wbRevenueGross — «реализовано» теперь живёт в канонe как c.realized.
+// netPay — «к перечислению» из канона (c.payout) у обеих площадок; прежний
+// локальный SQL по finance_report (ppvz_for_pay Продажа − |Возврат|) удалён:
+// он давал ту же величину другой датировкой (rr_dt против датировки канона)
+// и был вторым источником правды.
 // services — статья «Сборы Ozon» (§3.3 docs/metrics-contract.md, волна
 // 2026-08-25): расщеплено из logistics бэкфиллом задач 1-2 плана «Сборы
 // Ozon» — сборы физически теперь СВОЯ колонка order_costs, не часть
 // logistics. У WB поле остаётся 0 (collectWb его не заполняет — своей
 // статьи «сборы» у WB нет).
 const zeroKpi = () => ({
-  revenue: 0, revenueGross: 0, sold: 0, commission: 0, services: 0, logistics: 0, acquiring: 0, loyalty: 0,
+  revenue: 0, sold: 0, commission: 0, services: 0, logistics: 0, acquiring: 0, loyalty: 0,
   costRub: 0, adSp: 0, tax: 0, profit: 0, orders: 0, cancelCnt: 0, orderRub: 0,
   netPay: 0, storage: 0,
 });
@@ -39,9 +41,7 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
   const c = await wbProfitCabinet(db, taxMode, { from, to });
   k.revenue = c.revenue;
-  // Последовательно (не Promise.all) — тот же db делит соединение из
-  // AsyncLocalStorage (lib/db.js), конкурентные запросы на нём не гарантия.
-  k.revenueGross = await wbRevenueGross(db, { from, to });
+  k.netPay = c.payout;
   k.commission = c.commission;
   k.acquiring = c.acquiring;
   k.logistics = c.logistics;
@@ -53,16 +53,6 @@ async function collectWb(db, from, to, toEnd, taxMode) {
 
   k.sold = Object.values(await wbSold(db, { from, to })).reduce((a, b) => a + b, 0);
 
-  const forPaySales = (await db.prepare(
-    `SELECT COALESCE(SUM(ppvz_for_pay),0) AS v FROM finance_report
-     WHERE supplier_oper_name = 'Продажа' AND rr_dt >= ? AND rr_dt <= ?`
-  ).get(from, toEnd)).v;
-  const forPayReturns = (await db.prepare(
-    `SELECT COALESCE(SUM(ppvz_for_pay),0) AS v FROM finance_report
-     WHERE supplier_oper_name = 'Возврат' AND rr_dt >= ? AND rr_dt <= ?`
-  ).get(from, toEnd)).v;
-  k.netPay = forPaySales - Math.abs(forPayReturns);
-
   k.storage = (await db.prepare(
     `SELECT COALESCE(SUM(storage_fee),0) AS v FROM finance_report
      WHERE supplier_oper_name = 'Хранение' AND rr_dt >= ? AND rr_dt <= ?`
@@ -72,8 +62,8 @@ async function collectWb(db, from, to, toEnd, taxMode) {
   k.cancelCnt = await wbCancelCount(db, { from, to });
   // Сумма заказов в рублях (price_with_disc по не отменённым) — цена со скидкой
   // продавца, БЕЗ СПП. Это стандартная «сумма заказов» в отчётах МП. Отличается
-  // от revenue (canon, cost_value_pay / «к перечислению»): часть заказов
-  // отменяется/не выкупается, поэтому orderRub обычно не равен revenue.
+  // от revenue канона (продажи по цене со скидкой продавца за период): часть
+  // заказов отменяется/не выкупается, поэтому orderRub не равен revenue.
   k.orderRub = (await db.prepare(
     `SELECT COALESCE(SUM(price_with_disc),0) AS v FROM orders
      WHERE is_cancel = 0 AND order_dt >= ? AND order_dt <= ?`
@@ -86,6 +76,10 @@ async function collectOzon(db, from, to, toEnd, taxMode) {
   const k = zeroKpi();
   const c = await ozProfitCabinet(db, taxMode, { from, to });
   k.revenue = c.revenue;
+  // payout Ozon = revenue − commission − services − acquiring − loyalty
+  // (lib/ozonMetrics.js:ozNetForm); до спеки 2026-09-06 «к перечислению» у
+  // Ozon на главной не было вовсе (оставался 0 из zeroKpi).
+  k.netPay = c.payout;
   k.costRub = c.cogs;
   k.commission = c.commission;
   k.services = c.services;
@@ -343,8 +337,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     mp,
     kpi: {
       revenue: Math.round(k.revenue * 100) / 100,
-      // revenueGross — справочно (только WB-часть, см. докстроку zeroKpi выше).
-      revenueGross: Math.round(k.revenueGross * 100) / 100,
       netPay: Math.round(k.netPay * 100) / 100,
       // profit — полная каноническая прибыль (после рекламы и налога).
       // До волны 3 поле звалось grossProfit и коллидировало с

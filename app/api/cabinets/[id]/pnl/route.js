@@ -8,7 +8,7 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
 import { defaultMonthPeriod } from "@/lib/period.js";
 import { ozProfitCabinet } from "@/lib/ozonMetrics.js";
-import { wbProfitCabinet, wbRevenueGross } from "@/lib/wbMetrics.js";
+import { wbProfitCabinet } from "@/lib/wbMetrics.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,21 +19,21 @@ const round2 = (v) => Math.round(((v || 0) + Number.EPSILON) * 100) / 100;
 // Приводит ответ канона (ozProfitCabinet/wbProfitCabinet, lib/ozonMetrics.js
 // /lib/wbMetrics.js — задачи 1-2 плана унификации прибыли) к форме строки P&L.
 // grossProfit — справочный подытог ДО рекламы/налога/кабинетных статей (тот же
-// смысл, что раньше: выручка минус прямые расходы уровня заказа). forPay — только
-// у WB (canon.revenue = cost_value_pay, УЖЕ равен ppvz_for_pay «к перечислению»,
-// см. worker/collectors/wb_order_costs.py:57); у Ozon такого понятия на этой
-// странице исторически не было — 0, как и раньше.
-// revenueGross (задача «WB валовая выручка справочной строкой», 2026-08-20,
-// решение владельца) — АДДИТИВНОЕ справочное поле, ТОЛЬКО у WB: валовая
-// выручка (Σ cost_value_retail, lib/wbMetrics.js:wbRevenueGross) для сверки
-// с отчётами МП. Канон (revenue/profit = ppvz-нетто) не трогаем — это
-// отдельное число рядом, не замена. У Ozon revenue уже валовая
-// (см. докстроку lib/ozonMetrics.js) — поле не добавляется (undefined,
-// TOTAL_NUM_KEYS суммирует как 0).
-function mpBlock(c, isWb, revenueGross, platform) {
+// смысл, что раньше: выручка минус прямые расходы уровня заказа).
+// «Три цены» канона (спека «WB: выручка по цене со скидкой», 2026-09-06):
+//   revenue  — продажи по цене со скидкой продавца (Σ cost_value_withdisc);
+//   spp      — скидка WB (СПП) = revenue − realized, у Ozon 0;
+//   realized — реализовано, заплатил покупатель (налоговая база WB);
+//   payout   — к перечислению (Σ cost_value_pay), у Ozon считается каноном.
+// forPay = payout у ОБЕИХ площадок: раньше «к перечислению» было только у WB
+// (revenue тогда и был cost_value_pay), теперь payout есть и в канонe Ozon
+// (lib/ozonMetrics.js:ozNetForm) — карточка перестаёт врать нулём.
+function mpBlock(c, isWb, platform) {
   return {
     revenue: c.revenue,
-    ...(isWb ? { revenueGross } : {}),
+    spp: c.spp,
+    realized: c.realized,
+    payout: c.payout,
     cogs: c.cogs,
     commission: c.commission,
     // services («Сборы Ozon» — задача 4 плана «Сборы Ozon», 2026-08-25):
@@ -60,17 +60,18 @@ function mpBlock(c, isWb, revenueGross, platform) {
     // см. lib/ozonMetrics.js/lib/wbMetrics.js), задача 2 плана «канон
     // волна 2»; локальная формула-дубль удалена.
     grossProfit: c.profitGross,
-    forPay: isWb ? c.revenue : 0,
+    forPay: c.payout,
   };
 }
 
+// Список пересобран осознанно (спека 2026-09-06): revenueGross удалён вместе
+// с функцией канона, добавлены spp/realized/payout — все три аддитивны и есть
+// у обеих площадок (у Ozon spp = 0, realized = revenue).
 const TOTAL_NUM_KEYS = [
-  "revenue", "cogs", "commission", "logistics", "acquiring", "loyalty",
+  "revenue", "spp", "realized", "payout",
+  "cogs", "commission", "logistics", "acquiring", "loyalty",
   "returnLogistics", "ads", "tax", "unknownCostTypes", "profit",
   "grossProfit", "forPay", "cabinetCostsTotal",
-  // revenueGross — только у WB-блока (mpBlock, isWb=true); Ozon-блок его не
-  // отдаёт (undefined → 0 в сумме ниже), total.revenueGross = WB-часть.
-  "revenueGross",
   // services («Сборы Ozon») — только у Ozon-блока (см. mpBlock); WB-блок его
   // не отдаёт (undefined → 0 в сумме), total.services = Ozon-часть.
   "services",
@@ -83,15 +84,11 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
 
   if (mps.includes("wb")) {
     const db = new DatabaseSync("wb", { readOnly: true });
-    // Последовательно (не Promise.all) — один db делит соединение из
-    // AsyncLocalStorage (lib/db.js), конкурентные запросы на нём не гарантия.
-    const c = await wbProfitCabinet(db, wbTax, { from, to });
-    const revenueGross = await wbRevenueGross(db, { from, to });
-    wb = mpBlock(c, true, revenueGross, "wb");
+    wb = mpBlock(await wbProfitCabinet(db, wbTax, { from, to }), true, "wb");
   }
   if (mps.includes("ozon")) {
     const db = new DatabaseSync("ozon", { readOnly: true });
-    ozon = mpBlock(await ozProfitCabinet(db, ozonTax, { from, to }), false, undefined, "ozon");
+    ozon = mpBlock(await ozProfitCabinet(db, ozonTax, { from, to }), false, "ozon");
   }
 
   // Объединение WB + Ozon.

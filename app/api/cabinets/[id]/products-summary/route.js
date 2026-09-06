@@ -231,6 +231,9 @@ function aggTotals(items) {
     orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
     acquiring: 0, loyalty: 0, tax: 0, profit: 0, adSpend: 0, stock: 0,
     returnLogistics: 0,
+    // «Три цены» канона (спека 2026-09-06) — аддитивны, есть у обеих
+    // площадок (у Ozon spp = 0, realized = salesRub).
+    spp: 0, realized: 0, payout: 0,
     // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — только Ozon-
     // строки несут i.services (WB-строки — undefined → 0, безвредно).
     services: 0,
@@ -254,6 +257,9 @@ function aggTotals(items) {
     t.stock += i.stock || 0;
     t.returnLogistics += i.returnLogistics || 0;
     t.services += i.services || 0;
+    t.spp += i.spp || 0;
+    t.realized += i.realized || 0;
+    t.payout += i.payout || 0;
   }
   t.buyoutPct = (t.sold + t.returns + t.cancelled) > 0
     ? round2(100 * t.sold / (t.sold + t.returns + t.cancelled)) : null;
@@ -523,28 +529,12 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   // 3) Реклама за период по SKU — единый канон (lib/wbMetrics.js).
   const ad = await wbAdTotal(db, { from, to: toEnd.slice(0, 10), groupByNm: true });
 
-  // 3а) СВЕЖИЕ продажи из sales — за весь период по sale_dt.
-  // ⚠️ Грабля #98: WB шлёт возвраты в этой же таблице с is_realization=1, но
-  // ОТРИЦАТЕЛЬНЫМ price_with_disc (напр. +4134 продажа, −4134 возврат тем же
-  // srid). is_realization=1 НЕ отличает продажу от возврата — смотрим по знаку
-  // суммы. sold = COUNT(price_with_disc>0) — чистые отгрузки; возвраты в этом
-  // счётчике НЕ участвуют (они показываются отдельно колонкой «Возвраты» из
-  // отстающего order_costs). salesRub = SUM(price_with_disc) — нетто-выручка
-  // (возвраты уже вычтены знаком минус, это корректно для финансов).
-  const fresh = {};
-  for (const r of await db.prepare(
-    `SELECT nm_id,
-       SUM(CASE WHEN is_realization=1 AND price_with_disc > 0 THEN 1 ELSE 0 END) AS sold,
-       SUM(CASE WHEN is_realization=1 THEN price_with_disc ELSE 0 END) AS salesRub
-     FROM sales
-     WHERE sale_dt>=? AND sale_dt<=? AND nm_id IS NOT NULL
-     GROUP BY nm_id`
-  ).all(from, toEnd)) {
-    // salesRub = цена ДО СПП (price_with_disc). СПП — скидка WB покупателю,
-    // компенсируется продавцу через payment_sale_amount, поэтому реальная
-    // выручка продавца = price_with_disc, а не finished_price (с СПП).
-    fresh[r.nm_id] = { sold: r.sold || 0, salesRub: r.salesRub || 0 };
-  }
+  // 3а) СВЕЖИЕ продажи из sales — блок УДАЛЁН (спека «WB: выручка по цене со
+  // скидкой», 2026-09-06). Штуки «Продано» теперь берутся из ТОГО ЖЕ
+  // источника, что и деньги — order_costs (блок 1, sold по sale_dt): лента
+  // sales отставала/опережала order_costs по своей датировке, из-за чего
+  // «Продано, шт» не билось с «Выручкой» той же строки. Один источник —
+  // одна правда.
 
   // 3б) Хранение (storage_fee) НЕ включаем в profitClean: у WB оно идёт с nm_id=0
   // и не привязано к товару (контракт №27). Размазывать по SKU = искажать маржу.
@@ -585,7 +575,8 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   }
 
   // Объединяем. Товар попадает в выдачу, если у него есть order_costs (продажа/возврат)
-  // ИЛИ заказы за период ИЛИ свежие продажи в sales — чтобы видеть все активные SKU.
+  // ИЛИ заказы за период — чтобы видеть все активные SKU (лента sales как
+  // третий источник убрана вместе с блоком 3а).
   // Финансовые поля-заглушки не нужны: деньги для КАЖДОЙ строки (включая
   // добавленные здесь) считаются каноном ниже, по nm — см. цикл сборки.
   const seen = new Set(rows.map((r) => r.nm));
@@ -599,7 +590,6 @@ async function collectWB(from, toEnd, shopName, taxMode) {
     }
   };
   for (const nmRaw of Object.keys(ord)) addStub(Number(nmRaw));
-  for (const nmRaw of Object.keys(fresh)) addStub(Number(nmRaw));
 
   // Деньги — КАНОН (wbProfitProduct, задача 5 плана унификации прибыли), по
   // товару. adSpend — РЕАЛЬНЫЙ per-SKU расход (данные у WB есть физически,
@@ -613,21 +603,23 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   for (const r of rows) {
     const nm = r.nm;
     const o = ord[nm] || { ordered: 0, cancelled: 0, orderRub: 0 };
-    // СВЕЖИЕ штуки из sales (до 20.06). Если sales нет — fallback на order_costs.
-    const fr = fresh[nm];
-    const sold = fr ? fr.sold : (r.sold || 0);
+    // Штуки «Продано» — из order_costs (блок 1), ТОТ ЖЕ источник, что деньги
+    // строки (f.revenue). Прежний fallback на ленту sales удалён (спека
+    // 2026-09-06): два источника с разной датировкой расходились.
+    const sold = r.sold || 0;
     const f = profitBatch.get(nm) || ZERO_PROFIT;
     // orderRub — сумма ЗАКАЗОВ из orders.price_with_disc (блок 2), НЕ канон.
     const orderRub = o.orderRub || 0;
     const avgStock = stockAvg[nm] ?? 0;
     const avgDailySales = sold / days;
-    // Инварианта: ordered >= sold + cancelled. ⚠️ returns НЕ прибавляем к sold:
-    // возвращённый товар УЖЕ входит в sold (это была отгрузка с price>0, потом
-    // её сторнировали возвратом). Прибавить returns = двойной счёт того же srid.
+    // ⚠️ returns НЕ прибавляем к sold: возвращённый товар УЖЕ входит в sold
+    // (это была отгрузка с price>0, потом её сторнировали возвратом).
+    // Прибавить returns = двойной счёт того же srid.
     const returns = r.returns || 0;
     const cancelled = o.cancelled || 0;
-    const minOrdered = sold + cancelled;
-    const ordered = Math.max(o.ordered || 0, minOrdered);
+    // инвариант ordered ≥ sold верен за всё время, не внутри окна (продажи
+    // периода по заказам прошлого периода) — фикс 06.09
+    const ordered = o.ordered || 0;
     const adSp = ad[nm] || 0;
     out.push({
       nm, sa: r.sa || String(nm), barcode: r.barcode || null,
@@ -636,6 +628,10 @@ async function collectWB(from, toEnd, shopName, taxMode) {
       ordered, cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
       orderRub: round2(orderRub), salesRub: f.revenue,
+      // «Три цены» канона (спека 2026-09-06): salesRub = продажи по цене со
+      // скидкой продавца, spp = скидка WB, realized = заплатил покупатель,
+      // payout = к перечислению. commission — нетто-вознаграждение WB (вычет).
+      spp: f.spp, realized: f.realized, payout: f.payout,
       costRub: f.cogs,
       commission: f.commission, logistics: f.logistics, acquiring: f.acquiring, loyalty: f.loyalty,
       // returnLogistics — СПРАВОЧНАЯ строка канона (уже внутри logistics
@@ -869,6 +865,10 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
       orderRub: round2(o.orderRub), salesRub: f.revenue,
+      // Симметрия формы с WB (lib/ozonMetrics.js:ozNetForm): spp = 0 (СПП у
+      // Ozon нет), realized = revenue, payout = revenue − commission −
+      // services − acquiring − loyalty.
+      spp: f.spp, realized: f.realized, payout: f.payout,
       costRub: f.cogs,
       commission: f.commission, logistics: f.logistics, acquiring: f.acquiring, loyalty: f.loyalty,
       // services («Сборы Ozon», задача 4 плана «Сборы Ozon») — отзывы,
