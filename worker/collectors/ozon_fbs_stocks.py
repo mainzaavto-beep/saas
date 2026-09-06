@@ -59,10 +59,14 @@ def collect():
         return 0
     rows = rows_from_result(result, sku2pid, today)
     if _probe.mode() == "verify":
-        db_rows = db_pg.mp_fbs_stock_today("ozon", today)
+        wid_set = {r["warehouse_id"] for r in rows}
+        all_db_rows = db_pg.mp_fbs_stock_today("ozon", today)
+        db_rows = {k: v for k, v in all_db_rows.items() if k[0] in wid_set}
+        stale = len(all_db_rows) - len(db_rows)
         api = {(r["warehouse_id"], r["sku_key"]): r["present"] for r in rows}
         diff = [(k, api.get(k), db_rows.get(k)) for k in set(api) | set(db_rows) if api.get(k) != db_rows.get(k)]
-        print(f"[ozon_fbs_stocks] verify: api={len(api)} db={len(db_rows)} Δ={len(diff)} {diff[:10]}", flush=True)
+        print(f"[ozon_fbs_stocks] verify: api={len(api)} db={len(db_rows)} Δ={len(diff)} {diff[:10]}"
+              + (f" stale_db_rows={stale}" if stale else ""), flush=True)
         sys.exit(1 if diff else 0)
     n = db_pg.upsert_mp_fbs_stock_many(rows)
     print(f"[ozon_fbs_stocks] строк {n} (ответ API {len(result)})", flush=True)
