@@ -297,6 +297,41 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
 **Что НЕ ведётся:** авто-списание продажами (склад = накопитель приходов; списание —
 будущая задача). Старая ломаная `/ff-stock` (snapshots-модель) не тронута, не используется.
 
+### 🆕 Склады 2.0 — этап 1 «Данные» (с 2026-09-06)
+
+Спека `docs/superpowers/specs/2026-09-06-multi-warehouse-stock-control-design.md`, план
+`docs/superpowers/plans/2026-09-06-warehouses-stage1-data.md`. Миграция 052.
+
+| Таблица | Сборщик / источник | Тик |
+|---|---|---|
+| `tenant.mp_seller_warehouses` | `wb_seller_warehouses` (`/api/v3/warehouses`), `ozon_seller_warehouses` (`/v2/warehouse/list`) | references (Mon 06:00) + онбординг |
+| `tenant.mp_fbs_daily_stock` | `wb_fbs_stocks` (`POST /api/v3/stocks/{wid}` по штрихкодам), `ozon_fbs_stocks` (`/v2/product/info/stocks-by-warehouse/fbs`) | stocks (08:00) |
+| `tenant.wb_barcodes` | `wb_catalog` (Content API `sizes[].skus`) | main |
+| `tenant.wb_fbs_tasks.warehouse_id` | `wb_fbs_tasks` (`warehouseId`) | main |
+| `tenant.ozon_supply_orders(+_items)` | `ozon_supply_orders` (`/v3/supply-order/list`+`get`, `/v1/supply-order/bundle`) | main |
+| `tenant.stock_ff_locations.{wb_warehouse_id, ozon_warehouse_id, city, is_active}` | панель, «📍 Места» на `/inventory` (`locations` op `update`) | — |
+
+- **Почему FBS-остатки WB не из stocks-report:** с 01.09.2026 stocks-report отдаёт одну строку
+  «Склад WB» (`warehouse_id=-999999`) — WB скрыл разбивку по складам. marketplace-api по
+  штрихкодам работает (проба 06.09.2026, `SAAS_PROBE=verify` Δ = 0, 113 строк / 9 складов
+  продавца).
+- **Ozon `/v1` отключён:** `/v1/product/info/stocks-by-warehouse/fbs` и `/v1/warehouse/list`
+  вернули 400 code 9 «obsolete method» — переведены на `/v2` (сверка Δ = 0, 80 строк / 5 из 8
+  складов). `/v2/supply-order/list`+`get` — 404, переведено на `/v3/supply-order/list`+`get`
+  (обязательные `filter.states` 1..11 и `sort_by`, курсор `last_id`, склад назначения из
+  `supplies[].storage_warehouse`); `/v1/supply-order/bundle` без изменений, тянется только для
+  незавершённых заказов.
+- Часть складов Ozon имеет `status='disabled'` в ответе МП — в справочнике они всё равно
+  `is_active=true` (значение = «присутствует в ответе МП»), UI показывает все.
+- **Режим пробы сборщиков:** `SAAS_PROBE=1` — дамп ответа без записи; `SAAS_PROBE=verify`
+  (только `*_fbs_stocks`) — сверка API↔БД, exit 1 при Δ. Пробрасывается оркестратором явно
+  через `_env_for_shop`.
+- **Сторож:** `scripts/check-warehouses-stage1.sql` (7 проверок, все `ok=t` на 06.09).
+- Принятое количество в поставках Ozon: в API нет поля — `qty_accepted` остаётся `NULL`,
+  вводится руками из отчёта приёмки (этап 3), как у WB.
+- Сверка поставок Ozon с ЛК за 90 дней: панель 445 заказов всего, 14 за последние 90 дней;
+  сверка с ЛК Ozon «Поставки → Заказы» — ждёт владельца.
+
 **Удалено (миграция 016):** «Справочник товаров» — страница `/catalog`, API, `lib/catalogDb.js`,
 таблицы `products_catalog` / `products_catalog_skus`. Привязка артикулов делается теперь
 напрямую на остатках склада/ФФ. Бэкап кода: `/opt/agentsDB/backups/catalog_removed_*/`.

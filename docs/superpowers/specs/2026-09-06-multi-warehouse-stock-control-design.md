@@ -103,7 +103,12 @@ WB, `product_id` для Ozon. Пишется в `saas-stocks.timer` (08:00) ря
    Ответ `stocks[{sku, amount}]` → агрегируем по nm_id. Один запрос на склад, лимит
    1000 sku в теле — пагинируем.
 
-Результат пробы фиксируется в спеке (этот раздел дописывается) и в AGENTS.md.
+**Результат пробы (06.09.2026):** выбран вариант 2 — marketplace-api по штрихкодам.
+`stocks-report/wb-warehouses` с 01.09.2026 отдаёт одну строку «Склад WB»
+(`warehouse_id=-999999`), WB скрыл разбивку по складам продавца — вариант 1 недоступен.
+`POST /api/v3/stocks/{warehouseId}` работает; источником штрихкодов для запроса стала новая
+таблица `tenant.wb_barcodes` (из карточек Content API `sizes[].skus`), а не
+`wb_orders.barcode`. Сверка `SAAS_PROBE=verify`: Δ = 0 (113 строк, 9 складов продавца).
 
 ### 2.3 Ozon
 
@@ -111,6 +116,11 @@ WB, `product_id` для Ozon. Пишется в `saas-stocks.timer` (08:00) ря
 sku единый для FBO/FBS). Ответ: `result[{sku, warehouse_id, warehouse_name, present,
 reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 sku (лимит эндпоинта
 проверить пробой; при 400 — уменьшить).
+
+**Проба 06.09.2026:** `/v1` отключён Ozon (400, code 9 «obsolete method») — сборщик переведён
+на `POST /v2/product/info/stocks-by-warehouse/fbs` (тело `limit`/`cursor` + `sku[]`, ответ
+`products`/`has_next`/`cursor`). Пачки по 100 sku с пагинацией по курсору. Сверка
+`SAAS_PROBE=verify`: Δ = 0 (80 строк, 5 из 8 складов).
 
 ### 2.4 Мягкая деградация
 
@@ -121,9 +131,8 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 
 - `tenant.wb_fbs_tasks` + `warehouse_id BIGINT` (из `/v3/orders` поле `warehouseId`).
   Бэкфилл: сборщик `wb_fbs_tasks` пересобирает историю за окно (как при первичном сборе).
-- `tenant.ozon_orders` FBS: проверить заполненность `warehouse_id` у `scheme='fbs'`. Если
-  пусто — брать из `delivery_method.warehouse_id` постинга (`/v3/posting/fbs/list`),
-  бэкфилл через `resync`.
+- Проверено 06.09: `warehouse_id` у FBS-постингов заполнен, правка не нужна; сторож —
+  проверка 5 `check-warehouses-stage1.sql`.
 
 ### 2.6 `tenant.ozon_supply_orders` — поставки Ozon на FBO
 
@@ -139,6 +148,16 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 `worker/run_saas_collect.sh`). Регистрация сборщика: **и** `orchestrator.py`, **и**
 `run_saas_collect.sh` (урок из памяти).
 Аналог `wb_supplies`; собираем с этапа 1, чтобы к этапу 3 накопилась история.
+
+**Проба 06.09.2026:** `/v2/supply-order/list` и `/v2/supply-order/get` отдают 404 — переведено
+на `/v3/supply-order/list` и `/v3/supply-order/get` (обязательные `filter.states` 1..11 и
+`sort_by`, курсор `last_id`, без top-level `warehouses[]`; склад назначения берётся из
+`supplies[].storage_warehouse`). `/v1/supply-order/bundle` без изменений, тянется только для
+незавершённых заказов (`TERMINAL_STATES`: `COMPLETED`/`CANCELLED`/`OVERDUE` с уже известным
+составом пропускаются). Принятое количество (`qty_accepted`) в API не отдаётся ни на одном из
+эндпоинтов — остаётся `NULL`, вводится руками из отчёта приёмки на этапе 3. Сверка с ЛК: панель
+445 заказов всего, 14 за последние 90 дней; сверка с ЛК Ozon «Поставки → Заказы» — ждёт
+владельца.
 
 ## 3. Свой учёт: журнал движений
 
@@ -284,8 +303,10 @@ src_kind='ff_shipment_doc', src_ref=doc_id:line_id)`. Удаление доку�
   `scan_dt` → `accepted`, `reject_dt` → `rejected`. Принятое количество по строкам WB через
   API не отдаёт — `qty_accepted` вводится руками из отчёта приёмки; пока не введено, статус
   `accepted` означает «приёмка прошла, расхождение не проверено».
-- **Ozon**: выбор из `ozon_supply_orders` (автоподсказка по `dest_warehouse_id` и дате);
-  `qty_accepted` заполняется из `ozon_supply_order_items.qty_accepted` автоматически.
+- **Ozon**: выбор из `ozon_supply_orders` (автоподсказка по `dest_warehouse_id` и дате).
+  Ozon API принятое количество не отдаёт (проверено 06.09 на `/v2`→`/v3/supply-order/list`+
+  `get`, `/v1/supply-order/bundle`) — `qty_accepted` вводится руками из отчёта приёмки, как
+  у WB; найдётся эндпоинт — автоматизируем.
 - **Расхождение приёмки**: `SUM(qty_accepted) < SUM(qty)` → `partial`, разница по строкам в
   UI. Недостача **не** списывается повторно и **не** возвращается автоматически: владелец
   оформляет `adjust` с комментарием («потеря в поставке WB-GI-…») или оставляет как есть.
