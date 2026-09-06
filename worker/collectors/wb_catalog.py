@@ -27,6 +27,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db_pg
 
 
+def parse_card_barcodes(card: dict) -> list[dict]:
+    """Штрихкоды карточки: sizes[].skus (Content API v2). Один nm_id → много
+    штрихкодов (размеры/цвета). Нужны marketplace-api /api/v3/stocks/{warehouseId}
+    (FBS-остатки складов продавца, план «Склады 2.0, этап 1», задача 6)."""
+    nm = card.get("nmID")
+    out = []
+    for s in card.get("sizes") or []:
+        for bc in s.get("skus") or []:
+            if bc:
+                out.append({"barcode": str(bc), "nm_id": nm,
+                            "chrt_id": s.get("chrtID"), "tech_size": s.get("techSize")})
+    return out
+
+
 def fetch_all_cards() -> list[dict]:
     """Постранично тянет весь каталог клиента. cursor-пагинация Content API."""
     if not WB_TOKEN:
@@ -61,6 +75,7 @@ def fetch_all_cards() -> list[dict]:
                 "brand": c.get("brand"),
                 "subject": c.get("subjectName"),
                 "im_url": im_url,
+                "barcodes": parse_card_barcodes(c),
             })
         cur = data.get("cursor", {})
         if len(cards) < cursor["limit"]:
@@ -79,6 +94,9 @@ def collect() -> int:
         db_pg.upsert_article(c["nm_id"], c["name"], c.get("brand"), c.get("subject"), c.get("im_url"))
         count += 1
     print(f"[wb_catalog] собрано {count} артикулов → tenant.wb_articles", flush=True)
+    barcodes = [b for c in cards for b in c.get("barcodes") or []]
+    n_bc = db_pg.upsert_wb_barcodes_many(barcodes)
+    print(f"[wb_catalog] штрихкодов {n_bc} → tenant.wb_barcodes", flush=True)
     print(f"##OBS rows={count}", flush=True)
     return count
 

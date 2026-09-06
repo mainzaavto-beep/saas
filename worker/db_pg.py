@@ -119,6 +119,12 @@ def upsert_article(nm_id, name, brand=None, subject=None, im_url=None):
     )
 
 
+def upsert_wb_barcodes_many(rows):
+    """Штрихкоды карточек WB (Content API sizes[].skus) → tenant.wb_barcodes.
+    Ключ /api/v3/stocks/{warehouseId} (FBS-остатки складов продавца)."""
+    return _batch_upsert("wb_barcodes", ["barcode"], ["barcode", "nm_id", "chrt_id", "tech_size"], rows)
+
+
 def replace_cards_glue(rows, now_iso):
     cid = _cabinet_id()
     with get_connection() as conn:
