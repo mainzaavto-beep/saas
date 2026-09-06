@@ -1616,6 +1616,7 @@ def ozon_supply_orders_with_items_terminal():
     rows = query(
         "SELECT DISTINCT o.order_id FROM tenant.ozon_supply_orders o "
         "JOIN tenant.ozon_supply_order_items i ON i.order_id = o.order_id "
+        "AND i.cabinet_id = o.cabinet_id "  # defence in depth — RLS уже режет по cabinet_id
         "WHERE o.state = ANY(%s)",
         (list(_OZ_SUPPLY_TERMINAL_STATES),))
     return {int(r["order_id"]) for r in rows}

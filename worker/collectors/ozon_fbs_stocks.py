@@ -59,7 +59,10 @@ def collect():
         return 0
     rows = rows_from_result(result, sku2pid, today)
     if _probe.mode() == "verify":
-        wid_set = {r["warehouse_id"] for r in rows}
+        # Скоуп по ВСЕМ активным складам продавца (как у WB-двойника, wids), а не по
+        # складам из сегодняшнего ответа API — иначе склад без остатков сегодня молча
+        # выпадал бы из сверки (ревью раунд 1, 2026-09-06).
+        wid_set = set(db_pg.seller_warehouse_ids("ozon"))
         all_db_rows = db_pg.mp_fbs_stock_today("ozon", today)
         db_rows = {k: v for k, v in all_db_rows.items() if k[0] in wid_set}
         stale = len(all_db_rows) - len(db_rows)

@@ -25,6 +25,12 @@ REQUEST_PAUSE_SEC = 1.0  # ≥1 с между страницами пагина�
 
 ACCRUAL_MAX_PAGES = 200  # потолок страниц/день: выше — что-то не так с курсором
 
+# Тот же принцип потолка/защиты от зацикливания курсора, что ACCRUAL_MAX_PAGES
+# (см. accrual_by_day) — переиспользуется в stocks_by_warehouse_fbs,
+# iter_supply_order_ids, supply_order_bundle_items (ревью раунд 1, 2026-09-06:
+# ни один из трёх циклов не имел guard'а на повтор курсора).
+CURSOR_MAX_PAGES = 200
+
 DEPTH_WARN_PAGES = 30  # аномальная глубина offset-пагинации — предупреждаем, не роняем
 
 # --- Ретраи/бэкофф одного HTTP-запроса (флап Ozon API 25-27.08.2026: /v1/finance/
@@ -425,16 +431,28 @@ class OzonClient:
                 time.sleep(REQUEST_PAUSE_SEC)
             part = [str(s) for s in skus[i:i + chunk]]
             cursor = ""
+            seen_cursors = set()
+            pages = 0
             while True:
                 body = {"sku": part, "limit": 1000}
                 if cursor:
                     body["cursor"] = cursor
                 res = self._post(self.host, "/v2/product/info/stocks-by-warehouse/fbs", body)
+                pages += 1
                 if isinstance(res, dict):
                     out.extend(res.get("products") or [])
                     cursor = res.get("cursor") or ""
                     if not res.get("has_next") or not cursor:
                         break
+                    if cursor in seen_cursors:
+                        raise OzonError(
+                            f"stocks_by_warehouse_fbs: повтор курсора={cursor!r} "
+                            f"— API игнорирует курсор, остатки собрать целиком нельзя")
+                    seen_cursors.add(cursor)
+                    if pages >= CURSOR_MAX_PAGES:
+                        raise OzonError(
+                            f"stocks_by_warehouse_fbs: {pages} страниц — "
+                            f"превышен потолок CURSOR_MAX_PAGES")
                 else:
                     out.extend(res or [])
                     break
@@ -457,17 +475,29 @@ class OzonClient:
         - ответ {"order_ids": [int,...], "last_id": "<cursor|''>"}, а не
           {"supply_order_id": [...], "last_supply_order_id": ...}."""
         cursor = ""
+        seen_last_ids = set()
+        pages = 0
         while True:
             body = {"filter": {"states": self.SUPPLY_ORDER_STATES}, "limit": limit, "sort_by": 1}
             if cursor:
                 body["last_id"] = cursor
             res = self._post(self.host, "/v3/supply-order/list", body) or {}
+            pages += 1
             ids = res.get("order_ids") or []
             for i in ids:
                 yield int(i)
             last = res.get("last_id") or ""
             if not ids or not last:
                 break
+            if last in seen_last_ids:
+                raise OzonError(
+                    f"iter_supply_order_ids: повтор курсора last_id={last!r} "
+                    f"— API игнорирует курсор, список заказов собрать целиком нельзя")
+            seen_last_ids.add(last)
+            if pages >= CURSOR_MAX_PAGES:
+                raise OzonError(
+                    f"iter_supply_order_ids: {pages} страниц — "
+                    f"превышен потолок CURSOR_MAX_PAGES")
             cursor = last
             time.sleep(REQUEST_PAUSE_SEC)
 
@@ -490,15 +520,27 @@ class OzonClient:
         """Состав поставки: POST /v1/supply-order/bundle, пагинация last_id/has_next.
         Ответ: items [{sku, quantity, offer_id, ...}]."""
         out, last_id = [], None
+        seen_last_ids = set()
+        pages = 0
         while True:
             body = {"bundle_ids": list(bundle_ids), "limit": limit}
             if last_id:
                 body["last_id"] = last_id
             res = self._post(self.host, "/v1/supply-order/bundle", body) or {}
+            pages += 1
             out.extend(res.get("items") or [])
             if not res.get("has_next") or not res.get("last_id"):
                 break
             last_id = res["last_id"]
+            if last_id in seen_last_ids:
+                raise OzonError(
+                    f"supply_order_bundle_items: повтор курсора last_id={last_id!r} "
+                    f"— API игнорирует курсор, состав поставки собрать целиком нельзя")
+            seen_last_ids.add(last_id)
+            if pages >= CURSOR_MAX_PAGES:
+                raise OzonError(
+                    f"supply_order_bundle_items: {pages} страниц — "
+                    f"превышен потолок CURSOR_MAX_PAGES")
             time.sleep(REQUEST_PAUSE_SEC)
         return out
 

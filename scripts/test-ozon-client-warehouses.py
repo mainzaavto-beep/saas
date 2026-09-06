@@ -61,6 +61,20 @@ assert [r["sku"] for r in res] == [1, 2], res
 assert "cursor" not in calls[0][1] and calls[1][1]["cursor"] == "c1", calls
 ok += 1
 
+# 2c) stocks_by_warehouse_fbs: повтор курсора (API игнорирует cursor) → OzonError
+# (ревью раунд 1, 2026-09-06: guard по образцу accrual_by_day)
+pages2c = [
+    {"products": [{"sku": 1}], "has_next": True, "cursor": "loop"},
+    {"products": [{"sku": 1}], "has_next": True, "cursor": "loop"},
+]
+cli, _ = make_client(lambda p, b, n: pages2c[n - 1])
+try:
+    cli.stocks_by_warehouse_fbs([1])
+    raise AssertionError("ожидали OzonError на повторе курсора")
+except oc.OzonError as e:
+    assert "повтор курсора" in str(e), e
+ok += 1
+
 # 3) iter_supply_order_ids: /v3, курсор — непрозрачная строка last_id, filter.states —
 # все коды 1..11 (проба 06.09.2026: /v2 отключён Ozon, отвечал 404)
 pages = [
@@ -75,6 +89,20 @@ assert calls[0][0] == "/v3/supply-order/list", calls[0]
 assert calls[0][1]["filter"]["states"] == list(range(1, 12)), calls[0]
 assert calls[0][1]["sort_by"] != 0 and "last_id" not in calls[0][1], calls[0]
 assert calls[1][1]["last_id"] == "c1", calls[1]
+ok += 1
+
+# 3b) iter_supply_order_ids: повтор last_id (API игнорирует курсор) → OzonError
+# (ревью раунд 1, 2026-09-06: guard по образцу accrual_by_day)
+pages3b = [
+    {"order_ids": [10], "last_id": "loop"},
+    {"order_ids": [11], "last_id": "loop"},
+]
+cli, _ = make_client(lambda p, b, n: pages3b[n - 1])
+try:
+    list(cli.iter_supply_order_ids(limit=1))
+    raise AssertionError("ожидали OzonError на повторе курсора")
+except oc.OzonError as e:
+    assert "повтор курсора" in str(e), e
 ok += 1
 
 # 4) supply_order_get: /v3, 120 id → 3 запроса по 50, orders склеены; НЕТ top-level
@@ -97,6 +125,20 @@ cli, calls = make_client(lambda p, b, n: pages5[n - 1])
 items = cli.supply_order_bundle_items(["b1"])
 assert [i["sku"] for i in items] == [1, 2], items
 assert "last_id" not in calls[0][1] and calls[1][1]["last_id"] == "x", calls
+ok += 1
+
+# 5b) supply_order_bundle_items: повтор last_id (API игнорирует курсор) → OzonError
+# (ревью раунд 1, 2026-09-06: guard по образцу accrual_by_day)
+pages5b = [
+    {"items": [{"sku": 1, "quantity": 1}], "has_next": True, "last_id": "loop"},
+    {"items": [{"sku": 1, "quantity": 1}], "has_next": True, "last_id": "loop"},
+]
+cli, _ = make_client(lambda p, b, n: pages5b[n - 1])
+try:
+    cli.supply_order_bundle_items(["b1"])
+    raise AssertionError("ожидали OzonError на повторе курсора")
+except oc.OzonError as e:
+    assert "повтор курсора" in str(e), e
 ok += 1
 
 print(f"OK: {ok} проверок")

@@ -7,6 +7,7 @@ supplies[].storage_warehouse, нет top-level warehouses[])."""
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "worker", "collectors"))
 import ozon_supply_orders as m
+import db_pg
 
 get_res = {
     "orders": [{
@@ -64,4 +65,8 @@ assert m.select_orders_for_bundles(bundles, {501, 503}) == {}
 assert m.partial_exit_code(0) is None
 assert m.partial_exit_code(3) == 3
 
-print("OK: 7 проверок")
+# TERMINAL_STATES — единый источник правды с db_pg (ревью раунд 1, 2026-09-06:
+# раньше список дублировался в двух файлах и мог разойтись)
+assert m.TERMINAL_STATES is db_pg._OZ_SUPPLY_TERMINAL_STATES
+
+print("OK: 8 проверок")

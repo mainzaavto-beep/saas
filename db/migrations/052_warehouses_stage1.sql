@@ -16,7 +16,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS stock_ff_locations_wb_wh_uq
 CREATE UNIQUE INDEX IF NOT EXISTS stock_ff_locations_ozon_wh_uq
     ON tenant.stock_ff_locations (cabinet_id, ozon_warehouse_id) WHERE ozon_warehouse_id IS NOT NULL;
 
--- 1.2 справочник складов продавца (WB /api/v3/warehouses, Ozon /v1/warehouse/list)
+-- 1.2 справочник складов продавца (WB /api/v3/warehouses, Ozon /v2/warehouse/list)
 CREATE TABLE IF NOT EXISTS tenant.mp_seller_warehouses (
     cabinet_id    BIGINT  NOT NULL,
     platform      TEXT    NOT NULL CHECK (platform IN ('wb','ozon')),
@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS wb_barcodes_nm_idx ON tenant.wb_barcodes (cabinet_id,
 -- 2.5 склад продавца у FBS-задания (marketplace-api /api/v3/orders → warehouseId)
 ALTER TABLE tenant.wb_fbs_tasks ADD COLUMN IF NOT EXISTS warehouse_id BIGINT;
 
--- 2.6 поставки Ozon на FBO (/v2/supply-order/list + /get + /v1/supply-order/bundle)
+-- 2.6 поставки Ozon на FBO (/v3/supply-order/list + /get + /v1/supply-order/bundle)
 CREATE TABLE IF NOT EXISTS tenant.ozon_supply_orders (
     cabinet_id          BIGINT NOT NULL,
     order_id            BIGINT NOT NULL,

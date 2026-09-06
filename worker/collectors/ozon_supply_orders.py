@@ -22,6 +22,11 @@ SAAS_PROBE=1 — дамп list/get/bundle без записи.
 db_pg.ozon_supply_orders_with_items_terminal(). Одиночные сбои bundle не
 роняют прогон (ПРОПУСК только у полного сбоя list/get) — считаются и дают
 exit 3 (partial, контракт orchestrator.py:80-82) при n_bundle_failed > 0.
+Состав (items) пишется ИНКРЕМЕНТАЛЬНО каждые ITEMS_FLUSH_EVERY заказов (+
+остаток после цикла) — на новом кабинете с длинной историей 900-секундный
+таймаут тика раньше терял ВЕСЬ накопленный в памяти состав одним upsert'ом
+после цикла и прогон никогда не сходился; теперь уже сброшенные пачки
+переживают обрыв.
 """
 import os
 import sys
@@ -40,8 +45,17 @@ from ozon_client import OzonClient, OzonError
 # (отменена), OVERDUE (просрочен таймслот без отгрузки — дальнейших изменений
 # состава не бывает). НЕ финальные (там же наблюдались, состав/статус ещё может
 # измениться): ACCEPTANCE_AT_STORAGE_WAREHOUSE, IN_TRANSIT — заказ в процессе.
-# Держать в синхроне с db_pg.py::_OZ_SUPPLY_TERMINAL_STATES.
-TERMINAL_STATES = ("COMPLETED", "CANCELLED", "OVERDUE")
+# Единый источник правды — db_pg._OZ_SUPPLY_TERMINAL_STATES (ревью раунд 1,
+# 2026-09-06: раньше список дублировался здесь и там, правки могли разойтись).
+TERMINAL_STATES = db_pg._OZ_SUPPLY_TERMINAL_STATES
+
+# Каждые ITEMS_FLUSH_EVERY обработанных заказов — промежуточный upsert состава в
+# БД (ревью раунд 1, 2026-09-06: раньше items копились в памяти весь цикл bundle
+# и писались одним upsert'ом после него — на новом кабинете с длинной историей
+# 900-секундный таймаут тика терял ВСЁ, прогон не сходился никогда). Число
+# подобрано некритично — просто «не слишком часто» (upsert не бесплатен) и
+# «не слишком редко» (не терять много при обрыве).
+ITEMS_FLUSH_EVERY = 50
 
 # Счётчик неудачных запросов /v1/supply-order/bundle последнего collect() — читает
 # __main__ после вызова (по образцу ozon_accruals.py::_MISMATCHES).
@@ -154,18 +168,24 @@ def collect():
 
     sku2pid = {int(r["fbo_sku"]): int(r["product_id"]) for r in
                db_pg.query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL")}
-    items = []
+    batch = []
+    n_i = 0
     n_bundle_failed = 0
-    for oid, bids in to_fetch.items():
+    for n_processed, (oid, bids) in enumerate(to_fetch.items(), start=1):
         try:
             raw = cli.supply_order_bundle_items(bids)
         except OzonError as e:
             print(f"[ozon_supply_orders] bundle заказа {oid} недоступен: {e}", flush=True)
             n_bundle_failed += 1
             continue
-        items.extend(parse_items(oid, raw, sku2pid))
+        batch.extend(parse_items(oid, raw, sku2pid))
+        # Инкрементальный сброс — см. ITEMS_FLUSH_EVERY (ревью раунд 1, 2026-09-06):
+        # 900-секундный таймаут тика на новом кабинете не должен терять весь состав.
+        if n_processed % ITEMS_FLUSH_EVERY == 0:
+            n_i += db_pg.upsert_ozon_supply_order_items_many(batch)
+            batch = []
 
-    n_i = db_pg.upsert_ozon_supply_order_items_many(items)
+    n_i += db_pg.upsert_ozon_supply_order_items_many(batch)
     _BUNDLE_FAILED = n_bundle_failed
     if n_bundle_failed:
         print(f"[ozon_supply_orders] заказов {n_o}, позиций {n_i}, "

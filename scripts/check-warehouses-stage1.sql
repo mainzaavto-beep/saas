@@ -27,14 +27,16 @@ LEFT JOIN tenant.mp_seller_warehouses w
   ON w.cabinet_id=s.cabinet_id AND w.platform=s.platform AND w.warehouse_id=s.warehouse_id
 WHERE s.cabinet_id=1 AND s.date=current_date;
 
--- 4. warehouse_id у FBS-заданий WB за 30 дней = 100 %
+-- 4. warehouse_id у FBS-заданий WB за 30 дней = 100 % (COUNT(*)>0 — пустое окно не должно
+-- зеленеть: 0=0 иначе тоже true, ревью раунд 1, 2026-09-06)
 SELECT 'fbs_tasks_warehouse' AS check,
-       COUNT(*) = COUNT(warehouse_id) AS ok, COUNT(*) AS tasks_30d, COUNT(warehouse_id) AS with_wh
+       COUNT(*) > 0 AND COUNT(*) = COUNT(warehouse_id) AS ok, COUNT(*) AS tasks_30d, COUNT(warehouse_id) AS with_wh
 FROM tenant.wb_fbs_tasks WHERE cabinet_id=1 AND created_at >= now() - interval '30 days';
 
--- 5. FBS-постинги Ozon несут warehouse_id (спека §2.5, проверено 06.09 — правка не нужна)
+-- 5. FBS-постинги Ozon несут warehouse_id (спека §2.5, проверено 06.09 — правка не нужна);
+-- COUNT(*)>0 — та же защита от пустого окна, что и в проверке 4
 SELECT 'ozon_fbs_warehouse' AS check,
-       COUNT(*) = COUNT(warehouse_id) AS ok, COUNT(*) AS fbs, COUNT(warehouse_id) AS with_wh
+       COUNT(*) > 0 AND COUNT(*) = COUNT(warehouse_id) AS ok, COUNT(*) AS fbs, COUNT(warehouse_id) AS with_wh
 FROM tenant.ozon_orders WHERE cabinet_id=1 AND scheme='fbs' AND order_dt >= '2026-08-01';
 
 -- 6. Поставки Ozon на FBO собраны с составом

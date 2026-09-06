@@ -68,8 +68,9 @@ FBO-склады маркетплейсов и FBS-склад продавца �
 
 `cabinet_id, platform ('wb'|'ozon'), warehouse_id, name, kind, is_active, first_seen_at,
 last_seen_at`; PK `(cabinet_id, platform, warehouse_id)`. RLS + политика `panel_local_ro_cab1`.
-Заполняет сборщик `mp_seller_warehouses` (в `saas-references.timer`, Mon 06:00, и один раз при
-онбординге). `kind` для Ozon — тип склада из ответа (fbs / rfbs / dbs), для WB — `deliveryType`.
+Заполняют сборщики `wb_seller_warehouses` / `ozon_seller_warehouses` (в `saas-references.timer`,
+Mon 06:00, и один раз при онбординге). `kind` для Ozon — тип склада из ответа (fbs / rfbs), для
+WB — `deliveryType`.
 
 Склад, который есть в справочнике, но не привязан ни к одному месту, показывается в
 карточках мест как «не привязан» (красным).
@@ -88,7 +89,9 @@ last_seen_at`; PK `(cabinet_id, platform, warehouse_id)`. RLS + политика
 `cabinet_id, platform, warehouse_id, sku_key BIGINT, date, present INT, reserved INT,
 updated_at`; PK `(cabinet_id, platform, warehouse_id, sku_key, date)`. `sku_key` = `nm_id` для
 WB, `product_id` для Ozon. Пишется в `saas-stocks.timer` (08:00) рядом с FBO-снимками.
-Ретеншн не режем: таблица маленькая (склады продавца × товары).
+Ретеншн не режем: таблица маленькая (склады продавца × товары). Для WB `reserved` всегда
+NULL (marketplace-api `/api/v3/stocks` не отдаёт резерв, только `amount`); `sku_key` —
+общий ключ джойна между площадками, этап 2 джойнит по нему без platform-специфичных веток.
 
 ### 2.2 WB — проба в первый час этапа 1
 
@@ -391,9 +394,9 @@ POST действия). Расчёты — в `lib/warehousesMetrics.js`, роу
 
 ## 7. Этапы (каждый — свой план → реализация → шлюз → деплой)
 
-1. **Данные**: миграции 1.1–1.2, 2.1, 2.5, 2.6; сборщики `mp_seller_warehouses`,
-   FBS-остатки WB (по результату пробы) и Ozon, `ozon_supply_orders`; форма привязки
-   складов в местах (минимальный UI в существующем «📍 Места» на `/inventory`).
+1. **Данные**: миграции 1.1–1.2, 2.1, 2.5, 2.6; сборщики `wb_seller_warehouses` /
+   `ozon_seller_warehouses`, FBS-остатки WB (по результату пробы) и Ozon, `ozon_supply_orders`;
+   форма привязки складов в местах (минимальный UI в существующем «📍 Места» на `/inventory`).
 2. **Учёт**: двойная привязка, `stock_moves`, `applyMove`/`applyTransfer`, перевод
    существующих правок, начальное сальдо, `fbs_writeoff` + gaps, перемещение ФФ→ФФ, сторож
    в `/health`.

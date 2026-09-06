@@ -179,9 +179,13 @@ WB_COLLECTORS = [
     #                  # нового кабинета на таймаут 1 час. Вернуть после фикса зависания.
     "wb_prices",
     "wb_stocks",
-    "wb_fbs_stocks",   # FBS-остатки складов продавца → tenant.mp_fbs_daily_stock (тик stocks)
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
     "wb_seller_warehouses",  # склады продавца → tenant.mp_seller_warehouses (references + онбординг)
+    "wb_fbs_stocks",   # FBS-остатки складов продавца → tenant.mp_fbs_daily_stock (тик stocks);
+                        # ЧИТАЕТ tenant.mp_seller_warehouses (db_pg.seller_warehouse_ids) —
+                        # порядок в этом списке обязан сохранять wb_seller_warehouses ПЕРЕД
+                        # wb_fbs_stocks (ревью раунд 1, 2026-09-06; на онбординге нового
+                        # кабинета иначе справочника ещё нет и снимок пуст).
     "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)
     "wb_fbs_tasks",    # FBS-задания → связка rid↔поставка (время до покупателя)
     "wb_fbs_status",   # статусы заданий → pvz_at «доехало до ПВЗ» (часовой таймер saas-fbs-status)

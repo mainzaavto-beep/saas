@@ -233,6 +233,8 @@ export const POST = withCabinet(async (req, { cabinet }) => {
           [...n.vals, lid]
         );
       } catch (e) {
+        // После неудачного UPDATE withTenant-транзакция уже aborted — handler обязан
+        // вернуть ответ немедленно (return ниже), без дальнейших запросов в этой транзакции.
         if (String(e?.code) === "23505") {
           return NextResponse.json({ error: "склад уже привязан к другому месту" }, { status: 409 });
         }
