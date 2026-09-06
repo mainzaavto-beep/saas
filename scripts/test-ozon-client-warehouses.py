@@ -36,14 +36,29 @@ cli, calls = make_client(lambda p, b, n: {"result": [{"warehouse_id": 3, "name":
 assert cli.warehouse_list() == [{"warehouse_id": 3, "name": "C", "is_rfbs": False}]
 ok += 1
 
-# 2) stocks_by_warehouse_fbs: 250 sku → 3 пачки по 100, результат склеен
+# 2) stocks_by_warehouse_fbs: 250 sku → 3 пачки по 100 (v2, обёртка "products"), результат склеен
 def h2(p, b, n):
-    assert p == "/v1/product/info/stocks-by-warehouse/fbs", p
-    return [{"sku": s, "present": 1, "reserved": 0, "warehouse_id": 7} for s in b["sku"]]
+    assert p == "/v2/product/info/stocks-by-warehouse/fbs", p
+    assert b["limit"] == 1000, b
+    return {"products": [{"sku": s, "present": 1, "reserved": 0, "warehouse_id": 7} for s in b["sku"]],
+            "has_next": False, "cursor": ""}
 cli, calls = make_client(h2)
 res = cli.stocks_by_warehouse_fbs(list(range(250)))
 assert len(res) == 250 and [len(c[1]["sku"]) for c in calls] == [100, 100, 50], calls
 assert all(isinstance(s, str) for s in calls[0][1]["sku"]), "sku в теле — строки"
+ok += 1
+
+# 2b) stocks_by_warehouse_fbs: внутри одной пачки — пагинация has_next/cursor
+pages2b = [
+    {"products": [{"sku": 1, "present": 1, "reserved": 0, "warehouse_id": 7}],
+     "has_next": True, "cursor": "c1"},
+    {"products": [{"sku": 2, "present": 2, "reserved": 0, "warehouse_id": 7}],
+     "has_next": False, "cursor": ""},
+]
+cli, calls = make_client(lambda p, b, n: pages2b[n - 1])
+res = cli.stocks_by_warehouse_fbs([1, 2], chunk=100)
+assert [r["sku"] for r in res] == [1, 2], res
+assert "cursor" not in calls[0][1] and calls[1][1]["cursor"] == "c1", calls
 ok += 1
 
 # 3) iter_supply_order_ids: две страницы по курсору last_supply_order_id

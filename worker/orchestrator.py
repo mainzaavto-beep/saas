@@ -200,6 +200,7 @@ OZON_COLLECTORS = [
     "ozon_order_costs",
     "ozon_metrics",
     "ozon_stocks",
+    "ozon_fbs_stocks",  # FBS-остатки складов продавца (тик stocks)
     "ozon_efficiency",
     "ozon_sku_ad",     # товарная реклама (миграция 043); в расписании (MAIN_COLLECTORS) — после шлюза владельца
     "ozon_prices",     # дневной снимок цен → соинвест (миграция 030, спек 2026-08-02)

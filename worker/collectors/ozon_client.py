@@ -399,17 +399,43 @@ class OzonClient:
         return (res or {}).get("warehouses") or (res or {}).get("result") or []
 
     def stocks_by_warehouse_fbs(self, skus: list, chunk: int = 100) -> list:
-        """FBS-остатки по складам продавца: POST /v1/product/info/stocks-by-warehouse/fbs,
-        тело {sku:[str]}. Пачки по chunk (лимит эндпоинта уточняется пробой, при 400 —
-        уменьшить). Ответ: [{sku, present, reserved, warehouse_id, warehouse_name, product_id}]."""
+        """FBS-остатки по складам продавца: POST /v2/product/info/stocks-by-warehouse/fbs.
+        v1 отключён Ozon («obsolete method cannot be used», код 9 — та же ошибка и тот же
+        код, что при отключении /v1/warehouse/list, см. warehouse_list выше; проверено живым
+        запросом задачи 7 плана «Склады 2.0» 06.09.2026) — путь /v2 с тем же суффиксом
+        подтверждён отдельным живым запросом в тот же день (см. также тему на dev.ozon.ru
+        «/v2/product/info/stocks-by-warehouse/fbs»).
+
+        Тело v2 ИНАЧЕ устроено, чем было в v1: {sku:[str], limit:int, cursor:str}. limit —
+        НЕ длина sku[], а размер СТРАНИЦЫ РЕЗУЛЬТАТА (число строк products в ответе, ≤1000,
+        400 при значении вне (0,1000]) — передаём максимум 1000. Ответ оборачивает список
+        в "products" (НЕ "result", НЕ голый список, как было в v1): {products:[{sku, present,
+        reserved, warehouse_id, warehouse_name, product_id, offer_id, free_stock}],
+        has_next: bool, cursor: str}. Пачки ВХОДНЫХ sku — по chunk (100, лимит эндпоинта на
+        размер sku[] уточняется пробой, при 400 — уменьшить); внутри каждой пачки —
+        отдельная пагинация по has_next/cursor (на пробе 06.09.2026 с ≤145 sku всегда
+        has_next=False за один запрос, но у продавца с большим числом складов на sku
+        страница может не уместиться в limit=1000)."""
         out = []
         for i in range(0, len(skus), chunk):
             if i:
                 time.sleep(REQUEST_PAUSE_SEC)
             part = [str(s) for s in skus[i:i + chunk]]
-            res = self._post(self.host, "/v1/product/info/stocks-by-warehouse/fbs", {"sku": part})
-            rows = res if isinstance(res, list) else (res or {}).get("result") or []
-            out.extend(rows)
+            cursor = ""
+            while True:
+                body = {"sku": part, "limit": 1000}
+                if cursor:
+                    body["cursor"] = cursor
+                res = self._post(self.host, "/v2/product/info/stocks-by-warehouse/fbs", body)
+                if isinstance(res, dict):
+                    out.extend(res.get("products") or [])
+                    cursor = res.get("cursor") or ""
+                    if not res.get("has_next") or not cursor:
+                        break
+                else:
+                    out.extend(res or [])
+                    break
+                time.sleep(REQUEST_PAUSE_SEC)
         return out
 
     def iter_supply_order_ids(self, limit: int = 100) -> Iterator[int]:
