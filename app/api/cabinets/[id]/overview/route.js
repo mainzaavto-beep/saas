@@ -284,6 +284,15 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   };
   if (mp !== "ozon" && mps.includes('wb')) {
     const db = new DatabaseSync('wb', { readOnly: true });
+    // finance_report/wbFinanceByDay остаётся ИСТОЧНИКОМ ДВУХ рядов —
+    // revenue и маржинальной profit (датировка rr_dt; расхождение датировки
+    // с каноном order_costs известно и осознанно отложено). Ряд commission
+    // отсюда УБРАН: там «отчётная» комиссия commission_percent ×
+    // retail_price_withdisc_rub, тогда как KPI несёт НЕТТО-вознаграждение
+    // канона (realized − payout) — Σ столбиков не сходилась с карточкой
+    // «Комиссии» (kpi.expensesBreakdown.commission).
+    // Теперь commission берётся ниже из wbRawProfitCabinetByDay — ровно тем
+    // же приёмом, каким на канон переехал netPay.
     const fin = await wbFinanceByDay(db, { from, to });
     for (const [key, v] of fin) {
       const d = key.split("|")[1];
@@ -291,7 +300,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
         - (v.logistics || 0) - (v.loyalty || 0);
       tsSet(d, {
         revenue: v.salesRub || 0,
-        commission: v.commission || 0,
         profit,
       });
     }
@@ -306,8 +314,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // переезда KPI netPay на канон (c.payout, датировка sale_dt/return_dt
     // order_costs) Σ столбиков перестала сходиться с карточкой. Теперь оба
     // числа — один SELECT с одной датировкой: Σ days.netPay = kpi.netPay.
+    // Комиссия по дням — тот же КАНОН и тот же SELECT, что netPay:
+    // agg.commission = realized − payout (нетто-вознаграждение WB), ровно та
+    // цифра, что стоит в KPI («Комиссии» = kpi.expensesBreakdown.commission).
     for (const [d, agg] of await wbRawProfitCabinetByDay(db, { from, to })) {
-      tsSet(d, { netPay: agg.payout || 0 });
+      tsSet(d, { netPay: agg.payout || 0, commission: agg.commission || 0 });
     }
   }
   if (mp !== "wb" && mps.includes('ozon')) {

@@ -1,5 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
+import { HINT_PAYOUT_OZON } from "@/lib/profitForms.js";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
@@ -259,7 +260,11 @@ export default function OverviewClient({ cabinetId }) {
               <Kpi label="Заказы, ₽" value={money(data.kpi.orderRub)} />
               <Kpi label="Выручка (продажи)" value={money(data.kpi.revenue)} accent />
               <Kpi label="Маржа" value={pct(data.kpi.margin)} pos={data.kpi.margin >= 0} />
-              <Kpi label="К перечислению" value={money(data.kpi.netPay)} />
+              {/* netPay — Σ по площадкам: у WB факт финотчёта, у Ozon расчёт
+                  (ozNetForm). Оговорка — только когда Ozon в выборке (тем же
+                  условием mp !== "wb", что и подпись графика ниже). */}
+              <Kpi label="К перечислению" value={money(data.kpi.netPay)}
+                hint={mp !== "wb" ? HINT_PAYOUT_OZON : undefined} />
               <Kpi label="Отмена заказов" value={pct(data.kpi.cancelRate)} pos={data.kpi.cancelRate < 20} />
             </div>
             {/* Правая колонка — график */}
@@ -366,9 +371,9 @@ function NavBtn({ children, onClick, title }) {
     }}>{children}</button>
   );
 }
-function Kpi({ label, value, accent, pos, primary }) {
+function Kpi({ label, value, accent, pos, primary, hint }) {
   return (
-    <div style={{
+    <div title={hint} style={{
       background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 18px",
       ...(primary ? { gridColumn: "1 / -1" } : {}),
     }}>
@@ -435,7 +440,8 @@ const CHART_METRICS = [
   { key: "orders",    label: "Заказы, шт",     color: C.accent2, axis: "R", unit: "pcs", token: "accent2" },
   { key: "orderRub",  label: "Заказы, ₽",      color: C.pink,    axis: "L", unit: "rub", token: "pink" },
   { key: "commission",label: "Комиссия",       color: C.neg,     axis: "L", unit: "rub", token: "neg" },
-  { key: "netPay",    label: "К перечислению", color: C.warn,    axis: "L", unit: "rub", token: "warn" },
+  { key: "netPay",    label: "К перечислению", color: C.warn,    axis: "L", unit: "rub", token: "warn",
+    hint: HINT_PAYOUT_OZON },
 ];
 // Метрики, активные по умолчанию.
 const DEFAULT_ACTIVE = { revenue: true, profit: true, orders: true };
@@ -476,8 +482,13 @@ function OverviewChart({ data, mp }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
         {CHART_METRICS.map((m) => {
           const on = !!active[m.key];
+          // Подсказка метрики (m.hint) прицепляется к тому же title, что
+          // «Скрыть/Показать» — у «К перечислению» это оговорка «расчётно
+          // для Ozon» (на WB-only выборке не показываем: там payout — факт).
+          const tip = [on ? "Скрыть" : "Показать", m.hint && mp !== "wb" ? m.hint : null]
+            .filter(Boolean).join(" · ");
           return (
-            <button key={m.key} onClick={() => toggle(m.key)} title={on ? "Скрыть" : "Показать"}
+            <button key={m.key} onClick={() => toggle(m.key)} title={tip}
               style={{
                 display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px",
                 borderRadius: 16, fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",

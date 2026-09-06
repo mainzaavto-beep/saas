@@ -5,6 +5,7 @@ import { C, soft } from "@/lib/palette.js";
 // (отрезки как колонки). Без разбивки — 3 колонки (Показатель/Всего/% выр.).
 import { useEffect, useState } from "react";
 import { defaultMonthPeriod } from "@/lib/period.js";
+import { HINT_PAYOUT_OZON } from "@/lib/profitForms.js";
 
 // Палитра SAAS (тёмно-синяя).
 
@@ -33,12 +34,14 @@ const moneyShort = (n) => {
 // спека 2026-09-06). Поле spp аддитивно и приходит от WB-блока роута
 // (mpBlock) — у Ozon spp тоже есть, но всегда 0 (ozNetForm), отдельной
 // строки не заслуживает. Строку скрываем, если в кабинете нет WB.
-// hasServices — показывать ли строку «Сборы Ozon» (задача 4 плана «Сборы
-// Ozon», 2026-08-25). Поле services аддитивно и приходит ТОЛЬКО от Ozon-
-// блока роута (mpBlock, app/api/.../pnl/route.js) — у WB такого слагаемого
-// нет (расщеплено бэкфиллом задач 1-2 из logistics, только Ozon). Строку
-// скрываем, если в кабинете нет Ozon (иначе была бы «Сборы Ozon 0 ₽»).
-const buildRows = (taxLabel, hasWb, hasServices) => [
+// hasOzon — показывать ли ТРИ Ozon-специфичные строки: «Сборы Ozon»
+// (задача 4 плана «Сборы Ozon», 2026-08-25; поле services приходит ТОЛЬКО
+// от Ozon-блока роута — у WB такого слагаемого нет, оно расщеплено из
+// logistics бэкфиллом задач 1-2), «Эквайринг» и «Лояльность» (у WB оба поля
+// 0 ПО ПОСТРОЕНИЮ канона — wbAggRow: acquiring: 0, loyalty: 0, они сидят
+// внутри нетто-вознаграждения realized − payout). На WB-only кабинете все
+// три были бы строками «0 ₽», которые нечем объяснить.
+const buildRows = (taxLabel, hasWb, hasOzon) => [
   { label: "Выручка (продажи)", field: "revenue", color: C.pos, kind: "plain", showPct: true },
   ...(hasWb ? [{
     label: "Скидка WB (СПП)", field: "spp", negate: true, color: C.neg, kind: "sub", showPct: true,
@@ -47,15 +50,19 @@ const buildRows = (taxLabel, hasWb, hasServices) => [
   { label: "Себестоимость", field: "cogs", negate: true, color: C.neg, kind: "sub", showPct: true },
   {
     label: "Вознаграждение МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true,
-    hint: hasWb ? "нетто: комиссия + эквайринг − компенсации СПП; разложение по отчёту WB не сходится с выплатой" : undefined,
+    hint: hasWb ? "WB-часть — нетто: комиссия + эквайринг − компенсации СПП; разложение по отчёту WB не сходится с выплатой. На смешанном кабинете строка несёт ещё и отчётное вознаграждение Ozon." : undefined,
   },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
-  ...(hasServices ? [{
+  ...(hasOzon ? [{
     label: "Сборы Ozon", field: "services", negate: true, color: C.neg, kind: "sub", showPct: true,
     hint: "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon",
   }] : []),
-  { label: "Эквайринг", field: "acquiring", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Лояльность", field: "loyalty", negate: true, color: C.neg, kind: "sub", showPct: true },
+  // «Эквайринг»/«Лояльность» — тем же приёмом, что «Сборы Ozon» выше
+  // (см. докстроку hasOzon).
+  ...(hasOzon ? [
+    { label: "Эквайринг", field: "acquiring", negate: true, color: C.neg, kind: "sub", showPct: true },
+    { label: "Лояльность", field: "loyalty", negate: true, color: C.neg, kind: "sub", showPct: true },
+  ] : []),
   { label: "Валовая прибыль", field: "grossProfit", kind: "h1", showPct: false },
   { label: "Реклама", field: "ads", negate: true, color: C.neg, kind: "sub", showPct: true },
   { label: taxLabel || "Налог", field: "tax", negate: true, color: C.neg, kind: "sub", showPct: true },
@@ -138,7 +145,14 @@ export default function PnlPage({ cabinetId }) {
             <Card label="Чистая прибыль" value={moneyShort(data.total.profit)} tone={data.total.profit >= 0 ? C.pos : C.neg}
               sub={data.total.revenue ? `рентабельность ${((data.total.profit / data.total.revenue) * 100).toFixed(1)}%` : null} />
             <Card label="Валовая прибыль" value={moneyShort(data.total.grossProfit)} tone={data.total.grossProfit >= 0 ? C.pos : C.neg} />
-            <Card label="К перечислению" value={moneyShort(data.total.forPay)} />
+            {/* forPay — Σ по площадкам: у WB это ФАКТ (Σ cost_value_pay из
+                финотчёта), у Ozon — РАСЧЁТ по ozNetForm (своего «к
+                перечислению» Ozon в позаказных данных не отдаёт). На
+                смешанном кабинете карточка складывает факт с расчётом —
+                поэтому оговорка, но только когда Ozon в кабинете есть. */}
+            <Card label="К перечислению" value={moneyShort(data.total.forPay)}
+              sub={data.ozon ? "у Ozon — расчётно" : null}
+              hint={data.ozon ? HINT_PAYOUT_OZON : undefined} />
           </div>
 
           {/* Таблица P&L */}
@@ -324,9 +338,9 @@ export default function PnlPage({ cabinetId }) {
 }
 
 // --- компоненты ---
-function Card({ label, value, sub, tone }) {
+function Card({ label, value, sub, tone, hint }) {
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 18px" }}>
+    <div title={hint} style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "16px 18px" }}>
       <div style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 800, marginTop: 6, letterSpacing: -0.5, color: tone || C.ink }}>{value}</div>
       {sub && <div style={{ fontSize: 12.5, color: C.faint, marginTop: 3 }}>{sub}</div>}

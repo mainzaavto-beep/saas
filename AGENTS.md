@@ -182,11 +182,13 @@ order_costs → metrics → prices → stocks (зависимости по FK).
 > период всегда был «от сегодня UTC»; проглоченный ReferenceError `prevTo` —
 > динамика соинвеста Ozon всегда была пустой).
 
-- **Метрики WB** (заказы/выручка/комиссия/прибыль): `lib/wbMetrics.js`.
-  Канон: заказы = `COUNT(*) FROM orders WHERE is_cancel=0`; выручка =
-  `SUM(retail_price_withdisc_rub)` из finance_report Продажа; комиссия =
-  `commission_percent × retail_price_withdisc_rub / 100`.
-- **Выручка WB (переезд 06.09.2026): канон `revenue = Σ cost_value_withdisc`
+- **Метрики WB** (заказы/выручка/комиссия/прибыль): `lib/wbMetrics.js` —
+  единственный источник формул; деньги считаются по `wb_order_costs`
+  (`wbRawProfitAggregate` и её by-day/batch/cabinet-варианты), см.
+  `docs/metrics-contract.md`. Прямые формулы по `finance_report`
+  (`retail_price_withdisc_rub`, `commission_percent × …`) — НЕ канон:
+  они остались только витринными справками в `wbFinanceByDay`.
+- **Выручка WB (переезд 06.09.2026)**: канон `revenue = Σ cost_value_withdisc`
   (цена со скидкой продавца, `retail_price_withdisc_rub`), а не «к
   перечислению» — решение владельца; см. `docs/metrics-contract.md` §1.1
   («три цены»: `revenue`/`realized`/`payout`).

@@ -1,6 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { ALERT } from "@/lib/callout.js";
+import { HINT_PAYOUT_OZON } from "@/lib/profitForms.js";
 import PeriodPicker from "../PeriodPicker.jsx";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -809,7 +810,13 @@ const SPP_COL = {
   key: "spp", label: "СПП, ₽", minW: 90, sort: "num",
   hint: "разница между ценой со скидкой продавца и тем, что заплатил покупатель; WB компенсирует часть внутри вознаграждения",
 };
-const PAYOUT_COL = { key: "payout", label: "К перечислению, ₽", minW: 110, sort: "num" };
+// hint рисуется в title заголовка колонки (см. Th ниже) — у WB payout это
+// факт финотчёта, у Ozon — расчёт канона; колонка общая на обе площадки,
+// поэтому оговорка висит всегда.
+const PAYOUT_COL = {
+  key: "payout", label: "К перечислению, ₽", minW: 110, sort: "num",
+  hint: HINT_PAYOUT_OZON,
+};
 
 // ---------- Хелперы UI ----------
 const thStyle = {

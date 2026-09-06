@@ -2,6 +2,7 @@
 import { C, soft } from "@/lib/palette.js";
 import { ALERT } from "@/lib/callout.js";
 import { defaultMonthPeriod } from "@/lib/period.js";
+import { HINT_PAYOUT_OZON } from "@/lib/profitForms.js";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -637,7 +638,8 @@ function Detail({ data, platform }) {
         <MiniKpi label="Реклама ₽" value={money(adSpend)} />
         {/* «Три цены» канона (спека 2026-09-06): payout есть у обеих
             площадок; spp в рублях — только у WB (у Ozon fin.spp всегда 0). */}
-        <MiniKpi label="К перечислению ₽" value={money(t.payout)} />
+        <MiniKpi label="К перечислению ₽" value={money(t.payout)}
+          hint={isWb ? undefined : HINT_PAYOUT_OZON} />
         {isWb ? (
           <>
             <MiniKpi label="Продажи" value={num(t.sales)} />
@@ -1504,9 +1506,9 @@ function ConvCard({ label, value, hint, color }) {
     </div>
   );
 }
-function MiniKpi({ label, value, color }) {
+function MiniKpi({ label, value, color, hint }) {
   return (
-    <div style={{ padding: "6px 12px", borderRadius: 8, background: C.surfaceAlt, border: `1px solid ${C.line}` }}>
+    <div title={hint} style={{ padding: "6px 12px", borderRadius: 8, background: C.surfaceAlt, border: `1px solid ${C.line}` }}>
       <div style={{ fontSize: 9, color: C.faint, textTransform: "uppercase", fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: color || C.ink }}>{value}</div>
     </div>
