@@ -143,9 +143,18 @@
 //            nearest-rank, независимый SQL — честная интерполяция).
 //        (д) Σ buyoutN (по rows) = независимый COUNT(*) пар из того же SQL,
 //            что и (г).
+//        (е) pvzMedianDaysOverall (время до ПВЗ, миграция 051, часовой
+//            wb_fbs_status) = percentile_cont(0.5) над независимым SQL по
+//            парам wb_fbs_tasks⋈wb_supplies с pvz_at IS NOT NULL, дни =
+//            EPOCH(pvz_at-closed_at)/86400 в [0;30]; допуск 0,1 дн — как в
+//            (б): канон считает nearest-rank над ROUND(...,1), SQL —
+//            честную интерполяцию над сырыми секундами.
+//        (ж) Σ pvzN (по rows) = pvzN канона = независимый COUNT(*) тех же пар.
 //      Кабинет без WB-данных в окне (1008) → total=0, medianScHours=null,
-//      stuckCount=0, buyoutMedianDaysOverall=null, Σ buyoutN=0 с обеих
-//      сторон = PASS.
+//      stuckCount=0, buyoutMedianDaysOverall=null, Σ buyoutN=0,
+//      pvzMedianDaysOverall=null, pvzN=0 с обеих сторон = PASS. До
+//      накопления pvz_at (первые дни после 06.09.2026) (е)+(ж) — тот же
+//      null/0 = PASS и у кабинета 1.
 //
 // Использование:
 //   node scripts/check-geo-canon.mjs --cabinet 1
@@ -668,6 +677,39 @@ async function runSuppliesOpsChecks() {
     'FBS-отгрузки WB: Σ buyoutN (rows) = COUNT(*) независимый SQL (те же пары)',
     Math.abs(rowsBuyoutN - indBuyoutN) <= TOL,
     `канон=${rowsBuyoutN}, независимо=${indBuyoutN}`
+  );
+
+  // (е)+(ж) Время до ПВЗ — независимый SQL по парам с pvz_at (миграция 051),
+  // те же условия окна, что третий запрос wbSuppliesOps, дни в [0;30].
+  const PVZ_MEDIAN_TOL = 0.1;
+  const { rows: [pvzRow] } = await roPool.query(
+    `SELECT percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (t.pvz_at - w.closed_at)) / 86400.0
+           ) AS med,
+           COUNT(*) AS n
+     FROM tenant.wb_fbs_tasks t
+     JOIN tenant.wb_supplies w ON w.cabinet_id = t.cabinet_id AND w.supply_id = t.supply_id
+     WHERE t.cabinet_id = $1 AND t.supply_id IS NOT NULL AND t.pvz_at IS NOT NULL
+       AND w.closed_at IS NOT NULL
+       AND w.closed_at::date BETWEEN $2 AND $3
+       AND ROUND((EXTRACT(EPOCH FROM (t.pvz_at - w.closed_at)) / 86400.0)::numeric, 1) BETWEEN 0 AND 30`,
+    [CABINET_ID, FROM, TO]
+  );
+  const indPvzMedian = pvzRow.med === null ? null : Number(pvzRow.med);
+  const indPvzN = num(pvzRow.n);
+  const rowsPvzN = canon.rows.reduce((acc, r) => acc + (r.pvzN || 0), 0);
+  console.log(`pvz: overall=${canon.pvzMedianDaysOverall}, pvzN=${canon.pvzN}, Σ pvzN(rows)=${rowsPvzN}`);
+  verdict(
+    'FBS-отгрузки WB: pvzMedianDaysOverall ≈ percentile_cont(0.5) независимый SQL (допуск 0,1дн)',
+    canon.pvzMedianDaysOverall === null
+      ? indPvzMedian === null
+      : Math.abs(canon.pvzMedianDaysOverall - indPvzMedian) <= PVZ_MEDIAN_TOL,
+    `канон=${canon.pvzMedianDaysOverall}, независимо=${indPvzMedian === null ? null : indPvzMedian.toFixed(2)}`
+  );
+  verdict(
+    'FBS-отгрузки WB: pvzN = Σ pvzN (rows) = COUNT(*) независимый SQL (те же пары)',
+    Math.abs(rowsPvzN - indPvzN) <= TOL && Math.abs((canon.pvzN || 0) - indPvzN) <= TOL,
+    `канон=${canon.pvzN}, Σ rows=${rowsPvzN}, независимо=${indPvzN}`
   );
 
   console.log('');

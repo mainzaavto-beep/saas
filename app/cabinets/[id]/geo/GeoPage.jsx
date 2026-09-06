@@ -580,7 +580,8 @@ function SuppliesSection({ supplies }) {
       <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>FBS-отгрузки</h2>
       <p style={{ margin: "0 0 12px", color: C.muted, fontSize: 12 }}>
         Поставки WB: стадии создана → закрыта → принята СЦ, висящие без приёмки подсвечены.
-        «До покупателя» — до выкупа (включает ПВЗ).
+        «До ПВЗ» — от закрытия поставки до прибытия на пункт выдачи (копится с 06.09, точность 1 ч);
+        «До покупателя» — до выкупа (включает ожидание на ПВЗ).
       </p>
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14 }}>
         {supplies.total === 0 ? (
@@ -593,6 +594,7 @@ function SuppliesSection({ supplies }) {
               {supplies.p90ScHours != null ? ` (p90 ${fmt1(supplies.p90ScHours)}ч)` : ""}
               {" · "}висят без приёмки {supplies.stuckCount}{supplies.stuckCount > 0 ? "⚠" : ""}
               {" · "}без отметки (старые) {supplies.noScanOldCount}
+              {" · "}до ПВЗ {supplies.pvzMedianDaysOverall != null ? `${fmt1(supplies.pvzMedianDaysOverall)}д (медиана, n=${supplies.pvzN})` : "—"}
               {" · "}до покупателя {supplies.buyoutMedianDaysOverall != null ? `${fmt1(supplies.buyoutMedianDaysOverall)}д (медиана)` : "—"}
             </div>
             <div style={{ overflowX: "auto" }}>
@@ -605,6 +607,7 @@ function SuppliesSection({ supplies }) {
                     <th style={thStyle("left")}>Принята СЦ</th>
                     <th style={thStyle("center")}>Сборка, ч</th>
                     <th style={thStyle("center")}>До СЦ, ч</th>
+                    <th style={thStyle("center")}>До ПВЗ, дн</th>
                     <th style={thStyle("center")}>До покупателя, дн</th>
                   </tr>
                 </thead>
@@ -624,7 +627,8 @@ function SuppliesSection({ supplies }) {
                         <td style={{ ...tdStyle("center"), color: scWarn ? C.warn : C.ink, fontWeight: scWarn ? 700 : 400 }}>
                           {r.scHours != null ? fmt1(r.scHours) : "—"}
                         </td>
-                        <BuyoutCell days={r.buyoutMedianDays} n={r.buyoutN} />
+                        <PvzCell days={r.pvzMedianDays} n={r.pvzN} tasks={r.tasks} />
+                        <BuyoutCell days={r.buyoutMedianDays} n={r.buyoutN} tasks={r.tasks} />
                       </tr>
                     );
                   })}
@@ -663,11 +667,14 @@ function SupplyStage({ status, closedAt }) {
 // едет к покупателю) — это норма, не сбой: тихий C.faint текст, а не
 // предупреждение. Малая выборка (n<3) — тоже C.faint, но с числом и своим
 // title, чтобы не путать с «выкупов вовсе нет».
-function BuyoutCell({ days, n }) {
+function BuyoutCell({ days, n, tasks }) {
   if (days == null) {
+    // Выкупов нет — показываем, ГДЕ задания поставки сейчас (статусы WB,
+    // часовой wb_fbs_status): «едут» ≠ «лежат на ПВЗ, покупатель не пришёл»
+    // (запрос владельца 06.09.2026). Ведра — wbSuppliesOps.tasks.
     return (
-      <td style={{ ...tdStyle("center"), color: C.faint }} title="выкупов пока нет">
-        ещё едут
+      <td style={{ ...tdStyle("center"), color: C.faint, whiteSpace: "nowrap" }} title="выкупов пока нет; статусы заданий WB">
+        <TaskBreakdown tasks={tasks} />
       </td>
     );
   }
@@ -675,6 +682,42 @@ function BuyoutCell({ days, n }) {
   return (
     <td style={{ ...tdStyle("center"), color: low ? C.faint : C.ink }} title={low ? `мало выкупов (n=${n})` : `n=${n}`}>
       {days}
+    </td>
+  );
+}
+
+// TaskBreakdown — «едут 3 · ПВЗ 2 · отказ 1»: задания поставки по ведрам
+// статусов WB (transit/pvz/sold/canceled/unknown из wbSuppliesOps.tasks).
+// Пустые ведра не печатаем; если статусов нет вовсе (старые задания без
+// order_id) — прежнее «ещё едут».
+function TaskBreakdown({ tasks }) {
+  const t = tasks || {};
+  const parts = [];
+  if (t.transit) parts.push(`едут ${t.transit}`);
+  if (t.pvz) parts.push(`ПВЗ ${t.pvz}`);
+  if (t.sold) parts.push(`выкуп ${t.sold}`);
+  if (t.canceled) parts.push(`отказ ${t.canceled}`);
+  if (!parts.length) return <>ещё едут</>;
+  return <>{parts.join(" · ")}</>;
+}
+
+// PvzCell — «До ПВЗ, дн»: медиана по заданиям поставки от закрытия до
+// первого ready_for_pickup (pvzMedianDays/pvzN, §16.8). pvz_at копится
+// только с 06.09.2026 и только для заданий, чей переход на ПВЗ увидел
+// часовой опрос — у старых поставок значения нет, это не сбой: тихий «—»
+// с подсказкой. Малая выборка (n<3) — C.faint с числом.
+function PvzCell({ days, n, tasks }) {
+  if (days == null) {
+    const t = tasks || {};
+    const hint = t.pvz || t.sold
+      ? "прибытие на ПВЗ не поймано: задания были на ПВЗ/выкуплены до начала опроса 06.09"
+      : "на ПВЗ пока не доехали";
+    return <td style={{ ...tdStyle("center"), color: C.faint }} title={hint}>—</td>;
+  }
+  const low = n < 3;
+  return (
+    <td style={{ ...tdStyle("center"), color: low ? C.faint : C.ink }} title={low ? `мало заданий (n=${n})` : `n=${n}`}>
+      {fmt1(days)}
     </td>
   );
 }

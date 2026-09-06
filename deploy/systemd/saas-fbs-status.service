@@ -1,0 +1,23 @@
+[Unit]
+Description=SAAS FBS Status — статусы FBS-заданий WB, часовой тик
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Только wb_fbs_status: один POST /api/v3/orders/status на ≤1000 заданий,
+# UPDATE статусов и pvz_at (переход waiting|sorted → ready_for_pickup).
+# Через orchestrator (WB_SaaS_CABINET_ID per кабинет, журнал collector_runs
+# с run_kind=fbsstatus — миграция 051).
+Environment=TZ=Europe/Moscow
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh fbsstatus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-fbs-status
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

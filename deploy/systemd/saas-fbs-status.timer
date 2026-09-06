@@ -1,0 +1,13 @@
+[Unit]
+Description=SAAS FBS Status — часовой опрос статусов FBS-заданий WB
+
+[Timer]
+# Каждый час в :05 (мимо :00/:30 saas-metrics30m — не толпимся в одном логе).
+# WB не отдаёт время смены статуса задания — момент «доехало до ПВЗ»
+# (pvz_at) ловится переходом между двумя опросами, точность = этот шаг.
+OnCalendar=*-*-* *:05:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

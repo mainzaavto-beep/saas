@@ -2295,6 +2295,70 @@ ALL PASS.
 `buyoutMedianDaysOverall` («—» при `null`); подпись секции — «„До
 покупателя“ — до выкупа (включает ПВЗ)».
 
+**Время до ПВЗ — `pvzDays` (запрос владельца 06.09.2026)** — дословно:
+«если статус „ждёт покупателя в ПВЗ“, то это они уже доехали, это
+покупатель пока не дошёл за ними — давай ещё 1 колонку, которая будет
+считать с момента сдачи товара в пункт приёма и когда этот товар доезжает
+до ПВЗ». Факт про источник (проба 06.09.2026): marketplace-api
+`POST /api/v3/orders/status` отдаёт по заданию ТОЛЬКО текущий `wbStatus`
+(`waiting` / `sorted` / `ready_for_pickup` / `sold` / `canceled` /
+`canceled_by_client` / `declined_by_client` / `defect`) и `supplierStatus`,
+без времени смены статуса. Поэтому момент прибытия ловится САМИМ сервисом:
+часовой таймер `saas-fbs-status` (`deploy/systemd/saas-fbs-status.{timer,
+service}`, `*:05`, режим `fbsstatus` в `run_saas_collect.sh`, сборщик
+`worker/collectors/wb_fbs_status.py`) опрашивает незавершённые задания
+(`order_id` из ленты `/api/v3/orders`, колонки миграции 051:
+`order_id`, `wb_status`, `wb_status_at`, `pvz_at`) и
+`db_pg.apply_wb_fbs_statuses` ставит `pvz_at = now()` один раз при
+переходе `waiting|sorted → ready_for_pickup` между двумя опросами.
+Следствия, которые нужно знать читателю цифры:
+- точность `pvz_at` = шаг таймера (1 ч) — дни показываются с одним знаком;
+- история копится с 06.09.2026 09:00 MSK; задания, уже лежавшие на ПВЗ или
+  выкупленные к первому опросу, `pvz_at` не получают (честный NULL, а не
+  «сейчас») — у старых поставок `pvzN = 0`, «—» в UI, это не сбой;
+- переход `sorted → sold` внутри одного часа (покупатель забрал сразу)
+  прибытие не фиксирует — такая пара в метрику не попадает.
+
+Формула (`lib/geoMetrics.js`, третий запрос внутри `wbSuppliesOps`):
+`pvzDays = ROUND(EXTRACT(EPOCH FROM (pvz_at - closed_at)) / 86400, 1)` —
+та же точка отсчёта `closed_at` («когда продавец сдал»), что у
+`buyoutDays`/`scHours`, окно валидности `[0; 30]` дн.
+
+**Контрактные поля:**
+- `supplies.rows[].pvzMedianDays` (число с одним знаком | `null`) — медиана
+  `pvzDays` по заданиям поставки (та же nearest-rank `median()`, что у
+  `buyoutMedianDays`);
+- `supplies.rows[].pvzN` (целое, ≥0) — число заданий поставки с валидным
+  `pvzDays`;
+- `supplies.rows[].tasks` — `{ transit, pvz, sold, canceled, unknown }` —
+  задания поставки по ведрам `wbStatus`: `transit` = waiting + sorted,
+  `pvz` = ready_for_pickup, `sold`, `canceled` = canceled +
+  canceled_by_client + declined_by_client + defect, `unknown` = статус ещё
+  не опрошен / нет `order_id` (задания старше окна ленты);
+- `supplies.pvzMedianDaysOverall` (число | `null`) — медиана `pvzDays` по
+  ВСЕМ парам окна (не медиана медиан); `supplies.pvzN` — их число.
+
+**UI** (`GeoPage.jsx`): колонка «До ПВЗ, дн» (компонент `PvzCell`) между
+«До СЦ, ч» и «До покупателя, дн»; `null` → «—» с подсказкой, почему
+(«не поймано: были на ПВЗ/выкуплены до начала опроса» либо «на ПВЗ пока не
+доехали»); `pvzN < 3` — `C.faint`. В «До покупателя» вместо «ещё едут» при
+`buyoutMedianDays == null` — разбивка `TaskBreakdown` «едут N · ПВЗ M ·
+выкуп K · отказ L» (пустые ведра не печатаются; без статусов — прежнее
+«ещё едут»). Мини-KPI: «· до ПВЗ Xд (медиана, n=N)». Подпись секции
+дополнена.
+
+**Сторож** — проверка 7, пункты (е)+(ж): `pvzMedianDaysOverall` против
+`percentile_cont(0.5)` независимого SQL `saas_ro` по парам с `pvz_at IS NOT
+NULL` (допуск 0,1 дн — та же поправка nearest-rank vs интерполяция, что в
+(б)/(г)) и `pvzN = Σ pvzN(rows) = COUNT(*)`. До накопления `pvz_at`
+проверки проходят по `null/0 = null/0` (кабинет 1 и 1008 06.09.2026 — ALL
+PASS); первая содержательная сверка — после первых переходов на ПВЗ.
+
+**Попутная находка 06.09.2026 (статусы 233 заданий кабинета 1 за 30 дн):**
+`canceled_by_client` 91, `sold` 90, `ready_for_pickup` 19, `sorted` 9,
+`declined_by_client` 8, `defect` 5, `canceled` 2, `waiting` 2 — 39 %
+заданий отменены покупателем; передано владельцу.
+
 **Сторож — проверка 7** (`scripts/check-geo-canon.mjs:573-637`, докстрока
 `:120-148`) сверяет три поля канона против независимого SQL `saas_ro`:
 `total` и `stuckCount` — допуск `TOL` как у остальных проверок (точное

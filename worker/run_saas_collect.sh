@@ -7,6 +7,7 @@
 # Аргументы:
 #   $1 = режим: "main" (14 сборщиков, без остатков) | "stocks" (только остатки)
 #        | "skuad" (только ozon_sku_ad, ночной тик)
+#        | "fbsstatus" (только wb_fbs_status, часовой опрос статусов FBS)
 #   $2 = дней назад FROM (по умолчанию: main=2, stocks=0, skuad=2)
 #   $3 = дней назад TO   (по умолчанию: 0 = сегодня)
 set -uo pipefail
@@ -72,6 +73,13 @@ REFERENCES_COLLECTORS="wb_references,ozon_references"
 # через SAAS_RUN_KIND, ozon_sku_ad при 'skuad' окно/свежесть не смотрит
 # (FORCE_RUN_KINDS). run_kind 'skuad' в CHECK jobs.collector_runs — миграция 050.
 SKUAD_COLLECTORS="ozon_sku_ad"
+# 2026-09-06: часовой опрос статусов FBS-заданий WB (таймер saas-fbs-status,
+# режим fbsstatus). WB не отдаёт время смены статуса — момент «доехало до
+# ПВЗ» (pvz_at, колонка «До ПВЗ» на Географии) ловится переходом между
+# опросами, точность = шаг таймера. Один дешёвый POST на ≤1000 заданий.
+# Сам сборщик в MAIN_COLLECTORS не нужен: order_id заданий даёт лента
+# wb_fbs_tasks из main-тика, статусы — этот таймер.
+FBSSTATUS_COLLECTORS="wb_fbs_status"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;
@@ -79,7 +87,8 @@ case "$MODE" in
   metrics30m) COLLECTORS="$METRICS30M_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
   references) COLLECTORS="$REFERENCES_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
   skuad)      COLLECTORS="$SKUAD_COLLECTORS";      DAYS_FROM="${DAYS_FROM:-2}" ;;
-  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references|skuad)" >&2; exit 1 ;;
+  fbsstatus)  COLLECTORS="$FBSSTATUS_COLLECTORS";  DAYS_FROM="${DAYS_FROM:-0}" ;;
+  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references|skuad|fbsstatus)" >&2; exit 1 ;;
 esac
 
 # Диапазон дат: FROM = сегодня − DAYS_FROM, TO = сегодня − DAYS_TO.

@@ -18,10 +18,12 @@
 //     facets:   { brand: [{value,count}], group: [{value,count}], nm: [{id,label,count}] },
 //     supplies: { rows: [{ supplyId, name, createdAt, closedAt, scanDt, done,
 //                           buildHours, scHours, status,
-//                           buyoutMedianDays, buyoutN }],
+//                           buyoutMedianDays, buyoutN,
+//                           pvzMedianDays, pvzN,
+//                           tasks: { transit, pvz, sold, canceled, unknown } }],
 //                 medianBuildHours, medianScHours, p90ScHours,
 //                 stuckCount, noScanOldCount, total,
-//                 buyoutMedianDaysOverall }
+//                 buyoutMedianDaysOverall, pvzMedianDaysOverall, pvzN }
 //               | null при mp=ozon / отсутствии WB у кабинета (см. wantWb);
 //                 не считается для prevKpi (kpiOnly пропускает).
 //   }

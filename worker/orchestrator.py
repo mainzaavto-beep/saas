@@ -182,6 +182,7 @@ WB_COLLECTORS = [
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
     "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)
     "wb_fbs_tasks",    # FBS-задания → связка rid↔поставка (время до покупателя)
+    "wb_fbs_status",   # статусы заданий → pvz_at «доехало до ПВЗ» (часовой таймер saas-fbs-status)
 ]
 OZON_COLLECTORS = [
     "ozon_catalog",

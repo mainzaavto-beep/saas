@@ -868,12 +868,57 @@ def upsert_wb_supplies_many(rows):
 _WB_FBS_TASKS_MAP = [
     ("rid", "rid"), ("supply_id", "supplyId"),
     ("created_at", "createdAt"), ("nm_id", "nmId"),
+    ("order_id", "id"),   # ключ POST /api/v3/orders/status (миграция 051)
 ]
+
+# Финальные wbStatus задания — дальше не опрашиваем (миграция 051, wb_fbs_status).
+WB_FBS_FINAL_STATUSES = ("sold", "canceled", "canceled_by_client", "declined_by_client", "defect")
 
 
 def upsert_wb_fbs_tasks_many(rows):
-    """FBS-задания WB (marketplace-api /api/v3/orders): связка rid↔supply_id."""
+    """FBS-задания WB (marketplace-api /api/v3/orders): связка rid↔supply_id.
+    Колонки статуса (wb_status/wb_status_at/pvz_at) в карте НЕТ намеренно —
+    upsert ленты их не затирает, ими владеет apply_wb_fbs_statuses."""
     return _upsert_raw_multi_pk("wb_fbs_tasks", ["rid"], _WB_FBS_TASKS_MAP, rows)
+
+
+def wb_fbs_open_order_ids():
+    """order_id заданий, у которых статус ещё может измениться (нет статуса
+    или не финальный). Их и опрашивает часовой wb_fbs_status."""
+    rows = query(
+        "SELECT order_id FROM tenant.wb_fbs_tasks "
+        "WHERE order_id IS NOT NULL AND (wb_status IS NULL OR NOT (wb_status = ANY(%s))) "
+        "ORDER BY order_id",
+        (list(WB_FBS_FINAL_STATUSES),))
+    return [r["order_id"] for r in rows]
+
+
+def apply_wb_fbs_statuses(pairs):
+    """pairs: [(order_id, wbStatus)]. Переход waiting|sorted → ready_for_pickup
+    ставит pvz_at = now() (один раз). Первое наблюдение (wb_status IS NULL)
+    pvz_at НЕ ставит: задание могло лежать на ПВЗ давно — честный NULL.
+    Все SET-выражения Postgres вычисляет над СТАРОЙ строкой, поэтому wb_status
+    в CASE — прежний статус. Возвращает число заданий, у которых появился pvz_at."""
+    if not pairs:
+        return 0
+    sql = (
+        "UPDATE tenant.wb_fbs_tasks SET "
+        "  pvz_at = CASE WHEN pvz_at IS NULL AND %(st)s = 'ready_for_pickup' "
+        "                     AND wb_status IN ('waiting', 'sorted') THEN now() ELSE pvz_at END, "
+        "  wb_status_at = CASE WHEN wb_status IS DISTINCT FROM %(st)s THEN now() ELSE wb_status_at END, "
+        "  wb_status = %(st)s, updated_at = now() "
+        "WHERE order_id = %(oid)s "
+        "RETURNING (pvz_at = now()) AS arrived"  # now() стабилен в транзакции: = «поставлен этим опросом»
+    )
+    arrived = 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for oid, st in pairs:
+                cur.execute(sql, {"oid": oid, "st": st})
+                r = cur.fetchone()
+                if r and r["arrived"]:
+                    arrived += 1
+    return arrived
 
 
 # --- finance_report (/v3/finance/transaction/list) ---
