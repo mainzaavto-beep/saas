@@ -875,6 +875,7 @@ _WB_FBS_TASKS_MAP = [
     ("rid", "rid"), ("supply_id", "supplyId"),
     ("created_at", "createdAt"), ("nm_id", "nmId"),
     ("order_id", "id"),   # ключ POST /api/v3/orders/status (миграция 051)
+    ("warehouse_id", "warehouseId"),  # склад продавца (миграция 052) — авто-списание FBS, этап 2
 ]
 
 # Финальные wbStatus задания — дальше не опрашиваем (миграция 051, wb_fbs_status).
