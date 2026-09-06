@@ -57,7 +57,7 @@ FBO-склады маркетплейсов и FBS-склад продавца �
 | Колонка | Тип | Смысл |
 |---|---|---|
 | `wb_warehouse_id` | BIGINT NULL | склад продавца WB (marketplace-api `/api/v3/warehouses`) |
-| `ozon_warehouse_id` | BIGINT NULL | склад продавца Ozon (`/v1/warehouse/list`, FBS-тип) |
+| `ozon_warehouse_id` | BIGINT NULL | склад продавца Ozon (`/v2/warehouse/list`, FBS-тип) |
 | `city` | TEXT NULL | город места; используется для выбора ближайшего ФФ |
 | `is_active` | BOOLEAN NOT NULL DEFAULT true | неактивные места не участвуют в рекомендациях |
 
@@ -136,8 +136,9 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 
 ### 2.6 `tenant.ozon_supply_orders` — поставки Ozon на FBO
 
-Сборщик `ozon_supply_orders`: `/v2/supply-order/list` (пагинация `last_id`) +
-`/v2/supply-order/get` по пачкам id. Таблицы:
+Сборщик `ozon_supply_orders`: `/v3/supply-order/list` и `/v3/supply-order/get` (обязательные
+`filter.states` и `sort_by`, курсор `last_id`) + `/v1/supply-order/bundle` (состав; только для
+незавершённых заказов). Таблицы:
 
 - `ozon_supply_orders`: `cabinet_id, order_id, number, state, created_at, timeslot_from,
   timeslot_to, dest_warehouse_id, dest_warehouse_name, updated_at`; PK `(cabinet_id, order_id)`.
@@ -373,7 +374,7 @@ POST действия). Расчёты — в `lib/warehousesMetrics.js`, роу
 
 - **Этап 1**: снимок `mp_fbs_daily_stock` сверен с живым API кабинета #1 (Δ = 0 по всем
   складам); справочник складов продавца = список из `/api/v3/warehouses` и
-  `/v1/warehouse/list`; `wb_fbs_tasks.warehouse_id` заполнен у 100 % заданий за 30 дней;
+  `/v2/warehouse/list`; `wb_fbs_tasks.warehouse_id` заполнен у 100 % заданий за 30 дней;
   `ozon_supply_orders` = список из ЛК за 90 дней.
 - **Этап 2**: для каждой позиции `ff_inventory.qty = SUM(stock_moves.qty)`; за сутки число
   `out_fbs` = число заданий/постингов, перешедших в списываемый статус, минус открытые gaps;
