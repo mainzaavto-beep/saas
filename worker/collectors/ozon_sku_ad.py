@@ -53,6 +53,12 @@ POLL_MAX = 120
 # алерт впустую. Сервер работает в TZ=Europe/Moscow — datetime.now() уже даёт
 # MSK (как и `yesterday` ниже в collect()), отдельного перевода не нужно.
 SKIP_WINDOW_MSK = (4, 16)   # [4:00, 16:00) MSK — дневное окно медленной очереди
+FORCE_RUN_KINDS = {"skuad"}  # ночной тик saas-sku-ad-night (03:30 MSK): окно и
+                             # свежесть не смотрим — смысл тика в самом сборе.
+                             # Догон таймера после простоя (Persistent=true)
+                             # может попасть в SKIP_WINDOW_MSK — 06.09.2026 так
+                             # и вышло, тик ушёл вхолостую. run_kind приходит
+                             # из orchestrator._env_for_shop (SAAS_RUN_KIND).
 STALE_FALLBACK_H = 26       # свежий РЕАЛЬНЫЙ ok старше этого — собираем несмотря
                              # на день. Страховка от вечных пропусков держится
                              # ТОЛЬКО если сам soft-skip не засчитывается себе же
@@ -336,7 +342,11 @@ def collect(since=None, to=None):
     # «Умный ритм» (см. константы выше): в дневном окне и при свежем успешном
     # прогоне — мягкий skip, вечерний тик и так соберёт актуальные данные.
     now_msk = datetime.now()
-    if SKIP_WINDOW_MSK[0] <= now_msk.hour < SKIP_WINDOW_MSK[1]:
+    run_kind = os.getenv("SAAS_RUN_KIND", "")
+    if run_kind in FORCE_RUN_KINDS:
+        print(f"[ozon_sku_ad] тик {run_kind}: принудительный сбор, "
+              f"дневное окно очереди не учитываем", flush=True)
+    elif SKIP_WINDOW_MSK[0] <= now_msk.hour < SKIP_WINDOW_MSK[1]:
         # rows_written IS NOT NULL — отсекает сам soft-skip: реальный сбор всегда
         # печатает ##OBS (rows_written заполняется оркестратором из маркера),
         # skip-прогон ##OBS не печатает → rows_written NULL. Без этого фильтра

@@ -373,6 +373,11 @@ def _env_for_shop(shop):
     env["SAAS_DB"] = os.environ.get("SAAS_DB", "saas")
     env["SAAS_DB_USER"] = "saas_app"
     env["SAAS_DB_PASSWORD"] = os.environ.get("SAAS_APP_DB_PASSWORD", "")
+    # Метка прогона (--run-kind) — сборщику, которому важно, КАКОЙ это тик:
+    # ozon_sku_ad в ночном режиме 'skuad' обязан собирать, а не скипать по
+    # дневному окну (догон таймера после простоя 06.09.2026 попал в окно и
+    # ушёл вхолостую). Не секрет, whitelist SAFE_INHERIT не трогаем.
+    env["SAAS_RUN_KIND"] = RUN_KIND
     return env, mp
 
 

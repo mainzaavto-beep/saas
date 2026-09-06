@@ -66,7 +66,11 @@ REFERENCES_COLLECTORS="wb_references,ozon_references"
 # уже утром, лаг «до вечера» — это дыра в НАШЕМ расписании, а не ограничение
 # API (проверено 2026-09-05: campaign-реклама за вчера уже собрана к 06:06,
 # per-SKU — нет). Этот режим гоняется в 03:30 MSK — вне SKIP_WINDOW_MSK,
-# сборщик реально соберёт данные, а не скипнет тик.
+# сборщик реально соберёт данные, а не скипнет тик. 2026-09-06: догон таймера
+# после простоя (Persistent=true) попал в окно 08:22 и ушёл вхолостую → режим
+# skuad теперь собирает ПРИНУДИТЕЛЬНО: orchestrator отдаёт --run-kind сборщику
+# через SAAS_RUN_KIND, ozon_sku_ad при 'skuad' окно/свежесть не смотрит
+# (FORCE_RUN_KINDS). run_kind 'skuad' в CHECK jobs.collector_runs — миграция 050.
 SKUAD_COLLECTORS="ozon_sku_ad"
 
 case "$MODE" in
