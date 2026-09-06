@@ -384,6 +384,75 @@ class OzonClient:
         res = self._post(self.host, "/v1/cluster/list", {"cluster_type": cluster_type}) or {}
         return res.get("clusters") or []
 
+    # --- СКЛАДЫ ПРОДАВЦА / FBS-ОСТАТКИ / ЗАКАЗЫ НА ПОСТАВКУ (план «Склады 2.0», этап 1) ---
+
+    def warehouse_list(self) -> list:
+        """Склады продавца (FBS/rFBS): POST /v1/warehouse/list, тело пустое.
+        _request снимает обёртку result → список {warehouse_id, name, is_rfbs, status, ...}."""
+        res = self._post(self.host, "/v1/warehouse/list", {})
+        return res if isinstance(res, list) else (res or {}).get("result") or []
+
+    def stocks_by_warehouse_fbs(self, skus: list, chunk: int = 100) -> list:
+        """FBS-остатки по складам продавца: POST /v1/product/info/stocks-by-warehouse/fbs,
+        тело {sku:[str]}. Пачки по chunk (лимит эндпоинта уточняется пробой, при 400 —
+        уменьшить). Ответ: [{sku, present, reserved, warehouse_id, warehouse_name, product_id}]."""
+        out = []
+        for i in range(0, len(skus), chunk):
+            if i:
+                time.sleep(REQUEST_PAUSE_SEC)
+            part = [str(s) for s in skus[i:i + chunk]]
+            res = self._post(self.host, "/v1/product/info/stocks-by-warehouse/fbs", {"sku": part})
+            rows = res if isinstance(res, list) else (res or {}).get("result") or []
+            out.extend(rows)
+        return out
+
+    def iter_supply_order_ids(self, limit: int = 100) -> Iterator[int]:
+        """Заказы на поставку FBO: POST /v2/supply-order/list, курсор
+        paging.from_supply_order_id ← last_supply_order_id. Все состояния."""
+        cursor = 0
+        while True:
+            res = self._post(self.host, "/v2/supply-order/list", {
+                "filter": {"states": []},
+                "paging": {"from_supply_order_id": cursor, "limit": limit},
+            }) or {}
+            ids = res.get("supply_order_id") or []
+            for i in ids:
+                yield int(i)
+            last = res.get("last_supply_order_id")
+            if not ids or not last or int(last) == cursor:
+                break
+            cursor = int(last)
+            time.sleep(REQUEST_PAUSE_SEC)
+
+    def supply_order_get(self, order_ids: list, chunk: int = 50) -> dict:
+        """POST /v2/supply-order/get по пачкам ≤ chunk. Возвращает {orders: [...], warehouses: [...]}
+        со склейкой всех пачек."""
+        orders, warehouses = [], []
+        for i in range(0, len(order_ids), chunk):
+            if i:
+                time.sleep(REQUEST_PAUSE_SEC)
+            res = self._post(self.host, "/v2/supply-order/get",
+                             {"order_ids": [int(x) for x in order_ids[i:i + chunk]]}) or {}
+            orders.extend(res.get("orders") or [])
+            warehouses.extend(res.get("warehouses") or [])
+        return {"orders": orders, "warehouses": warehouses}
+
+    def supply_order_bundle_items(self, bundle_ids: list, limit: int = 100) -> list:
+        """Состав поставки: POST /v1/supply-order/bundle, пагинация last_id/has_next.
+        Ответ: items [{sku, quantity, offer_id, ...}]."""
+        out, last_id = [], None
+        while True:
+            body = {"bundle_ids": list(bundle_ids), "limit": limit}
+            if last_id:
+                body["last_id"] = last_id
+            res = self._post(self.host, "/v1/supply-order/bundle", body) or {}
+            out.extend(res.get("items") or [])
+            if not res.get("has_next") or not res.get("last_id"):
+                break
+            last_id = res["last_id"]
+            time.sleep(REQUEST_PAUSE_SEC)
+        return out
+
     # --- ОСТАТКИ ---
 
     def stock_on_warehouses(self, limit: int = 1000) -> dict:
