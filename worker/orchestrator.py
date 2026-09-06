@@ -180,6 +180,7 @@ WB_COLLECTORS = [
     "wb_prices",
     "wb_stocks",
     "wb_references",   # справочник складов + тарифы → shared.* (таймер saas-references, weekly)
+    "wb_seller_warehouses",  # склады продавца → tenant.mp_seller_warehouses (references + онбординг)
     "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)
     "wb_fbs_tasks",    # FBS-задания → связка rid↔поставка (время до покупателя)
     "wb_fbs_status",   # статусы заданий → pvz_at «доехало до ПВЗ» (часовой таймер saas-fbs-status)
@@ -202,6 +203,7 @@ OZON_COLLECTORS = [
     "ozon_sku_ad",     # товарная реклама (миграция 043); в расписании (MAIN_COLLECTORS) — после шлюза владельца
     "ozon_prices",     # дневной снимок цен → соинвест (миграция 030, спек 2026-08-02)
     "ozon_references", # справочник кластеров → shared.ozon_clusters (таймер saas-references)
+    "ozon_seller_warehouses",
 ]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).

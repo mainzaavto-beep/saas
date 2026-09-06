@@ -55,7 +55,7 @@ STOCKS_COLLECTORS="wb_stocks,ozon_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
 # (таймер saas-references, Mon 06:00). wb_references пишет в shared.* (без RLS).
-REFERENCES_COLLECTORS="wb_references,ozon_references"
+REFERENCES_COLLECTORS="wb_references,ozon_references,wb_seller_warehouses,ozon_seller_warehouses"
 # 2026-09-05: отдельный ночной тик ТОЛЬКО для ozon_sku_ad (реклама Ozon по
 # товарам). Сборщик уже стоит в MAIN_COLLECTORS выше, но у него своё «умное»
 # дневное окно очереди Performance API — SKIP_WINDOW_MSK=(4,16) в

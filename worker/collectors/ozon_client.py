@@ -387,10 +387,16 @@ class OzonClient:
     # --- СКЛАДЫ ПРОДАВЦА / FBS-ОСТАТКИ / ЗАКАЗЫ НА ПОСТАВКУ (план «Склады 2.0», этап 1) ---
 
     def warehouse_list(self) -> list:
-        """Склады продавца (FBS/rFBS): POST /v1/warehouse/list, тело пустое.
-        _request снимает обёртку result → список {warehouse_id, name, is_rfbs, status, ...}."""
-        res = self._post(self.host, "/v1/warehouse/list", {})
-        return res if isinstance(res, list) else (res or {}).get("result") or []
+        """Склады продавца (FBS/rFBS): POST /v2/warehouse/list, тело пустое.
+        v1 отключён Ozon 07.04.2026 («obsolete method cannot be used», код 9, живая проба
+        задачи 5 плана «Склады 2.0» 06.09.2026) — поля ответа те же (warehouse_id, name,
+        is_rfbs, status, ...), поменялся путь. Ответ оборачивает список НЕ в result
+        (там нет такого ключа — _request отдаёт весь dict как есть), а в "warehouses"
+        (проверено живым запросом 06.09.2026) — снимаем обёртку явно."""
+        res = self._post(self.host, "/v2/warehouse/list", {})
+        if isinstance(res, list):
+            return res
+        return (res or {}).get("warehouses") or (res or {}).get("result") or []
 
     def stocks_by_warehouse_fbs(self, skus: list, chunk: int = 100) -> list:
         """FBS-остатки по складам продавца: POST /v1/product/info/stocks-by-warehouse/fbs,

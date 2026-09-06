@@ -888,6 +888,36 @@ def upsert_wb_fbs_tasks_many(rows):
     return _upsert_raw_multi_pk("wb_fbs_tasks", ["rid"], _WB_FBS_TASKS_MAP, rows)
 
 
+# --- mp_seller_warehouses (склады продавца WB/Ozon, план «Склады 2.0», этап 1) ---
+def upsert_mp_seller_warehouses(platform, rows):
+    """rows: [{warehouse_id, name, kind}]. Присутствующие → is_active=true,
+    last_seen_at=now(); отсутствующие в ответе МП склады той же платформы → is_active=false
+    (склад удалён/скрыт в кабинете). first_seen_at не затирается."""
+    cid = _cabinet_id()
+    ids = [int(r["warehouse_id"]) for r in rows]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO tenant.mp_seller_warehouses "
+                "(cabinet_id, platform, warehouse_id, name, kind, is_active, last_seen_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, true, now(), now()) "
+                "ON CONFLICT (cabinet_id, platform, warehouse_id) DO UPDATE SET "
+                "name=EXCLUDED.name, kind=EXCLUDED.kind, is_active=true, last_seen_at=now(), updated_at=now()",
+                [[cid, platform, int(r["warehouse_id"]), r.get("name") or str(r["warehouse_id"]), r.get("kind")]
+                 for r in rows])
+            cur.execute(
+                "UPDATE tenant.mp_seller_warehouses SET is_active=false, updated_at=now() "
+                "WHERE cabinet_id=%s AND platform=%s AND is_active AND NOT (warehouse_id = ANY(%s))",
+                (cid, platform, ids))
+    return len(rows)
+
+
+def seller_warehouse_ids(platform):
+    rows = query("SELECT warehouse_id FROM tenant.mp_seller_warehouses "
+                 "WHERE platform=%s AND is_active ORDER BY warehouse_id", (platform,))
+    return [int(r["warehouse_id"]) for r in rows]
+
+
 def wb_fbs_open_order_ids():
     """order_id заданий, у которых статус ещё может измениться (нет статуса
     или не финальный). Их и опрашивает часовой wb_fbs_status."""
