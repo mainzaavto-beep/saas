@@ -448,6 +448,10 @@ const CHART_LINES_OZ = [
 function Detail({ data, platform }) {
   const isWb = platform === "wb";
   const t = data.totals || {};
+  // fin — блок «трёх цен» канона (спека 2026-09-06, задача 3): revenue/spp/
+  // realized/payout. spp живёт ТОЛЬКО здесь в рублях — totals.spp занят
+  // процентом СПП из снимка карточки (route.js, обеим площадкам).
+  const fin = data.fin || {};
   const days = data.days || [];
 
   const [show, setShow] = useState(
@@ -631,12 +635,16 @@ function Detail({ data, platform }) {
         <MiniKpi label="Корзины" value={num(t.cart)} />
         <MiniKpi label="Конв." value={pct(pctFromRate(t.clicks > 0 ? t.orders / t.clicks : null))} />
         <MiniKpi label="Реклама ₽" value={money(adSpend)} />
+        {/* «Три цены» канона (спека 2026-09-06): payout есть у обеих
+            площадок; spp в рублях — только у WB (у Ozon fin.spp всегда 0). */}
+        <MiniKpi label="К перечислению ₽" value={money(t.payout)} />
         {isWb ? (
           <>
             <MiniKpi label="Продажи" value={num(t.sales)} />
             <MiniKpi label="Выручка ₽" value={money(t.revenue)} />
             <MiniKpi label="Прибыль ₽" value={money(t.profit)} color={(t.profit || 0) >= 0 ? C.pos : C.neg} />
             <MiniKpi label="СПП %" value={t.spp != null ? pct(t.spp) : "—"} />
+            <MiniKpi label="СПП ₽" value={money(fin.spp)} />
             <MiniKpi label="Рейтинг ★" value={data.product?.rating_nm != null ? r2(data.product.rating_nm) : "—"} />
             <MiniKpi label="Оценок (артикул)" value={data.product?.rating_nm_count != null ? num(data.product.rating_nm_count) : "—"} />
             <MiniKpi label="Оценок (склейка)" value={data.product?.rating_imt_count != null ? num(data.product.rating_imt_count) : "—"} />

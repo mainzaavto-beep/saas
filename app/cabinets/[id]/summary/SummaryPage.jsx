@@ -267,7 +267,7 @@ export default function SummaryPage({ cabinetId }) {
       ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
       orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
       acquiring: 0, loyalty: 0, tax: 0, profit: 0, stock: 0, returnLogistics: 0,
-      adSpend: 0, services: 0,
+      adSpend: 0, services: 0, spp: 0, payout: 0,
     };
     for (const i of filtered) {
       ft.ordered += i.ordered || 0;
@@ -288,6 +288,11 @@ export default function SummaryPage({ cabinetId }) {
       ft.stock += i.stock || 0;
       ft.returnLogistics += i.returnLogistics || 0;
       ft.adSpend += i.adSpend || 0;
+      // «Три цены» канона (спека 2026-09-06): spp (скидка WB, у Ozon всегда 0)
+      // и payout (к перечислению, есть у обеих площадок) — колонок скрытия
+      // нет, добавлены в конец денежного блока таблицы (см. COLS/cols ниже).
+      ft.spp += i.spp || 0;
+      ft.payout += i.payout || 0;
     }
     const fullAd = data?.totals?.adSpend || 0;
     // item.profit теперь ВКЛЮЧАЕТ рекламу самого товара (канон 2026-08-21).
@@ -301,6 +306,23 @@ export default function SummaryPage({ cabinetId }) {
     ft.avgCheck = ft.ordered ? round2(ft.orderRub / ft.ordered) : null;
     return ft;
   }, [filtered, hasProductFilter, data]);
+
+  // hasWb — есть ли в выдаче WB-строки (у Ozon spp всегда 0 — колонка «СПП, ₽»
+  // без содержательного смысла для Ozon-only кабинета). Считаем по ВСЕМ
+  // товарам периода (data.items), не по filtered — та же логика, что
+  // ozStockDate ниже (не сужается товарным фильтром).
+  const hasWb = (data?.items || []).some((i) => i.platform === "wb");
+  // Колонки таблицы. Механизма скрытия колонок в этой таблице нет (нет
+  // localStorage/toggle-набора) — «СПП, ₽» и «К перечислению, ₽» (канон «три
+  // цены», спека 2026-09-06) добавлены статично в конец денежного блока
+  // (после avgProfit, перед margin), СПП — только при наличии WB-строк.
+  const cols = useMemo(() => {
+    const base = [...COLS];
+    const idx = base.findIndex((c) => c.key === "margin");
+    const extra = hasWb ? [SPP_COL, PAYOUT_COL] : [PAYOUT_COL];
+    base.splice(idx, 0, ...extra);
+    return base;
+  }, [hasWb]);
 
   const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -489,7 +511,7 @@ export default function SummaryPage({ cabinetId }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ background: C.surfaceAlt, borderBottom: `1px solid ${C.line}` }}>
-              {COLS.map((col) => (
+              {cols.map((col) => (
                 <Th key={col.key} col={col} sort={sort} setSort={setSort} />
               ))}
             </tr>
@@ -527,6 +549,8 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{money(it.tax)}</Td>
                 <Td right><span style={{ color: (it.profit || 0) >= 0 ? C.pos : C.neg, fontWeight: 700 }}>{money(it.profit)}</span></Td>
                 <Td right>{money(it.avgProfit)}</Td>
+                {hasWb && <Td right>{money(it.spp)}</Td>}
+                <Td right>{money(it.payout)}</Td>
                 <Td right><span style={{ color: (it.margin || 0) >= 0 ? C.pos : C.neg, fontWeight: 600 }}>{pct(it.margin)}</span></Td>
                 <Td right>{pct(it.roi)}</Td>
                 <Td right><DrrPill drr={it.drr} margin={it.margin} ads={it.adSpend} sold={it.sold} /></Td>
@@ -536,7 +560,7 @@ export default function SummaryPage({ cabinetId }) {
               </tr>
             ))}
             {pageItems.length === 0 && (
-              <tr><td colSpan={COLS.length} style={{ padding: 30, textAlign: "center", color: C.muted }}>Нет данных по выбранным фильтрам</td></tr>
+              <tr><td colSpan={cols.length} style={{ padding: 30, textAlign: "center", color: C.muted }}>Нет данных по выбранным фильтрам</td></tr>
             )}
           </tbody>
           {filtered.length > 0 && (
@@ -570,6 +594,8 @@ export default function SummaryPage({ cabinetId }) {
                     : "Вкл. вычет всей рекламы кабинета за период (реклама товаров — в их прибыли, остаток — кабинетный)"}
                 >{money(ft.profit)}</td>
                 <td style={tdFootR}>—</td>
+                {hasWb && <td style={tdFootR}>{money(ft.spp)}</td>}
+                <td style={tdFootR}>{money(ft.payout)}</td>
                 <td style={tdFootR}>{pct(ft.margin)}</td>
                 <td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td><td style={tdFootR}>—</td>
                 <td style={tdFootR}>—</td>
@@ -586,7 +612,7 @@ export default function SummaryPage({ cabinetId }) {
               {data.unallocated && (
                 <tr style={{ background: C.surfaceAlt }}>
                   <td
-                    colSpan={COLS.length}
+                    colSpan={cols.length}
                     style={{
                       padding: "6px 10px", fontSize: 11.5,
                       color: data.unallocated.note ? C.warn : C.muted,
@@ -749,9 +775,12 @@ const COLS = [
   { key: "avgOrdersDay",label: "Зак/день",       minW: 70, sort: "num" },
   { key: "orderRub",    label: "Заказов, ₽",     minW: 100, sort: "num" },
   { key: "avgCheck",    label: "Ср. чек",        minW: 85, sort: "num" },
-  { key: "salesRub",    label: "Продажи, ₽",     minW: 100, sort: "num" },
+  {
+    key: "salesRub", label: "Продажи, ₽", minW: 100, sort: "num",
+    hint: "по цене со скидкой продавца; штуки и рубли из финансовых строк WB (отстают на сутки)",
+  },
   { key: "costRub",     label: "Себест., ₽",     minW: 95, sort: "num" },
-  { key: "commission",  label: "Комиссия, ₽",    minW: 95, sort: "num" },
+  { key: "commission",  label: "Вознаграждение МП, ₽", minW: 95, sort: "num" },
   { key: "commissionPct",label: "Ком. %",        minW: 65, sort: "num" },
   { key: "logistics",   label: "Логистика, ₽",   minW: 95, sort: "num" },
   // services («Сборы Ozon», задача 4 плана «Сборы Ozon», 2026-08-25) — только
@@ -772,6 +801,15 @@ const COLS = [
   { key: "cpa",         label: "CPA, ₽",         minW: 80, sort: "num" },
   { key: "turnoverDays",label: "Оборач., дн",    minW: 85, sort: "num" },
 ];
+
+// «СПП, ₽» и «К перечислению, ₽» (канон «три цены», спека 2026-09-06) — нет
+// механизма скрытия колонок в этой таблице, поэтому добавлены в конец
+// денежного блока (см. `cols` в компоненте, вставка перед "margin").
+const SPP_COL = {
+  key: "spp", label: "СПП, ₽", minW: 90, sort: "num",
+  hint: "разница между ценой со скидкой продавца и тем, что заплатил покупатель; WB компенсирует часть внутри вознаграждения",
+};
+const PAYOUT_COL = { key: "payout", label: "К перечислению, ₽", minW: 110, sort: "num" };
 
 // ---------- Хелперы UI ----------
 const thStyle = {

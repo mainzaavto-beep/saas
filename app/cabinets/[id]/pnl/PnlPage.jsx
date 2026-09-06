@@ -29,23 +29,26 @@ const moneyShort = (n) => {
 // типизированными полями (их больше нет в ответе роута), а суммой
 // cabinetCostsTotal здесь + расшифровкой по статьям отдельным блоком ниже
 // (см. cabinetCosts[] в рендере).
-// hasRevenueGross — показывать ли справочную строку «Выручка (валовая)».
-// Поле revenueGross аддитивно и приходит ТОЛЬКО от WB-блока роута (задача
-// «WB валовая выручка справочной строкой», 2026-08-20) — у Ozon revenue уже
-// валовая, отдельного поля нет. Строку скрываем, если в кабинете нет WB
-// (иначе была бы «Выручка (валовая) 0 ₽» — вводит в заблуждение).
+// hasWb — показывать ли строку «Скидка WB (СПП)» (канон «три цены»,
+// спека 2026-09-06). Поле spp аддитивно и приходит от WB-блока роута
+// (mpBlock) — у Ozon spp тоже есть, но всегда 0 (ozNetForm), отдельной
+// строки не заслуживает. Строку скрываем, если в кабинете нет WB.
 // hasServices — показывать ли строку «Сборы Ozon» (задача 4 плана «Сборы
 // Ozon», 2026-08-25). Поле services аддитивно и приходит ТОЛЬКО от Ozon-
 // блока роута (mpBlock, app/api/.../pnl/route.js) — у WB такого слагаемого
 // нет (расщеплено бэкфиллом задач 1-2 из logistics, только Ozon). Строку
 // скрываем, если в кабинете нет Ozon (иначе была бы «Сборы Ozon 0 ₽»).
-const buildRows = (taxLabel, hasRevenueGross, hasServices) => [
-  { label: "Выручка", field: "revenue", color: C.pos, kind: "plain", showPct: true },
-  ...(hasRevenueGross ? [{
-    label: "Выручка (валовая, WB)", field: "revenueGross", color: C.muted, kind: "plain", showPct: false,
+const buildRows = (taxLabel, hasWb, hasServices) => [
+  { label: "Выручка (продажи)", field: "revenue", color: C.pos, kind: "plain", showPct: true },
+  ...(hasWb ? [{
+    label: "Скидка WB (СПП)", field: "spp", negate: true, color: C.neg, kind: "sub", showPct: true,
+    hint: "разница между ценой со скидкой продавца и тем, что заплатил покупатель; WB компенсирует часть внутри вознаграждения",
   }] : []),
   { label: "Себестоимость", field: "cogs", negate: true, color: C.neg, kind: "sub", showPct: true },
-  { label: "Комиссия МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true },
+  {
+    label: "Вознаграждение МП", field: "commission", negate: true, color: C.neg, kind: "sub", showPct: true,
+    hint: hasWb ? "нетто: комиссия + эквайринг − компенсации СПП; разложение по отчёту WB не сходится с выплатой" : undefined,
+  },
   { label: "Логистика", field: "logistics", negate: true, color: C.neg, kind: "sub", showPct: true },
   ...(hasServices ? [{
     label: "Сборы Ozon", field: "services", negate: true, color: C.neg, kind: "sub", showPct: true,
@@ -228,7 +231,6 @@ export default function PnlPage({ cabinetId }) {
             Кабинетные расходы (хранение/продвижение/подписки/штрафы/Premium/RFBS и др.) не привязаны к SKU —
             показаны одной строкой знаковой суммой (расход уменьшает прибыль, возмещение/доход — увеличивает);
             расшифровка по статьям — в блоке «Кабинетные расходы по статьям» ниже.
-            {data.wb && " «Выручка (валовая, WB)» — справочная сумма ДО вычета комиссии/логистики/эквайринга WB (retail_amount), для сверки с отчётами маркетплейса; в расчёт прибыли не входит — используется «Выручка» (к перечислению)."}
             {data.total.unknownCostTypes > 0 && ` Не удалось сопоставить название для ${data.total.unknownCostTypes} стат. (показаны как «Прочее»).`}
           </div>
 
@@ -278,6 +280,9 @@ export default function PnlPage({ cabinetId }) {
                 <tbody>
                   {[
                     ["Выручка", "revenue"],
+                    // Скидка WB (СПП) — у Ozon spp всегда 0 (ozNetForm), колонка
+                    // Ozon покажет «0 ₽» симметрично прочим WB-специфичным полям.
+                    ["Скидка WB (СПП)", "spp"],
                     ["Себестоимость", "cogs"],
                     ["Комиссия", "commission"],
                     ["Логистика", "logistics"],
@@ -285,6 +290,10 @@ export default function PnlPage({ cabinetId }) {
                     // для колонки WB, симметрично остальным Ozon-специфичным полям в этой таблице).
                     ["Сборы Ozon", "services"],
                     ["Прибыль", "profit"],
+                    // К перечислению — payout канона (mpBlock). У Ozon это РАСЧЁТНАЯ
+                    // величина (выручка − вознаграждение − сборы − эквайринг − лояльность,
+                    // ozNetForm), не выписка банка — hint ниже.
+                    ["К перечислению", "payout"],
                   ].map(([label, key]) => {
                     const wbVal = data.wb?.[key];
                     const ozVal = data.ozon?.[key];
@@ -292,7 +301,11 @@ export default function PnlPage({ cabinetId }) {
                     return (
                       <tr key={key} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
                         <td
-                          title={key === "services" ? "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon" : undefined}
+                          title={
+                            key === "services" ? "отзывы, рассрочка, упаковка, размещение, утилизация и прочие позаказные сборы Ozon"
+                            : key === "payout" ? "расчётно: выручка − вознаграждение − сборы − эквайринг − лояльность"
+                            : undefined
+                          }
                           style={{ padding: "8px 6px", color: C.ink, fontWeight: profitCol ? 700 : 400 }}
                         >{label}</td>
                         <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: profitCol ? (wbVal >= 0 ? C.pos : C.neg) : C.ink, whiteSpace: "nowrap" }}>{money(wbVal)}</td>
