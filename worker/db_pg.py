@@ -1598,3 +1598,25 @@ def upsert_ozon_supply_orders_many(rows):
 def upsert_ozon_supply_order_items_many(rows):
     return _batch_upsert("ozon_supply_order_items", ["order_id", "sku"], _OZ_SUPPLY_ITEM_COLS, rows)
 
+
+# Финальные состояния заказа на поставку — держать в синхроне с
+# worker/collectors/ozon_supply_orders.py::TERMINAL_STATES (db_pg — общий адаптер,
+# не импортирует конкретные сборщики, поэтому список продублирован; правь оба
+# места разом). Ревью раунд 1, 2026-09-06.
+_OZ_SUPPLY_TERMINAL_STATES = ("COMPLETED", "CANCELLED", "OVERDUE")
+
+
+def ozon_supply_orders_with_items_terminal():
+    """order_id заказов на поставку FBO, чьё состояние финально (см.
+    _OZ_SUPPLY_TERMINAL_STATES) И у которых уже есть ≥1 строка состава в
+    ozon_supply_order_items. Их не нужно опрашивать заново через
+    /v1/supply-order/bundle — состав финального заказа больше не меняется
+    (экономия ~450 запросов на тик после первого полного прохода, задача 9,
+    ревью раунд 1)."""
+    rows = query(
+        "SELECT DISTINCT o.order_id FROM tenant.ozon_supply_orders o "
+        "JOIN tenant.ozon_supply_order_items i ON i.order_id = o.order_id "
+        "WHERE o.state = ANY(%s)",
+        (list(_OZ_SUPPLY_TERMINAL_STATES),))
+    return {int(r["order_id"]) for r in rows}
+

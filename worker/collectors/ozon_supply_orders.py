@@ -13,6 +13,15 @@ supplies[].storage_warehouse — top-level warehouses[] в /v3 больше не
 ozon_client.OzonClient.iter_supply_order_ids/supply_order_get).
 Тик main. Аргументы дат игнорируются — тянем весь список (сотни строк).
 SAAS_PROBE=1 — дамп list/get/bundle без записи.
+
+Ревью раунд 1 (2026-09-06): заказы (orders) пишутся ДО цикла bundle — сбой
+одного /v1/supply-order/bundle не откатывает весь прогон (только сам этот
+заказ остаётся без позиций, счётчик — в логе и в exit-коде). bundle
+запрашивается ТОЛЬКО для заказов, у которых состояние не финальное
+(TERMINAL_STATES) или ещё нет ни одной строки состава — см.
+db_pg.ozon_supply_orders_with_items_terminal(). Одиночные сбои bundle не
+роняют прогон (ПРОПУСК только у полного сбоя list/get) — считаются и дают
+exit 3 (partial, контракт orchestrator.py:80-82) при n_bundle_failed > 0.
 """
 import os
 import sys
@@ -25,6 +34,33 @@ if _THIS_DIR not in sys.path:
 import db_pg
 import _probe
 from ozon_client import OzonClient, OzonError
+
+# Финальные состояния заказа на поставку — реально увиденные пробой 06.09.2026 на
+# кабинете 1 (см. task-9-report.md): COMPLETED (поставка завершена), CANCELLED
+# (отменена), OVERDUE (просрочен таймслот без отгрузки — дальнейших изменений
+# состава не бывает). НЕ финальные (там же наблюдались, состав/статус ещё может
+# измениться): ACCEPTANCE_AT_STORAGE_WAREHOUSE, IN_TRANSIT — заказ в процессе.
+# Держать в синхроне с db_pg.py::_OZ_SUPPLY_TERMINAL_STATES.
+TERMINAL_STATES = ("COMPLETED", "CANCELLED", "OVERDUE")
+
+# Счётчик неудачных запросов /v1/supply-order/bundle последнего collect() — читает
+# __main__ после вызова (по образцу ozon_accruals.py::_MISMATCHES).
+_BUNDLE_FAILED = 0
+
+
+def select_orders_for_bundles(bundles, skip):
+    """bundles: {order_id: [bundle_id,…]} из parse_orders; skip: set order_id, чей
+    состав уже известен и не изменится (db_pg.ozon_supply_orders_with_items_terminal).
+    Возвращает bundles без order_id из skip. Чистая функция — юнит-тест без БД."""
+    return {oid: bids for oid, bids in bundles.items() if oid not in skip}
+
+
+def partial_exit_code(n_bundle_failed):
+    """Контракт exit-кодов (orchestrator.py:80-82, по образцу
+    ozon_accruals.py::partial_exit_code): >0 неудачных bundle-запросов → 3
+    (partial — заказы и успевшие позиции всё равно записаны, падение по
+    сигналу, не по данным). Иначе None. Чистая функция ради юнит-теста."""
+    return 3 if n_bundle_failed else None
 
 
 def parse_orders(get_res):
@@ -82,6 +118,8 @@ def parse_items(order_id, items, sku2pid):
 
 
 def collect():
+    global _BUNDLE_FAILED
+    _BUNDLE_FAILED = 0
     print(f"[ozon_supply_orders] заказы на поставку FBO ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
     db_pg.init()
     cli = OzonClient()
@@ -94,23 +132,46 @@ def collect():
         if _probe.is_probe():
             _probe.dump("/v3/supply-order/get", get_res.get("orders") or [], n=2)
         orders, bundles = parse_orders(get_res)
-        sku2pid = {int(r["fbo_sku"]): int(r["product_id"]) for r in
-                   db_pg.query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL")}
-        items = []
-        for oid, bids in bundles.items():
-            raw = cli.supply_order_bundle_items(bids)
-            if _probe.is_probe():
-                _probe.dump(f"/v1/supply-order/bundle {oid}", raw, n=3)
-                break
-            items.extend(parse_items(oid, raw, sku2pid))
     except OzonError as e:
         print(f"[ozon_supply_orders] ПРОПУСК: Ozon API недоступен ({e}) (exit 0)", flush=True)
         return 0
+
     if _probe.is_probe():
+        for oid, bids in bundles.items():
+            raw = cli.supply_order_bundle_items(bids)
+            _probe.dump(f"/v1/supply-order/bundle {oid}", raw, n=3)
+            break
         return 0
+
+    # Заказы пишутся СРАЗУ, до цикла bundle — сбой одного bundle-запроса не должен
+    # откатывать весь список заказов (ревью раунд 1, 2026-09-06).
     n_o = db_pg.upsert_ozon_supply_orders_many(orders)
+
+    skip = db_pg.ozon_supply_orders_with_items_terminal()
+    to_fetch = select_orders_for_bundles(bundles, skip)
+    print(f"[ozon_supply_orders] bundles: fetched {len(to_fetch)}, "
+          f"skipped {len(bundles) - len(to_fetch)} (финальные с составом)", flush=True)
+
+    sku2pid = {int(r["fbo_sku"]): int(r["product_id"]) for r in
+               db_pg.query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL")}
+    items = []
+    n_bundle_failed = 0
+    for oid, bids in to_fetch.items():
+        try:
+            raw = cli.supply_order_bundle_items(bids)
+        except OzonError as e:
+            print(f"[ozon_supply_orders] bundle заказа {oid} недоступен: {e}", flush=True)
+            n_bundle_failed += 1
+            continue
+        items.extend(parse_items(oid, raw, sku2pid))
+
     n_i = db_pg.upsert_ozon_supply_order_items_many(items)
-    print(f"[ozon_supply_orders] заказов {n_o}, позиций {n_i}", flush=True)
+    _BUNDLE_FAILED = n_bundle_failed
+    if n_bundle_failed:
+        print(f"[ozon_supply_orders] заказов {n_o}, позиций {n_i}, "
+              f"bundle недоступен для {n_bundle_failed} из {len(to_fetch)}", flush=True)
+    else:
+        print(f"[ozon_supply_orders] заказов {n_o}, позиций {n_i}", flush=True)
     print(f"##OBS rows={n_o}", flush=True)
     return n_o
 
@@ -119,3 +180,6 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     os.environ["NO_PROXY"] = "*"
     collect()
+    _code = partial_exit_code(_BUNDLE_FAILED)
+    if _code is not None:
+        sys.exit(_code)

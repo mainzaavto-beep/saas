@@ -53,4 +53,15 @@ assert items == [
     {"order_id": 501, "sku": 999, "product_id": 999001, "qty_declared": 1, "qty_accepted": None},
     {"order_id": 501, "sku": 1000, "product_id": None, "qty_declared": 2, "qty_accepted": None},
 ], items
-print("OK: 4 проверки")
+
+# select_orders_for_bundles: заказ 501 уже финальный с составом (в skip) — пропускаем;
+# 503 — нет (не финальный/нет состава ещё) — тянем (ревью раунд 1, ограничение стоимости).
+assert m.select_orders_for_bundles(bundles, {501}) == {503: ["b-3a", "b-3b"]}, bundles
+assert m.select_orders_for_bundles(bundles, set()) == bundles
+assert m.select_orders_for_bundles(bundles, {501, 503}) == {}
+
+# partial_exit_code: контракт exit-кодов (по образцу ozon_accruals.py)
+assert m.partial_exit_code(0) is None
+assert m.partial_exit_code(3) == 3
+
+print("OK: 7 проверок")
