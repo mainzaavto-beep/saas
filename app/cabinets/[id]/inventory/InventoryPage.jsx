@@ -65,6 +65,7 @@ export default function InventoryPage({ cabinetId }) {
   // и в одном порядке на каждом рендере). Поэтому items берём с fallback на [].
   const items = data?.items || [];
   const locations = data?.locations || [];
+  const sellerWarehouses = data?.sellerWarehouses || [];
   const locationsById = useMemo(() => {
     const m = {};
     for (const l of locations) m[l.id] = l;
@@ -167,7 +168,7 @@ export default function InventoryPage({ cabinetId }) {
         </Link>
       </div>
 
-      {showLocs && <LocationsManager cabinetId={cabinetId} locations={locations} reload={reload} />}
+      {showLocs && <LocationsManager cabinetId={cabinetId} locations={locations} reload={reload} sellerWarehouses={sellerWarehouses} />}
 
       {showAdd && <AddForm cabinetId={cabinetId} locations={locations} onDone={() => { setShowAdd(false); reload(); }} />}
 
@@ -808,7 +809,7 @@ function AddForm({ cabinetId, locations, onDone }) {
 // =====================================================================
 //  Управление местами хранения (создать/переименовать/удалить)
 // =====================================================================
-function LocationsManager({ cabinetId, locations, reload }) {
+function LocationsManager({ cabinetId, locations, reload, sellerWarehouses }) {
   const [name, setName] = useState("");
   const [locType, setLocType] = useState("stock");
   const [address, setAddress] = useState("");
@@ -860,6 +861,26 @@ function LocationsManager({ cabinetId, locations, reload }) {
     } catch (e) { alert("Не удалить: " + e.message); }
   }
 
+  async function updateLoc(l, patch) {
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "locations", op: "update", id: l.id, ...patch }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || "update failed");
+      reload();
+    } catch (e) { alert("Не сохранилось: " + e.message); }
+  }
+  const whOptions = (platform, l) => sellerWarehouses
+    .filter((w) => w.platform === platform && (w.is_active || w.location_id === l.id))
+    .map((w) => (
+      <option key={w.warehouse_id} value={w.warehouse_id}
+        disabled={w.location_id != null && w.location_id !== l.id}>
+        {w.name}{w.location_id != null && w.location_id !== l.id ? " (занят)" : ""}
+      </option>
+    ));
+
   return (
     <div style={addFormCard}>
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Места хранения</div>
@@ -896,11 +917,31 @@ function LocationsManager({ cabinetId, locations, reload }) {
             <span style={{ fontSize: 13, fontWeight: 600 }}>{l.name}</span>
             {l.address && <span style={{ fontSize: 11, color: C.faint }}>{l.address}</span>}
             <div style={{ flex: 1 }} />
+            <select value={l.wb_warehouse_id ?? ""} onChange={(e) => updateLoc(l, { wb_warehouse_id: e.target.value || null })}
+              style={{ ...inputStyle, width: 170, padding: "3px 6px", fontSize: 12 }} title="Склад продавца WB">
+              <option value="">WB: не привязан</option>{whOptions("wb", l)}
+            </select>
+            <select value={l.ozon_warehouse_id ?? ""} onChange={(e) => updateLoc(l, { ozon_warehouse_id: e.target.value || null })}
+              style={{ ...inputStyle, width: 170, padding: "3px 6px", fontSize: 12 }} title="Склад продавца Ozon">
+              <option value="">Ozon: не привязан</option>{whOptions("ozon", l)}
+            </select>
+            <input defaultValue={l.city || ""} placeholder="город"
+              onBlur={(e) => { if ((e.target.value.trim() || null) !== (l.city || null)) updateLoc(l, { city: e.target.value }); }}
+              style={{ ...inputStyle, width: 110, padding: "3px 6px", fontSize: 12 }} />
+            <label style={{ fontSize: 11, color: C.muted, display: "flex", gap: 4, alignItems: "center" }}>
+              <input type="checkbox" checked={l.is_active !== false} onChange={(e) => updateLoc(l, { is_active: e.target.checked })} /> активно
+            </label>
             <button onClick={() => renameLoc(l)} style={{ ...miniBtn, color: C.muted }} title="Переименовать">✎</button>
             <button onClick={() => delLoc(l)} style={{ ...miniBtn, color: C.neg }} title="Удалить">🗑</button>
           </div>
         ))}
       </div>
+      {sellerWarehouses.some((w) => w.is_active && w.location_id == null) && (
+        <div style={{ marginTop: 10, fontSize: 12, color: C.neg }}>
+          Не привязаны к месту: {sellerWarehouses.filter((w) => w.is_active && w.location_id == null)
+            .map((w) => `${w.platform.toUpperCase()} · ${w.name}`).join(", ")}
+        </div>
+      )}
     </div>
   );
 }
