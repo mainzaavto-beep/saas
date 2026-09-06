@@ -20,6 +20,7 @@
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { normalizeLocationUpdate } from "@/lib/locationsLink.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,7 +42,19 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   // Список мест хранения (справочник) — для фильтра и выбора в строках.
   const locations = await tenantQuery(
-    `SELECT id, name, address, loc_type FROM tenant.stock_ff_locations ORDER BY loc_type, name`
+    `SELECT id, name, address, loc_type, wb_warehouse_id, ozon_warehouse_id, city, is_active
+     FROM tenant.stock_ff_locations ORDER BY loc_type, name`
+  );
+  // Склады продавца на МП (mp_seller_warehouses, тик references) + к какому месту привязан.
+  const sellerWarehouses = await tenantQuery(
+    `SELECT w.platform, w.warehouse_id, w.name, w.kind, w.is_active,
+            l.id AS location_id
+     FROM tenant.mp_seller_warehouses w
+     LEFT JOIN tenant.stock_ff_locations l
+       ON l.cabinet_id = w.cabinet_id
+      AND ((w.platform = 'wb' AND l.wb_warehouse_id = w.warehouse_id)
+        OR (w.platform = 'ozon' AND l.ozon_warehouse_id = w.warehouse_id))
+     ORDER BY w.platform, w.name`
   );
 
   // Привязки артикулов МП (с 2026-07-18 — мультисвязка): одна позиция ↔ много SKU.
@@ -153,7 +166,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
      LIMIT 50`
   );
 
-  return NextResponse.json({ items, totals, locations, shipments });
+  return NextResponse.json({ items, totals, locations, sellerWarehouses, shipments });
 });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
@@ -207,6 +220,24 @@ export const POST = withCabinet(async (req, { cabinet }) => {
         vals.push(b.loc_type === "ff" ? "ff" : "stock");
       }
       await tenantQuery(`UPDATE tenant.stock_ff_locations SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
+      return NextResponse.json({ ok: true });
+    }
+    if (op === "update") {
+      const lid = Number(b.id);
+      if (!lid) return NextResponse.json({ error: "id required" }, { status: 400 });
+      const n = normalizeLocationUpdate(b);
+      if (!n.ok) return NextResponse.json({ error: n.error }, { status: 400 });
+      try {
+        await tenantQuery(
+          `UPDATE tenant.stock_ff_locations SET ${n.sets.join(", ")} WHERE id = $${n.vals.length + 1}`,
+          [...n.vals, lid]
+        );
+      } catch (e) {
+        if (String(e?.code) === "23505") {
+          return NextResponse.json({ error: "склад уже привязан к другому месту" }, { status: 409 });
+        }
+        throw e;
+      }
       return NextResponse.json({ ok: true });
     }
     if (op === "delete") {
