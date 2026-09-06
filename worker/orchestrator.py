@@ -206,6 +206,7 @@ OZON_COLLECTORS = [
     "ozon_prices",     # дневной снимок цен → соинвест (миграция 030, спек 2026-08-02)
     "ozon_references", # справочник кластеров → shared.ozon_clusters (таймер saas-references)
     "ozon_seller_warehouses",
+    "ozon_supply_orders",  # заказы на поставку FBO → tenant.ozon_supply_orders (тик main)
 ]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).

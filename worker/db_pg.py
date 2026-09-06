@@ -1584,3 +1584,17 @@ def upsert_ozon_accrual_types(rows):
             cur.executemany(sql, batch)
     return len(rows)
 
+
+# --- ozon_supply_orders (заказы на поставку FBO, план «Склады 2.0», этап 1) ---
+_OZ_SUPPLY_ORDER_COLS = ["order_id", "number", "state", "created_at", "timeslot_from", "timeslot_to",
+                         "dest_warehouse_id", "dest_warehouse_name"]
+_OZ_SUPPLY_ITEM_COLS = ["order_id", "sku", "product_id", "qty_declared", "qty_accepted"]
+
+
+def upsert_ozon_supply_orders_many(rows):
+    return _batch_upsert("ozon_supply_orders", ["order_id"], _OZ_SUPPLY_ORDER_COLS, rows)
+
+
+def upsert_ozon_supply_order_items_many(rows):
+    return _batch_upsert("ozon_supply_order_items", ["order_id", "sku"], _OZ_SUPPLY_ITEM_COLS, rows)
+

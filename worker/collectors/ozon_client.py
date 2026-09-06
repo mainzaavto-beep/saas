@@ -441,36 +441,50 @@ class OzonClient:
                 time.sleep(REQUEST_PAUSE_SEC)
         return out
 
+    # Состояния заказа на поставку FBO для /v3/supply-order/list (проба 2026-09-06):
+    # ЦЕЛЫЕ коды 1..11 БЕЗ префикса ORDER_STATE_ (0 и ≥12 — 400 invalid). Это
+    # «все состояния» — конкретных имён состояний per-код API не документирует.
+    SUPPLY_ORDER_STATES = list(range(1, 12))
+
     def iter_supply_order_ids(self, limit: int = 100) -> Iterator[int]:
-        """Заказы на поставку FBO: POST /v2/supply-order/list, курсор
-        paging.from_supply_order_id ← last_supply_order_id. Все состояния."""
-        cursor = 0
+        """Заказы на поставку FBO: POST /v3/supply-order/list (обновлено 2026-09-06 —
+        Ozon отключил /v2/supply-order/list, отвечал 404 "page not found"; проверено
+        живым вызовом api-seller.ozon.ru). Отличия /v3 от /v2:
+        - filter.states ОБЯЗАТЕЛЕН и не может быть пустым (иначе 400) — передаём все
+          коды SUPPLY_ORDER_STATES;
+        - тело требует sort_by ≠ 0 (используем 1);
+        - курсор — непрозрачная строка last_id (не число last_supply_order_id);
+        - ответ {"order_ids": [int,...], "last_id": "<cursor|''>"}, а не
+          {"supply_order_id": [...], "last_supply_order_id": ...}."""
+        cursor = ""
         while True:
-            res = self._post(self.host, "/v2/supply-order/list", {
-                "filter": {"states": []},
-                "paging": {"from_supply_order_id": cursor, "limit": limit},
-            }) or {}
-            ids = res.get("supply_order_id") or []
+            body = {"filter": {"states": self.SUPPLY_ORDER_STATES}, "limit": limit, "sort_by": 1}
+            if cursor:
+                body["last_id"] = cursor
+            res = self._post(self.host, "/v3/supply-order/list", body) or {}
+            ids = res.get("order_ids") or []
             for i in ids:
                 yield int(i)
-            last = res.get("last_supply_order_id")
-            if not ids or not last or int(last) == cursor:
+            last = res.get("last_id") or ""
+            if not ids or not last:
                 break
-            cursor = int(last)
+            cursor = last
             time.sleep(REQUEST_PAUSE_SEC)
 
     def supply_order_get(self, order_ids: list, chunk: int = 50) -> dict:
-        """POST /v2/supply-order/get по пачкам ≤ chunk. Возвращает {orders: [...], warehouses: [...]}
-        со склейкой всех пачек."""
-        orders, warehouses = [], []
+        """POST /v3/supply-order/get по пачкам ≤ chunk (обновлено 2026-09-06 — /v2
+        отключён так же, как /v2/supply-order/list). Возвращает {"orders": [...]}
+        со склейкой всех пачек. В /v3 НЕТ top-level "warehouses" (был в /v2) — склад
+        назначения приходит embedded-объектом в каждой supplies[].storage_warehouse
+        (см. ozon_supply_orders.parse_orders)."""
+        orders = []
         for i in range(0, len(order_ids), chunk):
             if i:
                 time.sleep(REQUEST_PAUSE_SEC)
-            res = self._post(self.host, "/v2/supply-order/get",
+            res = self._post(self.host, "/v3/supply-order/get",
                              {"order_ids": [int(x) for x in order_ids[i:i + chunk]]}) or {}
             orders.extend(res.get("orders") or [])
-            warehouses.extend(res.get("warehouses") or [])
-        return {"orders": orders, "warehouses": warehouses}
+        return {"orders": orders}
 
     def supply_order_bundle_items(self, bundle_ids: list, limit: int = 100) -> list:
         """Состав поставки: POST /v1/supply-order/bundle, пагинация last_id/has_next.

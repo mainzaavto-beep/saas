@@ -61,27 +61,30 @@ assert [r["sku"] for r in res] == [1, 2], res
 assert "cursor" not in calls[0][1] and calls[1][1]["cursor"] == "c1", calls
 ok += 1
 
-# 3) iter_supply_order_ids: две страницы по курсору last_supply_order_id
+# 3) iter_supply_order_ids: /v3, курсор — непрозрачная строка last_id, filter.states —
+# все коды 1..11 (проба 06.09.2026: /v2 отключён Ozon, отвечал 404)
 pages = [
-    {"supply_order_id": [10, 11], "last_supply_order_id": 11},
-    {"supply_order_id": [12], "last_supply_order_id": 12},
-    {"supply_order_id": [], "last_supply_order_id": 12},
+    {"order_ids": [10, 11], "last_id": "c1"},
+    {"order_ids": [12], "last_id": "c2"},
+    {"order_ids": [], "last_id": ""},
 ]
 cli, calls = make_client(lambda p, b, n: pages[n - 1])
 ids = list(cli.iter_supply_order_ids(limit=2))
 assert ids == [10, 11, 12], ids
-assert calls[0][1]["paging"]["from_supply_order_id"] == 0
-assert calls[1][1]["paging"]["from_supply_order_id"] == 11, calls[1]
+assert calls[0][0] == "/v3/supply-order/list", calls[0]
+assert calls[0][1]["filter"]["states"] == list(range(1, 12)), calls[0]
+assert calls[0][1]["sort_by"] != 0 and "last_id" not in calls[0][1], calls[0]
+assert calls[1][1]["last_id"] == "c1", calls[1]
 ok += 1
 
-# 4) supply_order_get: 120 id → 3 запроса по 50, orders и warehouses склеены
+# 4) supply_order_get: /v3, 120 id → 3 запроса по 50, orders склеены; НЕТ top-level
+# "warehouses" (был в /v2, проба 06.09.2026 — склад назначения в supplies[].storage_warehouse)
 def h4(p, b, n):
-    assert p == "/v2/supply-order/get"
-    return {"orders": [{"supply_order_id": i} for i in b["order_ids"]],
-            "warehouses": [{"warehouse_id": 100 + n, "name": f"w{n}"}]}
+    assert p == "/v3/supply-order/get"
+    return {"orders": [{"order_id": i} for i in b["order_ids"]]}
 cli, calls = make_client(h4)
 res = cli.supply_order_get(list(range(120)))
-assert len(res["orders"]) == 120 and len(res["warehouses"]) == 3, res
+assert len(res["orders"]) == 120 and "warehouses" not in res, res
 assert [len(c[1]["order_ids"]) for c in calls] == [50, 50, 20]
 ok += 1
 
