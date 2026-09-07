@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { applyMove } from "@/lib/stockLedger.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -207,8 +208,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ items: enriched, totals, facets: { suppliers, vendors, statuses, categories } });
 });
 
-export const POST = withCabinet(async (req, { cabinet }) => {
+export const POST = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
+  // Автор движения остатка (stock_moves.created_by).
+  const userId = session?.user_id ?? null;
 
   // Завершить закупку → скопировать партию в склад (ff_inventory) + archived=true.
   // Маршрут: закупка → «Завершить → склад» → товар в остатках склада (скрыт из
@@ -244,10 +247,17 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       const ins = await tenantQuery(
         `INSERT INTO tenant.ff_inventory
            (cabinet_id, purchase_id, internal_name, qty, unit_cost, category, nm_id, completed_at)
-         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, NULL, $6) RETURNING id`,
-        [Number(b.id), cur.supplier_name, Number(cur.qty) || 0, unitCost, cur.category || null, completedAt]
+         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, 0, $3, $4, NULL, $5) RETURNING id`,
+        [Number(b.id), cur.supplier_name, unitCost, cur.category || null, completedAt]
       );
       invId = ins[0]?.id;
+    }
+    // (б2) количество приходит движением «in» из журнала (единственный путь к qty).
+    // Идемпотентно: повторное завершение той же закупки — duplicate, qty не удваивается.
+    const qtyIn = Math.round(Number(cur.qty) || 0);
+    if (invId && qtyIn > 0) {
+      await applyMove({ ffInventoryId: invId, kind: "in", qty: qtyIn, srcKind: "purchase",
+        srcRef: String(b.id), movedAt: completedAt, note: `закупка ${cur.supplier_name || ""}`.trim(), userId });
     }
     // (в) если у закупки был nm_id (WB) — создаём привязку в ff_inventory_skus
     // (мультисвязка с 2026-07-18: именно эта таблица — источник правды для артикулов).

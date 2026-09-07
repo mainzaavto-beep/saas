@@ -257,10 +257,14 @@ function Row({ it, cabinetId, locations, reload, onShipFromRow }) {
     const v = parseInt(qtyText, 10);
     if (!Number.isFinite(v) || v < 0) return;
     if (v === it.qty) return;
+    // Ручная правка остатка = корректировка в журнале движений: причина обязательна
+    // (сервер вернёт 400 без note). Отказ от ввода — откат поля к текущему значению.
+    const note = prompt("Причина изменения остатка (инвентаризация, брак, пересорт…):");
+    if (note == null || !note.trim()) { setQtyText(String(it.qty)); return; }
     try {
       const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update_qty", id: it.id, qty: v }),
+        body: JSON.stringify({ action: "update_qty", id: it.id, qty: v, note: note.trim() }),
       });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || "update_qty failed");

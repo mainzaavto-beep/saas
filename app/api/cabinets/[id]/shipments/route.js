@@ -12,12 +12,16 @@
 //         <datalist> поля «склад назначения» (как в /move).
 // POST { action:"create" | "delete" } (role: manager)
 //   create: { doc_no?, platform, ship_dt, dest_warehouse?, note?, lines:[{ff_inventory_id,qty}] }
-//           → атомарно: списание остатков + INSERT doc + INSERT lines. Откатится при
-//           нехватке остатка на любой строке (вся транзакция within withTenant).
-//   delete: { id } (doc_id) → вернуть qty в остатки + удалить строки + удалить документ.
+//           → атомарно: INSERT doc + INSERT lines + движения out_fbo через журнал
+//           (lib/stockLedger.js). Нехватка остатка ловится ПРЕДпроверкой (FOR UPDATE)
+//           до первой записи → 400 без частично записанного документа.
+//   delete: { id } (doc_id) → движения adjust (возврат qty) + удалить строки + документ.
+//
+// ⚠ Остаток (ff_inventory.qty) здесь напрямую НЕ трогается — только applyMove.
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { applyMove } from "@/lib/stockLedger.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,8 +112,10 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ docs: enriched, totals, warehouses });
 });
 
-export const POST = withCabinet(async (req, { cabinet }) => {
+export const POST = withCabinet(async (req, { cabinet, session }) => {
   const b = await req.json();
+  // Автор движения остатка (stock_moves.created_by).
+  const userId = session?.user_id ?? null;
 
   // ── create: новая отгрузка (документ + строки + списание остатков) ───────
   if (b.action === "create") {
@@ -147,21 +153,22 @@ export const POST = withCabinet(async (req, { cabinet }) => {
       ids.add(n.ff_inventory_id);
     }
 
-    // Атомарность: всё ниже — в одной транзакции withTenant (BEGIN…COMMIT, откат
-    // при throw). Шаги: (1) списание остатков [WHERE qty >= $1 RETURNING] →
-    // (2) INSERT doc → (3) INSERT lines. Если на любой позиции остатка не хватило
-    // (0 строк RETURNING) — throw → ROLLBACK отменяет и списание, и документ.
+    // Предпроверка остатка ДО любой записи. Почему не «попробовать и откатить»:
+    // withCabinet ловит throw и отдаёт 500, а возврат 400-ответа из обработчика
+    // означает КОММИТ транзакции withTenant — то есть частично записанный документ
+    // остался бы в базе. Поэтому нехватку остатка ловим здесь, когда писать ещё
+    // нечего, и отдаём честный 400. FOR UPDATE держит строки до конца транзакции,
+    // так что между проверкой и движением остаток не уедет.
     for (const n of norm) {
-      const upd = await tenantQuery(
-        `UPDATE tenant.ff_inventory
-         SET qty = qty - $1, updated_at = now()
-         WHERE id = $2 AND qty >= $1
-         RETURNING qty`,
-        [n.qty, n.ff_inventory_id]
-      );
-      if (!upd.length) {
-        // Остатка не хватило (или строка не найдена) → откат всей транзакции.
-        throw new Error(`недостаточно остатка для позиции id=${n.ff_inventory_id} (или строка не найдена)`);
+      const row = (await tenantQuery(
+        `SELECT qty FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL FOR UPDATE`,
+        [n.ff_inventory_id]
+      ))[0];
+      if (!row || Number(row.qty) < n.qty) {
+        return NextResponse.json(
+          { error: `недостаточно остатка для позиции id=${n.ff_inventory_id} (или строка не найдена)` },
+          { status: 400 }
+        );
       }
     }
 
@@ -180,17 +187,26 @@ export const POST = withCabinet(async (req, { cabinet }) => {
 
     // Строки: один INSERT со многими VALUES. Эффективнее цикла, и атомарно.
     const valuesSql = norm.map((_, i) =>
-      `($1, $2, ${(i * 2) + 3}, ${(i * 2) + 4})`
+      `($1, $2, $${(i * 2) + 3}, $${(i * 2) + 4})`
     ).join(", ");
     const params = [
       Number(cabinet.cabinet_id), docId,
       ...norm.flatMap((n) => [n.ff_inventory_id, n.qty]),
     ];
-    await tenantQuery(
+    const lineRows = await tenantQuery(
       `INSERT INTO tenant.ff_shipment_lines (cabinet_id, doc_id, ff_inventory_id, qty)
-       VALUES ${valuesSql}`,
+       VALUES ${valuesSql}
+       RETURNING id, ff_inventory_id, qty`,
       params
     );
+
+    // Списание — движениями журнала (src_ref = «<doc_id>:<line_id>», уникален).
+    // Остатка хватает (предпроверка выше держит строки FOR UPDATE); если applyMove
+    // всё же бросит insufficient — throw откатит документ целиком (500).
+    for (const ln of lineRows) {
+      await applyMove({ ffInventoryId: ln.ff_inventory_id, kind: "out_fbo", qty: Number(ln.qty),
+        srcKind: "ff_shipment_doc", srcRef: `${docId}:${ln.id}`, movedAt: shipDt, userId });
+    }
 
     return NextResponse.json({ ok: true, id: docId });
   }
@@ -203,15 +219,14 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     // Прочитать строки документа → вернуть qty в ff_inventory → удалить строки + документ.
     // Атомарно в текущей транзакции withTenant.
     const lines = await tenantQuery(
-      `SELECT ff_inventory_id, qty FROM tenant.ff_shipment_lines WHERE doc_id = $1`,
+      `SELECT id, ff_inventory_id, qty FROM tenant.ff_shipment_lines WHERE doc_id = $1`,
       [id]
     );
-    // Возврат qty (позиций может не быть — RLS/удалены; RETURNING не нужен, просто UPDATE).
+    // Возврат qty — движением adjust со ссылкой на удаляемую строку документа.
     for (const ln of lines) {
-      await tenantQuery(
-        `UPDATE tenant.ff_inventory SET qty = qty + $1, updated_at = now() WHERE id = $2`,
-        [ln.qty, ln.ff_inventory_id]
-      );
+      await applyMove({ ffInventoryId: ln.ff_inventory_id, kind: "adjust", qty: Number(ln.qty),
+        srcKind: "ff_shipment_doc", srcRef: `${id}:${ln.id}:delete`,
+        note: `удаление документа отгрузки №${id}`, userId });
     }
     await tenantQuery(`DELETE FROM tenant.ff_shipment_lines WHERE doc_id = $1`, [id]);
     await tenantQuery(`DELETE FROM tenant.ff_shipment_docs WHERE id = $1`, [id]);
