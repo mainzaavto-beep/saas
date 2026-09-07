@@ -17,6 +17,8 @@ import { C, soft } from "@/lib/palette.js";
 // Запись: POST link_sku / unlink_sku / update_qty.
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { ShipmentFormModal } from "../shipments/ShipmentFormModal.jsx";
+import { TransferFormModal } from "./TransferFormModal.jsx";
+import { ALERT } from "@/lib/callout.js";
 import Link from "next/link";
 
 
@@ -39,6 +41,7 @@ export default function InventoryPage({ cabinetId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showLocs, setShowLocs] = useState(false);
   const [showShip, setShowShip] = useState(false); // модалка «+ Отгрузка»
+  const [showTransfer, setShowTransfer] = useState(false); // модалка «⇄ Перемещение»
   const [shipPreset, setShipPreset] = useState(null); // presetItem при вызове из строки
   const [category, setCategory] = useState(""); // фильтр по категории
   const [locationId, setLocationId] = useState(""); // фильтр по конкретному месту
@@ -94,6 +97,13 @@ export default function InventoryPage({ cabinetId }) {
     return { items: filtered.length, qty, sum: Math.round(sum * 100) / 100, linked };
   }, [filtered]);
 
+  // Здоровье журнала движений (GET /inventory → ledger): расхождение остатка с
+  // журналом и неразнесённые задания FBS. Считаем до ранних return — простые
+  // выражения, без хуков.
+  const ledger = data?.ledger || null;
+  const gaps = ledger?.gaps || {};
+  const gapsTotal = Object.values(gaps).reduce((a, n) => a + (Number(n) || 0), 0);
+
   if (error) return <Centered>⚠️ Ошибка: {error}</Centered>;
   if (loading && !data) return <Centered>Загрузка…</Centered>;
   if (!data) return <Centered>Нет данных</Centered>;
@@ -101,6 +111,21 @@ export default function InventoryPage({ cabinetId }) {
   return (
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px", maxWidth: 1500, margin: "0 auto" }}>
       <Header />
+
+      {/* Баннеры здоровья журнала движений (спека «Склады 2.0» §3.5) */}
+      {ledger?.mismatch > 0 && (
+        <div style={{ ...calloutStyle, ...ALERT.critical, marginBottom: 10 }}>
+          ⚠️ Остаток {num(ledger.mismatch)} {pluralRu(ledger.mismatch, "позиции", "позиций", "позиций")} не сходится
+          с журналом движений — сообщите разработчику.
+        </div>
+      )}
+      {gapsTotal > 0 && (
+        <div style={{ ...calloutStyle, ...ALERT.warn, marginBottom: 10 }}>
+          Не разнесено FBS-заданий: {num(Number(gaps.no_location) || 0)} без места,{" "}
+          {num(Number(gaps.no_item) || 0)} без позиции, {num(Number(gaps.insufficient) || 0)} не хватило остатка.
+          Проверьте привязку складов в «📍 Места» и места у позиций.
+        </div>
+      )}
 
       {/* KPI */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
@@ -153,6 +178,14 @@ export default function InventoryPage({ cabinetId }) {
           style={{ ...resetBtnStyle, background: showLocs ? C.surface : undefined }}>
           {showLocs ? "✕ Места" : "📍 Места"}
         </button>
+        <button onClick={() => setShowTransfer(true)}
+          disabled={locations.length < 2}
+          style={{ ...resetBtnStyle, opacity: locations.length < 2 ? 0.5 : 1 }}
+          title={locations.length < 2
+            ? "Нужно минимум два места хранения"
+            : "Переместить товар между местами (склад ↔ ФФ)"}>
+          ⇄ Перемещение
+        </button>
         <button onClick={() => setShowAdd((v) => !v)}
           style={{ ...primaryBtn, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}>
           {showAdd ? "✕ Закрыть" : "+ Добавить товар"}
@@ -180,6 +213,16 @@ export default function InventoryPage({ cabinetId }) {
           presetItem={shipPreset}
           onClose={() => { setShowShip(false); setShipPreset(null); }}
           onDone={() => { setShowShip(false); setShipPreset(null); reload(); }}
+        />
+      )}
+
+      {showTransfer && (
+        <TransferFormModal
+          cabinetId={cabinetId}
+          items={items}
+          locations={locations}
+          onClose={() => setShowTransfer(false)}
+          onDone={() => { setShowTransfer(false); reload(); }}
         />
       )}
 
@@ -996,6 +1039,8 @@ const tdLeft = { padding: "8px 10px", verticalAlign: "middle", textAlign: "left"
 const tdFootLeft = { padding: "12px 10px", fontSize: 13, fontWeight: 800, color: C.ink, textAlign: "left" };
 const tdFootRight = { padding: "12px 10px", fontSize: 13, color: C.ink, textAlign: "right", fontVariantNumeric: "tabular-nums" };
 const alertStyle = { padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.5, background: C.surfaceAlt, border: `1px solid ${C.line}`, color: C.muted };
+// Каркас плашки-баннера; цвета подмешиваются из ALERT (lib/callout.js).
+const calloutStyle = { padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.5, fontWeight: 600 };
 const modalBackdrop = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "grid", placeItems: "center", zIndex: 1000 };
 const modalCard = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, width: 380, maxWidth: "90vw" };
 const thumbBtn = { width: 40, height: 40, borderRadius: 6, background: C.surfaceAlt, color: C.faint, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, border: `1px dashed ${C.line}`, cursor: "pointer", flexShrink: 0 };

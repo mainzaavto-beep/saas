@@ -1,6 +1,9 @@
 // /api/cabinets/[id]/inventory — остатки склада/ФФ (маршрут: закупка → завершить → склад).
 //
-// GET → { items, totals, locations, shipments }
+// GET → { items, totals, locations, sellerWarehouses, shipments, ledger }
+//   ledger: { mismatch, gaps: {no_location, no_item, insufficient} } — здоровье журнала
+//          движений: сколько позиций разошлись с stock_moves и сколько заданий FBS
+//          не удалось разнести (баннеры на странице).
 //   items: наименование, qty, себест. (unit_cost = «себест. до МП»), сумма (qty×unit_cost),
 //          категория, привязанные артикулы МП. С 2026-07-18 у одной позиции может быть
 //          НЕСКОЛЬКО артикулов (разные МП, разные nm_id/product_id) — они в массиве
@@ -169,7 +172,21 @@ export const GET = withCabinet(async (req, { cabinet }) => {
      LIMIT 50`
   );
 
-  return NextResponse.json({ items, totals, locations, sellerWarehouses, shipments });
+  // Здоровье журнала движений (спека «Склады 2.0» §3.5): расхождение остатка с
+  // журналом (инвариант qty = Σ stock_moves.qty) и неразнесённые задания/постинги
+  // FBS (stock_move_gaps). Оба числа показываются баннерами над таблицей.
+  const mm = (await tenantQuery(
+    `SELECT COUNT(*)::int AS mismatch FROM tenant.ff_inventory f
+     LEFT JOIN (SELECT ff_inventory_id, SUM(qty) AS s FROM tenant.stock_moves GROUP BY 1) m
+       ON m.ff_inventory_id = f.id
+     WHERE f.archived_at IS NULL AND f.qty <> COALESCE(m.s, 0)`
+  ))[0];
+  const gp = await tenantQuery(
+    `SELECT reason, COUNT(*)::int AS n FROM tenant.stock_move_gaps WHERE resolved_at IS NULL GROUP BY reason`
+  );
+  const ledger = { mismatch: mm?.mismatch ?? 0, gaps: Object.fromEntries(gp.map((g) => [g.reason, g.n])) };
+
+  return NextResponse.json({ items, totals, locations, sellerWarehouses, shipments, ledger });
 });
 
 export const POST = withCabinet(async (req, { cabinet, session }) => {
