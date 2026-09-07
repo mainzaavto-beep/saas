@@ -9,20 +9,28 @@ import { useState, useMemo, useEffect } from "react";
 //   • /inventory — presetItem = позиция из строки (первая строка уже в составе).
 //
 // POST /api/cabinets/[id]/shipments { action:"create", doc_no?, platform, ship_dt,
-//   dest_warehouse?, note?, lines:[{ff_inventory_id, qty}] }.
-// Списание остатков атомарно на бэке; при нехватке — ошибка, ничего не создаётся.
+//   dest_warehouse?, dest_warehouse_id?, location_id?, status:'draft'|'shipped', note?,
+//   lines:[{ff_inventory_id, qty}] }.
+// Списание остатков атомарно на бэке (только при status='shipped'); при нехватке — ошибка,
+// ничего не создаётся.
 //
-// inventoryItems: позиции склада с qty>0 (для выбора в составе), формат GET /inventory.
-// warehouses: string[] — список имён складов для <datalist>. Если null — форма
-//   подтянет его сама из GET /shipments (используется при вызове с /inventory).
+// inventoryItems: позиции склада с qty>0 (для выбора в составе), формат GET /inventory
+//   (каждая позиция несёт location_id/location_name — «Откуда» строится из них, отдельного
+//   списка мест не запрашиваем).
+// warehouses: { wb:[{id,name,region}], ozon:[{id,name,cluster}] } — справочники складов МП
+//   для «Склада назначения». Если null — форма подтянет его сама из GET /shipments
+//   (используется при вызове с /inventory).
 const money = (v) => v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v) + " ₽";
+const EMPTY_WH = { wb: [], ozon: [] };
 
 export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, presetItem, onClose, onDone }) {
   // Шапка документа.
   const [docNo, setDocNo] = useState("");
   const [platform, setPlatform] = useState(presetItem?.skus?.[0]?.platform || "wb");
   const [shipDt, setShipDt] = useState(new Date().toISOString().slice(0, 10));
-  const [destWh, setDestWh] = useState("");
+  const [fromLocationId, setFromLocationId] = useState(presetItem?.location_id ? String(presetItem.location_id) : "");
+  const [destWhId, setDestWhId] = useState("");
+  const [shipNow, setShipNow] = useState(true); // черновик / отгрузить сейчас
   const [note, setNote] = useState("");
   // Состав: массив строк { ff_inventory_id, qty }.
   const [lines, setLines] = useState(() =>
@@ -36,9 +44,37 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
     if (warehouses || whList) return;
     fetch(`/api/cabinets/${cabinetId}/shipments`)
       .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d.warehouses)) setWhList(d.warehouses); })
+      .then((d) => { if (d.warehouses) setWhList(d.warehouses); })
       .catch(() => {});
   }, [warehouses, whList, cabinetId]);
+  const whByPlatform = whList || EMPTY_WH;
+
+  // «Откуда» строим из мест, где реально лежат позиции с остатком (inventoryItems).
+  const locations = useMemo(() => {
+    const m = new Map();
+    for (const it of inventoryItems) {
+      if (it.location_id == null) continue;
+      if (!m.has(it.location_id)) {
+        m.set(it.location_id, { id: it.location_id, name: it.location_name || `Место ${it.location_id}`, loc_type: it.loc_type });
+      }
+    }
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  }, [inventoryItems]);
+
+  // Позиции выбранного места (для состава). Смена «Откуда» сбрасывает состав —
+  // старые строки могли лежать на другом месте (как в TransferFormModal).
+  const locItems = useMemo(
+    () => (fromLocationId ? inventoryItems.filter((it) => it.location_id === Number(fromLocationId)) : []),
+    [inventoryItems, fromLocationId]
+  );
+  function changeFrom(v) {
+    setFromLocationId(v);
+    setLines([]);
+  }
+  function changePlatform(v) {
+    setPlatform(v);
+    setDestWhId("");
+  }
 
   // Карта позиций для быстрого поиска имени/остатка по id.
   const itemById = useMemo(() => {
@@ -48,9 +84,9 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
   }, [inventoryItems]);
 
   const availForLine = (excludeLineIdx) => {
-    // Доступные позиции для строки: все минус уже выбранные в других строках.
+    // Доступные позиции для строки: все на выбранном месте минус уже выбранные в других строках.
     const used = new Set(lines.filter((_, i) => i !== excludeLineIdx).map((l) => l.ff_inventory_id));
-    return inventoryItems.filter((it) => !used.has(it.id));
+    return locItems.filter((it) => !used.has(it.id));
   };
 
   function addLine() {
@@ -72,7 +108,11 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
     return acc + (Number.isFinite(q) && q > 0 ? q : 0);
   }, 0);
 
+  // Выбранный склад назначения — объект из справочника (для id + отображаемого имени).
+  const destWh = (whByPlatform[platform] || []).find((w) => String(w.id) === String(destWhId)) || null;
+
   async function submit() {
+    if (!fromLocationId) { alert("Выберите место-источник («Откуда»)"); return; }
     // Валидация строк.
     const norm = [];
     for (const [i, l] of lines.entries()) {
@@ -93,7 +133,11 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
         body: JSON.stringify({
           action: "create",
           doc_no: docNo, platform, ship_dt: shipDt,
-          dest_warehouse: destWh, note,
+          location_id: Number(fromLocationId),
+          dest_warehouse_id: destWh ? destWh.id : null,
+          dest_warehouse: destWh ? destWh.name : null,
+          status: shipNow ? "shipped" : "draft",
+          note,
           lines: norm,
         }),
       });
@@ -116,7 +160,7 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
               style={{ ...inputStyle, width: 160 }} />
           </Field>
           <Field label="Маркетплейс">
-            <select value={platform} onChange={(e) => setPlatform(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+            <select value={platform} onChange={(e) => changePlatform(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
               <option value="wb">Wildberries</option>
               <option value="ozon">Ozon</option>
             </select>
@@ -124,13 +168,31 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
           <Field label="Дата отгрузки">
             <input type="date" value={shipDt} onChange={(e) => setShipDt(e.target.value)} style={{ ...inputStyle, width: "auto" }} />
           </Field>
-          <Field label="Склад назначения">
-            <input value={destWh} onChange={(e) => setDestWh(e.target.value)} list="ship-wh-list"
-              placeholder="начните вводить…" style={{ ...inputStyle, width: 200 }} />
-            <datalist id="ship-wh-list">
-              {(whList || []).map((w) => <option key={w} value={w} />)}
-            </datalist>
+          <Field label="Откуда">
+            <select value={fromLocationId} onChange={(e) => changeFrom(e.target.value)} style={{ ...inputStyle, width: 190 }}>
+              <option value="">— выберите место —</option>
+              {locations.map((l) => (
+                <option key={l.id} value={l.id}>{l.name}{l.loc_type === "ff" ? " (ФФ)" : ""}</option>
+              ))}
+            </select>
           </Field>
+          <Field label="Склад назначения">
+            <select value={destWhId} onChange={(e) => setDestWhId(e.target.value)} style={{ ...inputStyle, width: 220 }}>
+              <option value="">— склад не выбран —</option>
+              {(whByPlatform[platform] || []).map((w) => (
+                <option key={w.id} value={w.id}>{w.name}{w.region ? ` · ${w.region}` : w.cluster ? ` · ${w.cluster}` : ""}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div style={{ display: "flex", gap: 14, marginBottom: 12, fontSize: 12 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="radio" checked={shipNow} onChange={() => setShipNow(true)} /> Отгрузить сейчас (спишет остаток)
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="radio" checked={!shipNow} onChange={() => setShipNow(false)} /> Сохранить как черновик
+          </label>
         </div>
 
         {/* Состав товаров */}
@@ -138,7 +200,17 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
           Состав отгрузки
         </div>
         <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 8, background: C.surfaceAlt }}>
-          {lines.length === 0 && (
+          {!fromLocationId && (
+            <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
+              Сначала выберите место-источник («Откуда»).
+            </div>
+          )}
+          {fromLocationId && locItems.length === 0 && (
+            <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
+              На этом месте нет позиций с остатком.
+            </div>
+          )}
+          {fromLocationId && lines.length === 0 && locItems.length > 0 && (
             <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
               Добавьте хотя бы один товар.
             </div>
@@ -170,7 +242,7 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
             );
           })}
           <button onClick={addLine}
-            disabled={lines.length >= inventoryItems.length}
+            disabled={!fromLocationId || lines.length >= locItems.length}
             style={{ ...miniBtn, color: C.accent, marginTop: 4 }}
             title="Добавить товар в отгрузку">
             + добавить товар
@@ -188,13 +260,14 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
           fontSize: 11, marginTop: 10, padding: "8px 10px",
           background: ALERT.warn.background, border: ALERT.warn.border, color: ALERT.warn.color, borderRadius: 6,
         }}>
-          ⚠️ Отгрузка формируется <strong>по факту отгрузки товара на маркетплейс и приёмки</strong>.
-          Количество по всем строкам списывается с остатка склада/ФФ. Если на какой-то позиции не хватит остатка — документ не создастся.
+          {shipNow
+            ? <>⚠️ Количество по всем строкам <strong>спишется с остатка склада/ФФ сразу</strong>. Если на какой-то позиции не хватит остатка — документ не создастся.</>
+            : <>Черновик <strong>не списывает остаток</strong> — количество спишется, когда документ будет отгружен («Отгрузить» в списке отгрузок).</>}
         </div>
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} style={resetBtnStyle}>Отмена</button>
-          <button onClick={submit} disabled={busy} style={primaryBtn}>{busy ? "⏳" : "Создать отгрузку"}</button>
+          <button onClick={submit} disabled={busy} style={primaryBtn}>{busy ? "⏳" : shipNow ? "Создать и отгрузить" : "Сохранить черновик"}</button>
         </div>
       </div>
     </div>

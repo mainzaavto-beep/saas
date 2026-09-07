@@ -13,6 +13,8 @@ export default function SettingsPage({ cabinetId }) {
   const [shops, setShops] = useState([]);
   const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [supplyMsg, setSupplyMsg] = useState(null);
+  const [savingSupply, setSavingSupply] = useState(false);
 
   useEffect(() => {
     fetch(`/api/cabinets/${cabinetId}/settings`).then(r => r.json()).then(d => d.error ? setError(d.error) : setData(d));
@@ -31,6 +33,23 @@ export default function SettingsPage({ cabinetId }) {
     setMsg(r.ok ? "✅ Сохранено" : "❌ Ошибка");
   };
 
+  // Пороги планирования поставок (спека «Склады 2.0» §4.1/4.4): используются
+  // /shipments → «Рекомендации». Целые 1..365, минимальный запас < целевого (валидирует бэк).
+  const saveSupply = async () => {
+    setSupplyMsg(null);
+    setSavingSupply(true);
+    const r = await fetch(`/api/cabinets/${cabinetId}/settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        supply_target_days: Number(data.supply_target_days),
+        supply_min_days: Number(data.supply_min_days),
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setSupplyMsg(r.ok ? "✅ Сохранено" : `❌ ${d.error || "Ошибка"}`);
+    setSavingSupply(false);
+  };
+
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: 0, padding: "24px 22px", fontFamily: FONT, color: C.ink }}>
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 20px" }}>⚙️ Настройки проекта</h1>
@@ -44,6 +63,35 @@ export default function SettingsPage({ cabinetId }) {
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
           <button onClick={save} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>Сохранить</button>
           {msg && <span style={{ fontSize: 14, color: msg.startsWith("✅") ? C.pos : C.neg }}>{msg}</span>}
+        </div>
+      </div>
+
+      {/* Пороги планирования поставок */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Планирование поставок</h2>
+        <p style={{ color: C.muted, fontSize: 12, margin: "0 0 12px" }}>
+          Используются на странице «Отгрузки» в блоке «Рекомендации»: цель — сколько дней запаса довозить,
+          минимум — при каком покрытии остатка появляется рекомендация довезти.
+        </p>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12, color: C.muted }}>Целевой запас, дн
+            <input type="number" min={1} max={365} step={1}
+              value={data.supply_target_days ?? ""}
+              onChange={e => setData({ ...data, supply_target_days: e.target.value })}
+              style={{ ...inputStyle, width: 100, marginTop: 4 }} />
+          </label>
+          <label style={{ fontSize: 12, color: C.muted }}>Минимальный запас, дн
+            <input type="number" min={1} max={365} step={1}
+              value={data.supply_min_days ?? ""}
+              onChange={e => setData({ ...data, supply_min_days: e.target.value })}
+              style={{ ...inputStyle, width: 100, marginTop: 4 }} />
+          </label>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+          <button onClick={saveSupply} disabled={savingSupply} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>
+            {savingSupply ? "Сохранение…" : "Сохранить"}
+          </button>
+          {supplyMsg && <span style={{ fontSize: 14, color: supplyMsg.startsWith("✅") ? C.pos : C.neg }}>{supplyMsg}</span>}
         </div>
       </div>
 
