@@ -195,6 +195,7 @@ OZON_COLLECTORS = [
     "ozon_catalog",
     "ozon_orders",
     "ozon_sales",
+    "ozon_fbs_writeoff",  # авто-списание FBS → stock_moves (после ozon_orders/ozon_sales)
     "ozon_finance",
     "ozon_accruals",    # начисления /v1/finance/accrual/by-day — источник прибыли
                         # (задача 3 плана «переезд финансов Ozon на методы начислений»,
