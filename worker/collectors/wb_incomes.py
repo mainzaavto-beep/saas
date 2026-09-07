@@ -1,13 +1,39 @@
 """
 SaaS-сборщик ПРИЁМОК FBO WB → tenant.wb_incomes (план «Склады 2.0», этап 3).
 
-statistics-api GET /api/v1/supplier/incomes?dateFrom=<ISO> — все приёмки с даты
-(строка = incomeId × nmId × barcode; quantity — принято; dateClose — дата приёмки;
-status — текст WB). Окно: последние INCOMES_DAYS (90) дней от даты прогона —
-хватает для связи документов и сторожа; полный бэкфилл — SAAS_INCOMES_DAYS=400.
-Аргументы дат оркестратора игнорируются. Мягкая деградация. SAAS_PROBE=1 — дамп.
+2026-09-07, фикс раунд 1: старый источник (statistics-api GET
+/api/v1/supplier/incomes) ОТКЛЮЧЁН WB — гейтвей ag-statistics отвечает 404
+«path not found» (не 429/5xx, не текст про deprecated, как у /supplier/stocks;
+воспроизводится с любыми параметрами и на альтернативных путях — не угадывается).
+Живой пробой (кабинет #1) найден рабочий источник — supplies-api (тот же хост,
+что wb_references — план поставок FBW):
+  • POST /api/v1/supplies {"dateFrom": ...} → список поставок (заголовки:
+    supplyID, createDate, factDate, updatedDate, statusID, ...). ⚠️ dateFrom
+    ИГНОРИРУЕТСЯ этим методом — отдаёт ВСЮ историю поставок аккаунта (проверено:
+    запрос с dateFrom=2026-06-01 вернул записи с 2024-09); окно применяем сами,
+    фильтром по createDate после ответа. limit/offset в теле тоже игнорируются
+    (проверено: offset за пределами списка вернул тот же полный список) — реальной
+    постраничности у метода нет, тянем один ответ.
+  • GET /api/v1/supplies/{id}       → детали: statusID, createDate, factDate
+    (дата приёмки, null пока не принято), updatedDate, warehouseName/
+    actualWarehouseName (фактический склад приоритетнее планового), quantity/
+    acceptedQuantity (агрегат по поставке).
+  • GET /api/v1/supplies/{id}/goods → товарные строки: barcode, nmID, techSize,
+    quantity (заявлено), acceptedQuantity (принято).
+WB убрал текстовые статусы 03.11.2025 (WB API release notes) — status хранит
+str(statusID) как есть, текстового имени в ответе больше нет ни у одного метода.
+«number» (номер поставки в ЛК) в новом API не отдаётся ни одним из трёх методов —
+остаётся NULL (в отличие от старого supplier/incomes, где было number: "ПОС-1").
 
-statistics-api лимит — 1 запрос в минуту на метод; один вызов на прогон.
+Дизайн опроса (лимиты supplies-api строгие): один POST-список на прогон, затем
+detail+goods ТОЛЬКО для поставок (а) созданных в окне INCOMES_DAYS И (б) ещё не
+сохранённых у нас в терминальном статусе (db_pg.wb_incomes_terminal_ids() —
+statusID=5 + date_close уже проставлен: WB такую поставку больше не меняет).
+quantity = ПРИНЯТО, NULL пока не принято (date_close IS NULL) — 0 принятых после
+факта приёмки отличаем от «ещё не известно». quantity_declared (миграция 056) —
+заявленное количество, есть всегда.
+
+Мягкая деградация. SAAS_PROBE=1 — дамп списка и окна, без записи.
 """
 import os
 import sys
@@ -24,83 +50,138 @@ import db_pg
 import _probe
 
 WB_TOKEN = os.getenv("WB_TOKEN")
-INCOMES_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/incomes"
+SUPPLIES_URL = "https://supplies-api.wildberries.ru/api/v1/supplies"
+SUPPLY_DETAIL_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}"
+SUPPLY_GOODS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/goods"
 INCOMES_DAYS = int(os.getenv("SAAS_INCOMES_DAYS", "90"))
 MAX_ATTEMPTS = 4
+BETWEEN_CALLS = 0.4  # пауза между detail/goods — лимиты supplies-api строгие
 
 
-def _get(url):
-    """GET с ретраями на 429/5xx; None при недоступности (не роняем прогон)."""
+def _request(method, url, body=None):
+    """GET/POST с ретраями на 429/5xx; None при недоступности (не роняем прогон)."""
+    headers = {"Authorization": WB_TOKEN}
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            resp = requests.get(url, headers={"Authorization": WB_TOKEN}, timeout=60)
+            if method == "GET":
+                resp = requests.get(url, headers=headers, timeout=60)
+            else:
+                headers["Content-Type"] = "application/json"
+                resp = requests.post(url, headers=headers, json=body or {}, timeout=60)
         except requests.RequestException as e:
-            print(f"  сеть ({attempt}/{MAX_ATTEMPTS}): {e}", flush=True)
+            print(f"  сеть {url} ({attempt}/{MAX_ATTEMPTS}): {e}", flush=True)
             time.sleep(2 * attempt)
             continue
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code == 429:
             wait = int(resp.headers.get("Retry-After", "10") or 10)
-            print(f"  429, ждём {wait}с ({attempt}/{MAX_ATTEMPTS})", flush=True)
+            print(f"  429 {url}, ждём {wait}с ({attempt}/{MAX_ATTEMPTS})", flush=True)
             time.sleep(min(wait, 60))
             continue
         if resp.status_code >= 500:
-            print(f"  {resp.status_code} ({attempt}/{MAX_ATTEMPTS})", flush=True)
+            print(f"  {resp.status_code} {url} ({attempt}/{MAX_ATTEMPTS})", flush=True)
             time.sleep(2 * attempt)
             continue
-        print(f"  ОШИБКА {resp.status_code}: {resp.text[:200]}", flush=True)
+        print(f"  ОШИБКА {resp.status_code} {url}: {resp.text[:200]}", flush=True)
         return None
     return None
 
 
-def parse_rows(data) -> list[dict]:
-    """[{incomeId, number, date, lastChangeDate, techSize, barcode, quantity,
-    totalPrice, dateClose, warehouseName, nmId, status}] → колонки tenant.wb_incomes.
-    Строки без nmId пропускаем (пришли неполными от WB)."""
+def _get(url):
+    return _request("GET", url)
+
+
+def _post(url, body):
+    return _request("POST", url, body)
+
+
+def parse_rows(income_id, detail, goods) -> list[dict]:
+    """detail — GET /api/v1/supplies/{id} (dict), goods — GET .../{id}/goods
+    (list). Одна строка на nmID×barcode; товарные строки без nmID пропускаем.
+    quantity — принято, NULL пока факт приёмки (factDate) не наступил.
+    quantity_declared — заявлено (есть всегда, даже до приёмки)."""
+    if not detail:
+        return []
+    status = str(detail.get("statusID")) if detail.get("statusID") is not None else None
+    accepted = bool(detail.get("factDate"))
+    warehouse = detail.get("actualWarehouseName") or detail.get("warehouseName")
+    date = (detail.get("createDate") or "")[:10] or None
+    date_close = (detail.get("factDate") or "")[:10] if accepted else None
+    last_change = detail.get("updatedDate")
     out = []
-    for r in data or []:
-        nm = r.get("nmId")
+    for g in goods or []:
+        nm = g.get("nmID")
         if nm is None:
             continue
+        accepted_qty = g.get("acceptedQuantity")
         out.append({
-            "income_id": int(r.get("incomeId")),
+            "income_id": int(income_id),
             "nm_id": int(nm),
-            "barcode": str(r.get("barcode")) if r.get("barcode") is not None else "",
-            "number": r.get("number"),
-            "date": (r.get("date") or "")[:10] or None,
-            "date_close": (r.get("dateClose") or "")[:10] or None,
-            "last_change": r.get("lastChangeDate"),
-            "warehouse_name": r.get("warehouseName"),
-            "tech_size": r.get("techSize"),
-            "quantity": int(r.get("quantity") or 0),
-            "total_price": r.get("totalPrice"),
-            "status": r.get("status"),
+            "barcode": str(g.get("barcode")) if g.get("barcode") is not None else "",
+            "number": None,  # supplies-api номер поставки не отдаёт (был в старом API)
+            "date": date,
+            "date_close": date_close,
+            "last_change": last_change,
+            "warehouse_name": warehouse,
+            "tech_size": g.get("techSize"),
+            "quantity": int(accepted_qty) if accepted and accepted_qty is not None else None,
+            "quantity_declared": int(g.get("quantity") or 0),
+            "total_price": None,  # supplies-api сумму по строке не отдаёт
+            "status": status,
         })
     return out
 
 
-def collect(*_args, **_kwargs):
-    """Аргументы дат оркестратора игнорируются — окно своё (INCOMES_DAYS)."""
-    print(f"[wb_incomes] приёмки FBO WB ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
+def collect():
+    print(f"[wb_incomes] приёмки FBO WB, supplies-api ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
     if not WB_TOKEN:
         print("[wb_incomes] ПРОПУСК: нет WB_TOKEN (exit 0)", flush=True)
         return 0
-    date_from = (datetime.now() - timedelta(days=INCOMES_DAYS)).strftime("%Y-%m-%d")
-    data = _get(f"{INCOMES_URL}?dateFrom={date_from}")
+    cutoff = (datetime.now() - timedelta(days=INCOMES_DAYS)).strftime("%Y-%m-%d")
+    data = _post(SUPPLIES_URL, {"dateFrom": cutoff})
     if data is None:
-        print("[wb_incomes] ПРОПУСК: API недоступен (exit 0)", flush=True)
+        print(f"[wb_incomes] ПРОПУСК: {SUPPLIES_URL} недоступен (exit 0)", flush=True)
         return 0
+    if not isinstance(data, list):
+        print(f"[wb_incomes] ПРОПУСК: неожиданная форма ответа POST /supplies (exit 0)", flush=True)
+        return 0
+    # dateFrom API игнорирует (отдаёт всю историю) — окно фильтруем сами.
+    candidates = [it for it in data if it.get("supplyID") is not None
+                  and (it.get("createDate") or "")[:10] >= cutoff]
     if _probe.is_probe():
-        _probe.dump(f"GET /api/v1/supplier/incomes?dateFrom={date_from}", data, n=10)
+        _probe.dump(f"POST /api/v1/supplies dateFrom={cutoff} (dateFrom игнорируется WB)", data, n=10)
+        _probe.dump(f"кандидаты в окне {cutoff}..сегодня", candidates, n=10)
         return 0
     db_pg.init()
-    rows = parse_rows(data)
+    terminal = db_pg.wb_incomes_terminal_ids()
+    to_fetch = [it for it in candidates if it["supplyID"] not in terminal]
+    skipped_terminal = len(candidates) - len(to_fetch)
+
+    rows = []
+    fetched = 0
+    for it in to_fetch:
+        sid = it["supplyID"]
+        detail = _get(SUPPLY_DETAIL_URL.format(id=sid))
+        if detail is None:
+            print(f"  [{sid}] детали недоступны, пропуск", flush=True)
+            continue
+        time.sleep(BETWEEN_CALLS)
+        goods = _get(SUPPLY_GOODS_URL.format(id=sid))
+        if goods is None:
+            print(f"  [{sid}] товарные строки недоступны, пропуск", flush=True)
+            continue
+        rows.extend(parse_rows(sid, detail, goods))
+        fetched += 1
+        time.sleep(BETWEEN_CALLS)
+
+    print(f"[wb_incomes] окно {cutoff}..сегодня: поставок {len(candidates)}, "
+          f"терминальных пропущено {skipped_terminal}, опрошено {fetched}", flush=True)
     if not rows:
-        print("[wb_incomes] ПРОПУСК: API вернул пусто (exit 0)", flush=True)
+        print("[wb_incomes] ПРОПУСК: нет строк для записи (exit 0)", flush=True)
         return 0
     written = db_pg.upsert_wb_incomes_many(rows)
-    print(f"[wb_incomes] окно {date_from}…сегодня, приёмок {len(data)}, строк {written}", flush=True)
+    print(f"[wb_incomes] строк {written}", flush=True)
     print(f"##OBS rows={written}", flush=True)
     return written
 

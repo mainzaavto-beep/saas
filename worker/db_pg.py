@@ -871,14 +871,26 @@ def upsert_wb_supplies_many(rows):
                                  bool_cols=["done"])
 
 
-# --- wb_incomes (приёмки FBO WB, statistics-api /api/v1/supplier/incomes, миграция 055) ---
-_WB_INCOMES_COLS = ["number", "date", "date_close", "last_change", "warehouse_name",
-                     "tech_size", "quantity", "total_price", "status"]
+# --- wb_incomes (приёмки FBO WB, supplies-api /api/v1/supplies(+/{id}+/{id}/goods),
+#     миграция 055 + 056 (quantity_declared) — старый statistics-api /supplier/incomes
+#     отключён WB, фикс раунд 1, 2026-09-07, см. worker/collectors/wb_incomes.py) ---
+_WB_INCOMES_COLS = ["income_id", "nm_id", "barcode", "number", "date", "date_close", "last_change",
+                     "warehouse_name", "tech_size", "quantity", "quantity_declared", "total_price", "status"]
 
 
 def upsert_wb_incomes_many(rows):
     """Приёмки FBO WB. PK = (cabinet_id, income_id, nm_id, barcode)."""
     return _batch_upsert("wb_incomes", ["income_id", "nm_id", "barcode"], _WB_INCOMES_COLS, rows)
+
+
+def wb_incomes_terminal_ids() -> set:
+    """income_id уже сохранённых поставок в терминальном статусе (WB statusID=5 —
+    WB текстовые статусы отключил 03.11.2025, храним str(statusID)) с проставленным
+    date_close — WB такую поставку больше не меняет, повторный detail+goods запрос
+    не нужен (лимиты supplies-api строгие)."""
+    rows = query("SELECT DISTINCT income_id FROM tenant.wb_incomes "
+                 "WHERE status = '5' AND date_close IS NOT NULL")
+    return {r["income_id"] for r in rows}
 
 
 def wb_incomes_for_match(days: int) -> list[dict]:
