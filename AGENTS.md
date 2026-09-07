@@ -294,8 +294,9 @@ LEFT JOIN LATERAL (
    → `POST /api/cabinets/[id]/purchases {action:"complete_to_stock", id}` копирует
    партию в `ff_inventory` (qty, unit_cost=AA, category) + ставит `purchases.archived=true`.
 2. На странице «Остатки склад/ФФ» (`/inventory`) — позиция появляется. Можно:
-   править qty/себест/категорию/имя inline, загрузить фото (data-URL, если нет артикула),
-   выбрать место (`location_id`), привязать артикул МП.
+   править себест/категорию/имя inline, загрузить фото (data-URL, если нет артикула),
+   выбрать место (`location_id`), привязать артикул МП. Правка qty вручную (с 2026-09-07,
+   этап 2 «Учёт») идёт через журнал движений (`adjust`) и требует причины — панель её просит.
 3. **Привязка артикула** (`POST /api/cabinets/[id]/inventory {action:"link_sku"}`):
    выбираешь МП + nm_id/product_id → имя/фото подтягиваются из `wb_articles`/`ozon_products`
    + создаётся `cost_override` (effective_from = completed_at) → себестоимость **автоматически
@@ -307,8 +308,9 @@ LEFT JOIN LATERAL (
 POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `update_qty`,
 `update_field` (internal_name/category/unit_cost/im_url/location_id), `locations` (CRUD мест).
 
-**Что НЕ ведётся:** авто-списание продажами (склад = накопитель приходов; списание —
-будущая задача). Старая ломаная `/ff-stock` (snapshots-модель) не тронута, не используется.
+**Авто-списание продажами** (с 2026-09-07): реализовано в этапе 2 «Учёт» ниже —
+`wb_fbs_writeoff`/`ozon_fbs_writeoff` через журнал движений. Старая ломаная `/ff-stock`
+(snapshots-модель) не тронута, не используется.
 
 ### 🆕 Склады 2.0 — этап 1 «Данные» (с 2026-09-06)
 
@@ -348,6 +350,51 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
 **Удалено (миграция 016):** «Справочник товаров» — страница `/catalog`, API, `lib/catalogDb.js`,
 таблицы `products_catalog` / `products_catalog_skus`. Привязка артикулов делается теперь
 напрямую на остатках склада/ФФ. Бэкап кода: `/opt/agentsDB/backups/catalog_removed_*/`.
+
+### 🆕 Склады 2.0 — этап 2 «Учёт» (с 2026-09-07)
+
+План `docs/superpowers/plans/2026-09-06-warehouses-stage2-ledger.md`. Миграция 054.
+
+- **Журнал движений** `tenant.stock_moves` — единственный путь изменения `ff_inventory.qty`:
+  панель — `lib/stockLedger.js` (`applyMove`, `applyTransfer`, внутри транзакции), воркер —
+  `worker/stock_ledger.py` (`apply_moves` — savepoint на движение, результат по вёдрам
+  `applied/duplicate/insufficient/missing/failed`; `record_gaps`/`resolve_gaps`). Уникальность
+  источника `(cabinet_id, src_kind, src_ref, kind)` → повтор = no-op. Прямых `UPDATE ff_inventory
+  SET qty` вне этих двух файлов в коде нет (проверка: `grep -rn "SET qty" app lib --include=*.js
+  | grep -v lib/stockLedger.js` → пусто).
+- **Виды**: `in` (закупка/ручное добавление), `out_fbo` (документ отгрузки), `out_fbs`
+  (авто-списание FBS), `transfer_out`/`transfer_in` (перемещение ФФ→ФФ, `/transfers`), `adjust`
+  (ручная правка qty — причина обязательна; удаление документа отгрузки = `adjust` по каждой
+  строке, допускает отсутствующие позиции — `skipped`), `return_in` (отмена/возврат после
+  отгрузки).
+- **Предохранитель нехватки**: документ отгрузки и перемещение проверяют остаток `FOR UPDATE`
+  до вставки документа — нехватка → 400 и ничего не создаётся (`withCabinet` коммитит только на
+  возвращённом ответе, 500 при throw откатывает всё).
+- **Авто-списание FBS**: `wb_fbs_writeoff` (тики `fbsstatus` + `main`) и `ozon_fbs_writeoff`
+  (`main`); правила — `worker/fbs_writeoff_core.py` (чистые функции, `SAAS_PROBE=1` печатает
+  план без записи, exit 3 при `failed>0`). WB считается отгруженным, когда поставка задания
+  закрыта (`wb_supplies.closed_at`) ИЛИ статус ∈ {sorted, ready_for_pickup, sold}; статусы
+  {canceled_by_client, declined_by_client, defect, canceled} → `return_in`, только если списание
+  уже было. Ozon считается отгруженным при статусе ∈ {awaiting_deliver, delivering, delivered}.
+  Возврат по продаже (`wb_sales` `'R…'` по srid → базовый `src_ref` = rid задания, `sale_id` в
+  note; `ozon_sales.is_return=1`) тоже → `return_in` — **один физический возврат зачисляется
+  один раз**: статусный и продажный путь дедуплицируются по общему базовому рефу. `location_id
+  IS NULL` (нет привязки склада МП к месту) → gap `no_location`; нет позиции с этим артикулом на
+  месте → gap `no_item`; остатка не хватило → `insufficient`. Списание, разнесённое по нескольким
+  партиям одной позиции, несёт суффикс `#<ff_inventory_id>` в `src_ref` — возврат зачисляет
+  обратно по тем же партиям.
+- **Перемещение ФФ→ФФ**: `POST /api/cabinets/[id]/transfers` (роль manager); приёмная позиция
+  ищется по `(location_id, internal_name, unit_cost)` — НЕ по артикулу (привязки живут в
+  `ff_inventory_skus` отдельно); нет — создаётся копия с теми же привязками. Строка документа
+  хранит `to_ff_inventory_id`. Отдельной страницы-списка пока нет, только модалка на
+  `/inventory`.
+- **Здоровье журнала**: GET `/api/cabinets/[id]/inventory` отдаёт `ledger: {mismatch, gaps:
+  {no_location, no_item, insufficient}}` — баннеры на `/inventory`. НЕ в `/health`
+  (tenant-таблицы под RLS, `/health` их не видит).
+- **Сторож**: `scripts/check-warehouses-stage2.sql` (6 проверок).
+- Первые содержательные списания появятся после того, как владелец расставит места у позиций и
+  привяжет склады продавца к местам (на 07.09 у всех 12 позиций кабинета #1 места нет — план
+  сборщиков пуст, 349 открытых пробелов `no_location`).
 
 ## Правила работы с кодом
 

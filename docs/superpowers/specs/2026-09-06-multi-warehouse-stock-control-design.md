@@ -167,10 +167,10 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 
 ### 3.1 Двойная привязка позиции
 
-`ff_inventory.nm_id` и `product_id` могут быть заполнены одновременно. `link_sku` для второй
-площадки дописывает вторую привязку и не трогает первую; `unlink_sku` принимает платформу.
-`platform` остаётся для совместимости: у новой позиции = первая привязанная площадка.
-`cost_override` создаётся для каждой привязки (как сейчас для одной).
+Реализовано ранее: с 2026-07-18 привязка живёт в `tenant.ff_inventory_skus` (много артикулов
+обеих площадок на одну позицию, уникальность по частичным индексам). Колонки
+`nm_id`/`product_id`/`platform` в `ff_inventory` — dead back-compat, ничего не пишет. Этап 2
+использует `ff_inventory_skus` для поиска позиции по артикулу при авто-списании.
 
 ### 3.2 `tenant.stock_moves`
 
@@ -178,7 +178,7 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 |---|---|---|
 | `cabinet_id`, `id` | BIGINT, BIGSERIAL | PK |
 | `ff_inventory_id` | BIGINT NOT NULL | позиция |
-| `location_id` | BIGINT NOT NULL | место на момент движения |
+| `location_id` | BIGINT | место на момент движения; NULL, если у позиции нет места |
 | `kind` | TEXT NOT NULL | `in` · `out_fbo` · `out_fbs` · `transfer_out` · `transfer_in` · `adjust` · `return_in` |
 | `qty` | INTEGER NOT NULL | со знаком (приход +, списание −) |
 | `src_kind` | TEXT NOT NULL | `purchase` · `ff_shipment_doc` · `wb_fbs_task` · `ozon_posting` · `transfer_doc` · `manual` · `wb_fbs_return` · `ozon_return` |
@@ -189,7 +189,10 @@ reserved}]`. sku → product_id через `ozon_products`. Пачки по 100 
 | `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 
 Уникальный индекс `(cabinet_id, src_kind, src_ref, kind)` — повторный прогон идемпотентен
-(одно задание списывается один раз; отмена того же задания — отдельный `kind`).
+(одно задание списывается один раз; отмена того же задания — отдельный `kind`). Если списание
+разнесено по нескольким партиям одной позиции (не хватило одной строки `ff_inventory`) —
+каждая партия получает свой `src_ref` с суффиксом `#<ff_inventory_id>`, чтобы не столкнуться
+с уникальностью; возврат зачисляет обратно по тем же суффиксам.
 RLS + `panel_local_ro_cab1`. Индексы по `(cabinet_id, ff_inventory_id)` и `(cabinet_id, moved_at)`.
 
 ### 3.3 `applyMove()` — единственная точка записи
@@ -208,7 +211,13 @@ applyTransfer(cid, { ffInventoryId, toLocationId, qty, docId, ... })
 
 Все существующие правки переводятся на `applyMove`: `complete_to_stock` → `in`; создание
 документа отгрузки → `out_fbo`; ручной `update_qty` → `adjust` с обязательным комментарием
-(UI просит причину). Прямых `UPDATE ff_inventory SET qty` в коде не остаётся.
+(UI просит причину). Удаление документа отгрузки — тоже `adjust` (по каждой строке документа,
+возврат количества; отсутствующая/архивная позиция не валит остальные строки — `skipped`).
+Прямых `UPDATE ff_inventory SET qty` в коде не остаётся.
+
+Документ отгрузки и перемещение проверяют остаток заранее (`SELECT ... FOR UPDATE` до вставки
+документа) — нехватка на любой строке возвращает 400 и ничего не создаёт; коммит транзакции
+происходит только на успешно возвращённом ответе роута (throw → 500 и полный откат).
 
 Воркер пишет движения на Python через ту же логику (`worker/stock_ledger.py`, тот же SQL, тот
 же уникальный индекс) — правило «одна точка» соблюдается на уровне SQL-контракта, не языка.
@@ -217,30 +226,47 @@ applyTransfer(cid, { ffInventoryId, toLocationId, qty, docId, ... })
 06.09.2026», `src_kind='manual'`, `src_ref='opening:<id>'`) на каждую строку `ff_inventory`
 с `qty ≠ 0`, чтобы сторож «qty = сальдо журнала» проходил с первого дня.
 
-**Сторож в `/health`**: `ff_inventory.qty ≠ SUM(stock_moves.qty)` по позиции → строка в
-списке проблем с количеством расхождений.
+**Сторож**: `ff_inventory.qty ≠ SUM(stock_moves.qty)` по позиции считается в GET
+`/api/cabinets/[id]/inventory` (`ledger.mismatch`) и показывается баннером на `/inventory`;
+плюс `scripts/check-warehouses-stage2.sql`. НЕ в `/health` — tenant-таблицы под RLS,
+`/health` их не видит.
 
 ### 3.4 Авто-списание FBS — шаг воркера `fbs_writeoff`
 
-Запускается после часового опроса статусов заданий WB (`wb_fbs_status`) и после сбора
-постингов Ozon.
+Запускается после часового опроса статусов заданий WB (`wb_fbs_status`, тик `fbsstatus`) и
+после сбора постингов Ozon (тик `main`). Планировщик — чистые функции в
+`worker/fbs_writeoff_core.py`, применяет движения через `worker/stock_ledger.py`.
 
-- **WB**: задание в `wb_fbs_tasks` со статусом «собрано / передано в доставку» (не «новое»,
-  не «отменено») и без движения `out_fbs` → место по `warehouse_id` задания
-  (`stock_ff_locations.wb_warehouse_id`) → позиция по `nm_id` на этом месте; несколько партий —
-  FIFO по `completed_at` → `out_fbs −1`, `src_kind='wb_fbs_task'`, `src_ref=rid`.
-- **Ozon**: FBS-постинг в статусе `awaiting_deliver` и дальше → место по `warehouse_id`
-  (`ozon_warehouse_id`) → позиция по `product_id`, qty из строки постинга → `out_fbs`,
-  `src_kind='ozon_posting'`, `src_ref=posting_number` (при нескольких товарах в постинге —
-  `posting_number:sku`).
-- **Отмена после списания** → `return_in` с тем же `src_ref` (уникальность по kind позволяет).
-- **Возврат покупателем** (WB `wb_sales` возврат по srid, Ozon возвраты) → `return_in`,
-  `src_kind='wb_fbs_return'|'ozon_return'`.
-- **Нет места для склада МП / нет позиции на месте / позиций не хватает** → движение не
-  создаётся, строка в `tenant.stock_move_gaps` (`cabinet_id, src_kind, src_ref, platform,
-  warehouse_id, sku_key, qty, reason ('no_location'|'no_item'|'insufficient'),
-  first_seen_at, resolved_at`). Повторный прогон закрывает gap (`resolved_at`), когда
-  движение удалось создать. Это сигнал в карточке места.
+- **WB**: задание в `wb_fbs_tasks` считается физически отгруженным, когда поставка задания
+  закрыта (`wb_supplies.closed_at`) ИЛИ статус ∈ {sorted, ready_for_pickup, sold} → место по
+  `warehouse_id` задания (`stock_ff_locations.wb_warehouse_id`) → позиция по `nm_id` на этом
+  месте (через `ff_inventory_skus`); несколько партий — FIFO по `completed_at` (NULL последними),
+  затем `id` → `out_fbs −1`, `src_kind='wb_fbs_task'`, `src_ref=rid` (при разнесении по
+  нескольким партиям — с суффиксом `#<ff_inventory_id>`, см. §3.2).
+- **Ozon**: FBS-постинг в статусе ∈ {awaiting_deliver, delivering, delivered} → место по
+  `warehouse_id` (`ozon_warehouse_id`) → позиция по `product_id`, qty из строки постинга →
+  `out_fbs`, `src_kind='ozon_posting'`, `src_ref='posting_number:product_id'` (в постинге
+  несколько товаров).
+- **Отмена/возврат после списания** — два независимых источника, которые могут описывать ОДНО
+  и то же физическое событие:
+  - статусный путь: WB-статус ∈ {canceled_by_client, declined_by_client, defect, canceled} у
+    уже списанного задания → `return_in`, `src_kind='wb_fbs_return'`, тот же базовый `src_ref`
+    (rid); Ozon — cancelled после списания → `return_in`, `src_kind='ozon_return'`.
+  - продажный путь: возвратная продажа `wb_sales` `'R…'` по srid задания → `return_in` с
+    базовым `src_ref=rid`, `sale_id` в `note`; Ozon `ozon_sales.is_return=1` → `return_in`,
+    `src_kind='ozon_return'`.
+  - **Один физический возврат зачисляется один раз**: планировщик ведёт объединённое множество
+    уже возвращённых базовых рефов (из БД + зачисленных в этом же прогоне); статусный путь идёт
+    первым, продажный пропускается, если базовый реф уже в этом множестве, и наоборот. Полный
+    возврат/отмена зачисляет все партии разнесения; частичный (по qty продажи-возврата) — по
+    партиям FIFO, пока qty не исчерпан.
+- **Нет привязки места к складу МП** (`location_id IS NULL`) → gap `reason='no_location'`;
+  **нет позиции с этим артикулом на месте** → `no_item`; **остатка не хватило** → `insufficient`.
+  `tenant.stock_move_gaps` (уникальность `cabinet_id, src_kind, src_ref`): `platform,
+  warehouse_id, sku_key (nm_id|product_id), qty, reason, first_seen_at, last_seen_at,
+  resolved_at`. Повторный прогон обновляет `last_seen_at`/переоткрывает (`resolved_at=NULL`),
+  если пробел ещё не закрыт, и закрывает (`resolved_at=now()`), когда движение удалось создать
+  (`resolve_gaps`). Сигнал — баннер на `/inventory` (§3.3).
 
 ### 3.5 Расхождение с МП
 
@@ -252,9 +278,15 @@ applyTransfer(cid, { ffInventoryId, toLocationId, qty, docId, ... })
 ### 3.6 Перемещение ФФ → ФФ
 
 `tenant.ff_transfer_docs` (`cabinet_id, id, from_location_id, to_location_id, moved_at, note,
-created_at, created_by`) + `ff_transfer_lines` (`doc_id, ff_inventory_id, qty`). Создание —
+created_at, created_by`) + `ff_transfer_lines` (`doc_id, ff_inventory_id, to_ff_inventory_id,
+qty`) — строка хранит `to_ff_inventory_id`, найденный/созданный при применении. Создание —
 `applyTransfer` по строкам в одной транзакции; нехватка на любой строке — откат всего
-документа (как в отгрузках). Без стадии «в пути» — перемещение мгновенное.
+документа (как в отгрузках, §3.3: остаток проверяется заранее `FOR UPDATE`). Без стадии
+«в пути» — перемещение мгновенное. Приёмник ищется по `(location_id, internal_name,
+unit_cost)` на месте назначения — НЕ по артикулу (артикулы у позиции живут отдельно, в
+`ff_inventory_skus`, §3.1); не найден — создаётся копия строки-источника (qty=0) с теми же
+привязками артикулов. API — `/api/cabinets/[id]/transfers` (GET список, POST создание,
+роль manager); отдельной страницы-списка нет, только модалка на `/inventory`.
 
 ## 4. Поставки FBO: рекомендация → документ → факт
 
