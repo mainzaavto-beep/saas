@@ -954,18 +954,32 @@ def fbs_items_by_location():
 
 
 def existing_out_moves(src_kind):
-    """{src_ref: ff_inventory_id} уже сделанных out_fbs по источнику (для return_in и идемпотентности).
-    src_ref вида 'ref#<id>' (разнесено по нескольким позициям) сводится к 'ref' → первая позиция."""
+    """{base_ref: [(ff_inventory_id, qty_abs), …]} уже сделанных out_fbs по источнику, в порядке
+    создания движения (id ASC) — для возврата по позициям разнесения и идемпотентности.
+    src_ref вида 'ref#<id>' (списание разнесено по нескольким позициям) сводится к базовому 'ref'."""
     out = {}
-    for r in query("SELECT src_ref, ff_inventory_id FROM tenant.stock_moves WHERE src_kind = %s AND kind = 'out_fbs' ORDER BY id", (src_kind,)):
+    for r in query("SELECT src_ref, ff_inventory_id, qty FROM tenant.stock_moves "
+                   "WHERE src_kind = %s AND kind = 'out_fbs' ORDER BY id", (src_kind,)):
         base = r["src_ref"].split("#", 1)[0]
-        out.setdefault(base, int(r["ff_inventory_id"]))
+        out.setdefault(base, []).append((int(r["ff_inventory_id"]), abs(int(r["qty"]))))
     return out
 
 
+def existing_return_refs(src_kinds):
+    """{base_ref, …} — рефы (без суффикса #<id>) уже созданных return_in движений по списку
+    src_kind. Для дедупликации возврата: статусный путь (wb_fbs_task/ozon_posting) и продажный
+    путь (wb_fbs_return/ozon_return) не должны зачислять одну и ту же единицу дважды —
+    объединённый набор обоих src_kind передаётся планировщику как existing_returns."""
+    return {r["src_ref"].split("#", 1)[0] for r in query(
+        "SELECT src_ref FROM tenant.stock_moves WHERE src_kind = ANY(%s) AND kind = 'return_in'",
+        (list(src_kinds),))}
+
+
 def wb_fbs_tasks_for_writeoff():
+    # nm_id/warehouse_id не фильтруются: NULL здесь — не редкость (не успел прийти nm_id
+    # с карточки/склад не размечен), а сигнал (gap no_item/no_location в fbs_writeoff_core).
     return query("SELECT rid, nm_id, warehouse_id, supply_id, wb_status, wb_status_at::text AS wb_status_at, "
-                 "created_at::text AS created_at FROM tenant.wb_fbs_tasks WHERE nm_id IS NOT NULL")
+                 "created_at::text AS created_at FROM tenant.wb_fbs_tasks")
 
 
 def wb_supplies_closed():
@@ -977,19 +991,28 @@ def wb_fbs_returns():
     # разбирает строку на плейсхолдеры, т.к. get_connection()/conn.execute всегда получает
     # непустой список параметров, а не None; 'R%' без экранирования падает с
     # ProgrammingError "only '%s', '%b', '%t' are allowed as placeholders" — проверено).
-    return query("SELECT s.sale_id, s.srid, s.sale_dt FROM tenant.wb_sales s "
+    # sale_dt защищено COALESCE(sale_dt, last_change_dt) — moved_at в stock_moves NOT NULL,
+    # а сборщик отчётов WB иногда отдаёт продажу без sale_dt (см. stock_ledger — там тоже
+    # финальный COALESCE(%s, now()) как последний рубеж).
+    return query("SELECT s.sale_id, s.srid, COALESCE(s.sale_dt, s.last_change_dt) AS sale_dt FROM tenant.wb_sales s "
                  "JOIN tenant.wb_fbs_tasks t ON t.cabinet_id = s.cabinet_id AND t.rid = s.srid "
                  "WHERE s.sale_id LIKE 'R%%'")
 
 
 def ozon_fbs_postings_for_writeoff():
-    return query("SELECT posting_number, product_id, qty, warehouse_id, status, last_change_dt, in_process_at "
+    # last_change_dt защищено COALESCE(last_change_dt, in_process_at, order_dt) — как minimum
+    # один из трёх у постинга FBS есть почти всегда; финальный рубеж — COALESCE(%s, now()) в
+    # stock_ledger, если и там NULL.
+    return query("SELECT posting_number, product_id, qty, warehouse_id, status, "
+                 "COALESCE(last_change_dt, in_process_at, order_dt) AS last_change_dt, in_process_at "
                  "FROM tenant.ozon_orders WHERE scheme = 'fbs'")
 
 
 def ozon_fbs_returns():
-    return query("SELECT posting_number, product_id, qty, last_change_dt AS moved_at FROM tenant.ozon_sales "
-                 "WHERE scheme = 'fbs' AND is_return = 1")
+    # last_change_dt AS moved_at было NULL на всех живых FBS-возвратах (9/9) — ozon_sales не
+    # содержит in_process_at (сверено information_schema), поэтому запасной источник — sale_dt.
+    return query("SELECT posting_number, product_id, qty, COALESCE(last_change_dt, sale_dt) AS moved_at "
+                 "FROM tenant.ozon_sales WHERE scheme = 'fbs' AND is_return = 1")
 
 
 # --- mp_fbs_daily_stock (FBS-остатки складов продавца, план «Склады 2.0», этап 1) ---
