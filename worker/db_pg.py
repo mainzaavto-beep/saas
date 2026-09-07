@@ -926,6 +926,72 @@ def seller_warehouse_ids(platform):
     return [int(r["warehouse_id"]) for r in rows]
 
 
+# --- авто-списание FBS (план «Склады 2.0», этап 2) ---
+def locations_by_warehouse():
+    """{(platform, warehouse_id): location_id} по активным местам с привязкой."""
+    out = {}
+    for r in query("SELECT id, wb_warehouse_id, ozon_warehouse_id FROM tenant.stock_ff_locations WHERE is_active"):
+        if r["wb_warehouse_id"] is not None:
+            out[("wb", int(r["wb_warehouse_id"]))] = int(r["id"])
+        if r["ozon_warehouse_id"] is not None:
+            out[("ozon", int(r["ozon_warehouse_id"]))] = int(r["id"])
+    return out
+
+
+def fbs_items_by_location():
+    """{(location_id, platform, sku_key): [{id, qty, completed_at}]} — активные позиции с местом
+    и привязкой артикула (ff_inventory_skus)."""
+    out = {}
+    for r in query(
+            "SELECT f.id, f.qty, f.completed_at::text AS completed_at, f.location_id, s.platform, "
+            "COALESCE(s.nm_id, s.product_id) AS sku_key "
+            "FROM tenant.ff_inventory f JOIN tenant.ff_inventory_skus s "
+            "  ON s.cabinet_id = f.cabinet_id AND s.ff_inventory_id = f.id "
+            "WHERE f.archived_at IS NULL AND f.location_id IS NOT NULL"):
+        key = (int(r["location_id"]), r["platform"], int(r["sku_key"]))
+        out.setdefault(key, []).append({"id": int(r["id"]), "qty": int(r["qty"] or 0), "completed_at": r["completed_at"]})
+    return out
+
+
+def existing_out_moves(src_kind):
+    """{src_ref: ff_inventory_id} уже сделанных out_fbs по источнику (для return_in и идемпотентности).
+    src_ref вида 'ref#<id>' (разнесено по нескольким позициям) сводится к 'ref' → первая позиция."""
+    out = {}
+    for r in query("SELECT src_ref, ff_inventory_id FROM tenant.stock_moves WHERE src_kind = %s AND kind = 'out_fbs' ORDER BY id", (src_kind,)):
+        base = r["src_ref"].split("#", 1)[0]
+        out.setdefault(base, int(r["ff_inventory_id"]))
+    return out
+
+
+def wb_fbs_tasks_for_writeoff():
+    return query("SELECT rid, nm_id, warehouse_id, supply_id, wb_status, wb_status_at::text AS wb_status_at, "
+                 "created_at::text AS created_at FROM tenant.wb_fbs_tasks WHERE nm_id IS NOT NULL")
+
+
+def wb_supplies_closed():
+    return {r["supply_id"] for r in query("SELECT supply_id FROM tenant.wb_supplies WHERE closed_at IS NOT NULL")}
+
+
+def wb_fbs_returns():
+    # 'R%%' — экранирование литерального '%' (см. query(): даже при params=() psycopg
+    # разбирает строку на плейсхолдеры, т.к. get_connection()/conn.execute всегда получает
+    # непустой список параметров, а не None; 'R%' без экранирования падает с
+    # ProgrammingError "only '%s', '%b', '%t' are allowed as placeholders" — проверено).
+    return query("SELECT s.sale_id, s.srid, s.sale_dt FROM tenant.wb_sales s "
+                 "JOIN tenant.wb_fbs_tasks t ON t.cabinet_id = s.cabinet_id AND t.rid = s.srid "
+                 "WHERE s.sale_id LIKE 'R%%'")
+
+
+def ozon_fbs_postings_for_writeoff():
+    return query("SELECT posting_number, product_id, qty, warehouse_id, status, last_change_dt, in_process_at "
+                 "FROM tenant.ozon_orders WHERE scheme = 'fbs'")
+
+
+def ozon_fbs_returns():
+    return query("SELECT posting_number, product_id, qty, last_change_dt AS moved_at FROM tenant.ozon_sales "
+                 "WHERE scheme = 'fbs' AND is_return = 1")
+
+
 # --- mp_fbs_daily_stock (FBS-остатки складов продавца, план «Склады 2.0», этап 1) ---
 _MP_FBS_STOCK_COLS = ["platform", "warehouse_id", "sku_key", "date", "present", "reserved"]
 
