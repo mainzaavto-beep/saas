@@ -431,7 +431,7 @@ POST действия). Расчёты — в `lib/warehousesMetrics.js`, роу
    форма привязки складов в местах (минимальный UI в существующем «📍 Места» на `/inventory`).
 2. **Учёт**: двойная привязка, `stock_moves`, `applyMove`/`applyTransfer`, перевод
    существующих правок, начальное сальдо, `fbs_writeoff` + gaps, перемещение ФФ→ФФ, сторож
-   в `/health`.
+   в GET `/inventory` (`ledger.mismatch`) + `check-warehouses-stage2.sql`.
 3. **Поставки**: `lib/stockCoverage.js`, `buildSupplyPlan`, расширение документов,
    связь с фактом WB/Ozon, статусы.
 4. **Витрина**: `/warehouses` (Матрица, Места, Поставки), сигналы, решение по старым
