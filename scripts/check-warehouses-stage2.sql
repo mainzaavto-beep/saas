@@ -22,9 +22,13 @@ SELECT 'no_duplicate_sources' AS check,
        COUNT(*) = 0 AS ok, COUNT(*) AS dups
 FROM (SELECT src_kind, src_ref, kind FROM tenant.stock_moves WHERE cabinet_id=1 GROUP BY 1,2,3 HAVING COUNT(*) > 1) d;
 
--- 4. Каждое отгруженное WB-задание с warehouse_id либо списано, либо в открытом пробеле
+-- 4. Каждое отгруженное WB-задание с warehouse_id либо списано, либо в открытом пробеле.
+-- Кабинет без активных мест с привязкой к складу WB ФФ-контур не использует: разносить
+-- некуда, движений и пробелов нет и быть не должно — проверка вакуумно истинна.
 SELECT 'wb_tasks_accounted' AS check,
-       COUNT(*) > 0 AND COUNT(*) FILTER (WHERE mv.src_ref IS NULL AND g.src_ref IS NULL) = 0 AS ok,
+       NOT (SELECT EXISTS (SELECT 1 FROM tenant.stock_ff_locations
+                           WHERE cabinet_id=1 AND is_active AND wb_warehouse_id IS NOT NULL))
+       OR (COUNT(*) > 0 AND COUNT(*) FILTER (WHERE mv.src_ref IS NULL AND g.src_ref IS NULL) = 0) AS ok,
        COUNT(*) AS shipped_tasks,
        COUNT(mv.src_ref) AS written_off, COUNT(g.src_ref) AS gaps_open,
        COUNT(*) FILTER (WHERE mv.src_ref IS NULL AND g.src_ref IS NULL) AS unaccounted
@@ -36,9 +40,11 @@ WHERE t.cabinet_id=1 AND t.warehouse_id IS NOT NULL AND t.nm_id IS NOT NULL
   AND (s.closed_at IS NOT NULL OR t.wb_status IN ('sorted','ready_for_pickup','sold'))
   AND COALESCE(t.wb_status,'') NOT IN ('canceled_by_client','declined_by_client','defect','canceled');
 
--- 5. То же для Ozon FBS-постингов
+-- 5. То же для Ozon FBS-постингов (та же вакуумная истина без привязанных мест Ozon)
 SELECT 'ozon_postings_accounted' AS check,
-       COUNT(*) > 0 AND COUNT(*) FILTER (WHERE mv.src_ref IS NULL AND g.src_ref IS NULL) = 0 AS ok,
+       NOT (SELECT EXISTS (SELECT 1 FROM tenant.stock_ff_locations
+                           WHERE cabinet_id=1 AND is_active AND ozon_warehouse_id IS NOT NULL))
+       OR (COUNT(*) > 0 AND COUNT(*) FILTER (WHERE mv.src_ref IS NULL AND g.src_ref IS NULL) = 0) AS ok,
        COUNT(*) AS shipped_postings, COUNT(mv.src_ref) AS written_off, COUNT(g.src_ref) AS gaps_open
 FROM tenant.ozon_orders o
 LEFT JOIN (SELECT DISTINCT split_part(src_ref,'#',1) AS src_ref FROM tenant.stock_moves WHERE cabinet_id=1 AND src_kind='ozon_posting' AND kind='out_fbs') mv

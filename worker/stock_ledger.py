@@ -88,3 +88,15 @@ def resolve_gaps(src_kind, src_refs):
             cur.execute("UPDATE tenant.stock_move_gaps SET resolved_at = now() "
                         "WHERE src_kind = %s AND resolved_at IS NULL AND src_ref = ANY(%s)", (src_kind, list(src_refs)))
             return cur.rowcount
+
+
+def close_gaps_all(platform):
+    """Закрыть ВСЕ открытые пробелы платформы. Нужно ровно в одном случае: кабинет не
+    использует ФФ-контур (нет ни одного места с привязкой к складу продавца) — разносить
+    некуда, и висящие пробелы только шумят в /inventory. Пробелы откроются заново сами,
+    как только места будут привязаны и планировщик отработает."""
+    with db_pg.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tenant.stock_move_gaps SET resolved_at = now() "
+                        "WHERE platform = %s AND resolved_at IS NULL", (platform,))
+            return cur.rowcount

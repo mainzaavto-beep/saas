@@ -8,6 +8,9 @@ worker/fbs_writeoff_core.plan_wb, запись — worker/stock_ledger.apply_mov
 по stock_moves_src_uq). Тик fbsstatus (часовой, после wb_fbs_status) и main. SAAS_PROBE=1 —
 печатает план и не пишет. Идемпотентен: повторный прогон → 0 applied, N duplicate.
 
+Кабинет без мест с привязкой к складам продавца (ФФ-контур не используется) —
+ПРОПУСК до планирования: 0 движений, 0 новых пробелов, открытые пробелы закрываются.
+
 apply_moves() возвращает 5 корзин: applied/duplicate — ок; insufficient — не хватило
 остатка (gap); missing — позиция не найдена/архивна на момент UPDATE (gap, reason
 no_item — с точки зрения списания это то же самое «списывать некуда»); failed — любая
@@ -44,9 +47,20 @@ def collect():
     global _FAILED
     print(f"[wb_fbs_writeoff] авто-списание FBS WB ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
     db_pg.init()
+    loc_by_wh = db_pg.locations_by_warehouse()
+    if not loc_by_wh:
+        # Кабинет не использует ФФ-контур: нет ни одного активного места с привязкой к
+        # складу продавца — разносить некуда, планировать и копить пробелы бессмысленно
+        # (иначе КАЖДОЕ отгруженное задание падало бы в gap no_location). Уже открытые
+        # пробелы закрываем — они откроются заново сами, как только места будут привязаны.
+        closed = stock_ledger.close_gaps_all("wb")
+        print("[wb_fbs_writeoff] ПРОПУСК: нет мест с привязкой к складам продавца — разносить некуда (exit 0)", flush=True)
+        print(f"[wb_fbs_writeoff] закрыто пробелов {closed} — ФФ-контур не используется", flush=True)
+        print("##OBS rows=0", flush=True)
+        return 0
     tasks = db_pg.wb_fbs_tasks_for_writeoff()
     moves, gaps = core.plan_wb(
-        tasks, supplies_closed=db_pg.wb_supplies_closed(), loc_by_wh=db_pg.locations_by_warehouse(),
+        tasks, supplies_closed=db_pg.wb_supplies_closed(), loc_by_wh=loc_by_wh,
         items=db_pg.fbs_items_by_location(), existing_out=db_pg.existing_out_moves("wb_fbs_task"),
         returns=db_pg.wb_fbs_returns(),
         existing_returns=db_pg.existing_return_refs(["wb_fbs_task", "wb_fbs_return"]))
