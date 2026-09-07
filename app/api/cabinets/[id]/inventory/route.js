@@ -37,7 +37,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const rows = await tenantQuery(
     `SELECT f.id, f.purchase_id, f.internal_name, f.qty, f.unit_cost, f.category,
             f.platform, f.nm_id, f.product_id, f.sku_name, f.im_url, f.location_id,
-            f.completed_at, f.created_at,
+            f.pack_qty, f.completed_at, f.created_at,
             l.name AS location_name, l.loc_type AS loc_type
      FROM tenant.ff_inventory f
      LEFT JOIN tenant.stock_ff_locations l
@@ -389,7 +389,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   // тянется с МП для primary; не даём перетереть). cost_override НЕ пишем (2026-07-16).
   if (b.action === "update_field") {
     const field = b.field;
-    const allowed = { internal_name: 1, category: 1, unit_cost: 1, im_url: 1, location_id: 1 };
+    const allowed = { internal_name: 1, category: 1, unit_cost: 1, im_url: 1, location_id: 1, pack_qty: 1 };
     if (!allowed[field]) return NextResponse.json({ error: "field not allowed" }, { status: 400 });
     const cur = (await tenantQuery(
       `SELECT id, unit_cost FROM tenant.ff_inventory WHERE id = $1`, [id]
@@ -408,6 +408,13 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
       )).length > 0;
       if (hasLink) return NextResponse.json({ error: "фото управляется маркетплейсом (артикул привязан)" }, { status: 400 });
       val = val || null;
+    } else if (field === "pack_qty") {
+      // Кратность упаковки (миграция 055): целое ≥ 1 или пусто (= 1, без кратности).
+      // Планировщик поставок округляет «нужно» вверх до кратности (lib/supplyPlan.js).
+      val = val === "" || val == null ? null : Number(val);
+      if (val != null && (!Number.isInteger(val) || val < 1)) {
+        return NextResponse.json({ error: "pack_qty must be integer >= 1" }, { status: 400 });
+      }
     } else if (field === "location_id") {
       // ссылка на место хранения: число или null
       val = val === "" || val == null ? null : Number(val);
