@@ -223,15 +223,24 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
       [id]
     );
     // Возврат qty — движением adjust со ссылкой на удаляемую строку документа.
+    // Позиция могла быть удалена/архивирована после отгрузки: applyMove бросил бы
+    // «not found» → 500, и документ стало бы невозможно удалить. Поэтому строки без
+    // живой позиции пропускаем (возвращать некуда) и считаем в skipped.
+    let restored = 0, skipped = 0;
     for (const ln of lines) {
+      const alive = (await tenantQuery(
+        `SELECT id FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL`, [ln.ff_inventory_id]
+      ))[0];
+      if (!alive) { skipped++; continue; }
       await applyMove({ ffInventoryId: ln.ff_inventory_id, kind: "adjust", qty: Number(ln.qty),
         srcKind: "ff_shipment_doc", srcRef: `${id}:${ln.id}:delete`,
         note: `удаление документа отгрузки №${id}`, userId });
+      restored++;
     }
     await tenantQuery(`DELETE FROM tenant.ff_shipment_lines WHERE doc_id = $1`, [id]);
     await tenantQuery(`DELETE FROM tenant.ff_shipment_docs WHERE id = $1`, [id]);
 
-    return NextResponse.json({ ok: true, restored_lines: lines.length });
+    return NextResponse.json({ ok: true, restored_lines: restored, skipped });
   }
 
   return NextResponse.json({ error: `unknown action: ${b.action}` }, { status: 400 });

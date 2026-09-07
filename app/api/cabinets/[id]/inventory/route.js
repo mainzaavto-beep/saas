@@ -350,13 +350,20 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     if (!Number.isInteger(qty) || qty < 0) return NextResponse.json({ error: "qty must be integer >= 0" }, { status: 400 });
     const note = String(b.note ?? "").trim();
     if (!note) return NextResponse.json({ error: "note required" }, { status: 400 });
-    const cur = (await tenantQuery(`SELECT qty FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL`, [id]))[0];
+    // FOR UPDATE: две одновременные ручные правки не должны затирать друг друга —
+    // вторая транзакция ждёт на блокировке и считает дельту уже от нового значения.
+    const cur = (await tenantQuery(
+      `SELECT qty FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL FOR UPDATE`, [id]
+    ))[0];
     if (!cur) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
     const delta = qty - Number(cur.qty);
     if (delta === 0) return NextResponse.json({ ok: true, unchanged: true });
     // Ручная правка = корректировка со ссылкой на момент (уникальность источника — по времени).
     const r = await applyMove({ ffInventoryId: id, kind: "adjust", qty: delta, srcKind: "manual",
       srcRef: `qty:${id}:${new Date().toISOString()}`, note, userId });
+    // duplicate — тот же srcRef в ту же миллисекунду (двойной клик): движение уже
+    // учтено, остаток не меняем и отдаём актуальное значение (строка под блокировкой).
+    if (!r.applied) return NextResponse.json({ ok: true, duplicate: true, new_qty: Number(cur.qty) });
     return NextResponse.json({ ok: true, new_qty: r.newQty });
   }
 
