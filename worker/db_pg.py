@@ -884,26 +884,15 @@ def upsert_wb_incomes_many(rows):
 
 
 def wb_incomes_terminal_ids() -> set:
-    """income_id уже сохранённых поставок в терминальном статусе (WB statusID=5 —
-    WB текстовые статусы отключил 03.11.2025, храним str(statusID)) с проставленным
-    date_close — WB такую поставку больше не меняет, повторный detail+goods запрос
-    не нужен (лимиты supplies-api строгие)."""
+    """income_id уже сохранённых поставок в терминальном статусе. Терминальным сейчас
+    считается ТОЛЬКО statusID=5 (принято, наблюдалось вживую) с проставленным
+    date_close — WB текстовые статусы отключил 03.11.2025, храним str(statusID).
+    Коды отклонения/отмены WB неизвестны (в живых данных наблюдались только 1, 3
+    и 5) — дополнить множество терминальных статусов при появлении. Последствие
+    неполноты этого списка — лишний повторный опрос, не потеря данных."""
     rows = query("SELECT DISTINCT income_id FROM tenant.wb_incomes "
                  "WHERE status = '5' AND date_close IS NOT NULL")
     return {r["income_id"] for r in rows}
-
-
-def wb_incomes_for_match(days: int) -> list[dict]:
-    """Приёмки за последние `days` дней, агрегированные по income_id — подсказки
-    связи с tenant.ff_shipment_docs (mp_supply_id/mp_supply_kind='wb_income'),
-    план «Склады 2.0» этап 3."""
-    return query(
-        "SELECT income_id, number, MIN(date) AS date, MAX(date_close) AS date_close, "
-        "warehouse_name, SUM(quantity) AS quantity, MAX(status) AS status "
-        "FROM tenant.wb_incomes WHERE date >= (CURRENT_DATE - %s::int) "
-        "GROUP BY income_id, number, warehouse_name ORDER BY date DESC",
-        (days,),
-    )
 
 
 # --- wb_fbs_tasks (FBS-задания WB, marketplace-api /api/v3/orders) ---

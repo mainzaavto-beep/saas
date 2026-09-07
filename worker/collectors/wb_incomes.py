@@ -100,7 +100,9 @@ def parse_rows(income_id, detail, goods) -> list[dict]:
     """detail — GET /api/v1/supplies/{id} (dict), goods — GET .../{id}/goods
     (list). Одна строка на nmID×barcode; товарные строки без nmID пропускаем.
     quantity — принято, NULL пока факт приёмки (factDate) не наступил.
-    quantity_declared — заявлено (есть всегда, даже до приёмки)."""
+    quantity_declared — заявлено, NULL если в товарной строке нет ключа quantity
+    (в норме есть всегда, даже до приёмки; NULL — сигнал неожиданной формы ответа,
+    а не «заявлено 0»)."""
     if not detail:
         return []
     status = str(detail.get("statusID")) if detail.get("statusID") is not None else None
@@ -115,6 +117,7 @@ def parse_rows(income_id, detail, goods) -> list[dict]:
         if nm is None:
             continue
         accepted_qty = g.get("acceptedQuantity")
+        declared_qty = g.get("quantity")
         out.append({
             "income_id": int(income_id),
             "nm_id": int(nm),
@@ -126,7 +129,7 @@ def parse_rows(income_id, detail, goods) -> list[dict]:
             "warehouse_name": warehouse,
             "tech_size": g.get("techSize"),
             "quantity": int(accepted_qty) if accepted and accepted_qty is not None else None,
-            "quantity_declared": int(g.get("quantity") or 0),
+            "quantity_declared": int(declared_qty) if declared_qty is not None else None,
             "total_price": None,  # supplies-api сумму по строке не отдаёт
             "status": status,
         })

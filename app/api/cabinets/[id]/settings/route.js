@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { query } from "@/lib/db.js";
+import { SUPPLY_TARGET_DEFAULT, SUPPLY_MIN_DEFAULT, clampDays } from "@/lib/supplyDays.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,16 +29,13 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   });
 });
 
-// Пороги поставок из settings с дефолтами 30/14 (дубль дефолтов в
-// lib/supplyPlanData.js — там же контракт зажима 1..365).
-const SUPPLY_DEFAULTS = { target: 30, min: 14 };
+// Пороги поставок из settings: дефолты/кламп — общий helper lib/supplyDays.js
+// (тот же, что использует lib/supplyPlanData.js readSupplySettings).
 function readSupplyDays(settings) {
   const s = settings || {};
-  const t = Number(s.supply_target_days);
-  const m = Number(s.supply_min_days);
   return {
-    target: Number.isFinite(t) ? Math.round(t) : SUPPLY_DEFAULTS.target,
-    min: Number.isFinite(m) ? Math.round(m) : SUPPLY_DEFAULTS.min,
+    target: clampDays(s.supply_target_days, SUPPLY_TARGET_DEFAULT),
+    min: clampDays(s.supply_min_days, SUPPLY_MIN_DEFAULT),
   };
 }
 

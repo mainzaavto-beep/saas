@@ -44,4 +44,12 @@ assert m.parse_rows(1, None, []) == []
 assert m.parse_rows(1, {"statusID": 5, "createDate": "2026-01-01T00:00:00+03:00",
                          "factDate": "2026-01-02T00:00:00+03:00", "updatedDate": "x",
                          "warehouseName": "W"}, []) == []
-print("OK: 4 проверки")
+
+# Товарная строка без ключа "quantity" — quantity_declared=None (не 0: 0 значило бы
+# «заявлено 0 шт», а тут форма ответа неожиданная — фикс раунд 1, 2026-09-07).
+goods_no_declared = [{"barcode": "2049111040183", "nmID": 831685665, "techSize": "M", "acceptedQuantity": 4}]
+rows3 = m.parse_rows(40977599, detail_accepted, goods_no_declared)
+assert rows3[0]["quantity_declared"] is None, rows3
+assert rows3[0]["quantity"] == 4, rows3
+
+print("OK: 5 проверок")
