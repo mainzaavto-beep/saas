@@ -169,6 +169,7 @@ PY = sys.executable
 WB_COLLECTORS = [
     "wb_catalog",
     "wb_orders",
+    "wb_incomes",      # приёмки FBO WB → tenant.wb_incomes (план «Склады 2.0», этап 3)
     "wb_finance",
     "wb_order_costs",
     "wb_cabinet_costs",

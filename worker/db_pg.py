@@ -871,6 +871,29 @@ def upsert_wb_supplies_many(rows):
                                  bool_cols=["done"])
 
 
+# --- wb_incomes (приёмки FBO WB, statistics-api /api/v1/supplier/incomes, миграция 055) ---
+_WB_INCOMES_COLS = ["number", "date", "date_close", "last_change", "warehouse_name",
+                     "tech_size", "quantity", "total_price", "status"]
+
+
+def upsert_wb_incomes_many(rows):
+    """Приёмки FBO WB. PK = (cabinet_id, income_id, nm_id, barcode)."""
+    return _batch_upsert("wb_incomes", ["income_id", "nm_id", "barcode"], _WB_INCOMES_COLS, rows)
+
+
+def wb_incomes_for_match(days: int) -> list[dict]:
+    """Приёмки за последние `days` дней, агрегированные по income_id — подсказки
+    связи с tenant.ff_shipment_docs (mp_supply_id/mp_supply_kind='wb_income'),
+    план «Склады 2.0» этап 3."""
+    return query(
+        "SELECT income_id, number, MIN(date) AS date, MAX(date_close) AS date_close, "
+        "warehouse_name, SUM(quantity) AS quantity, MAX(status) AS status "
+        "FROM tenant.wb_incomes WHERE date >= (CURRENT_DATE - %s::int) "
+        "GROUP BY income_id, number, warehouse_name ORDER BY date DESC",
+        (days,),
+    )
+
+
 # --- wb_fbs_tasks (FBS-задания WB, marketplace-api /api/v3/orders) ---
 _WB_FBS_TASKS_MAP = [
     ("rid", "rid"), ("supply_id", "supplyId"),
