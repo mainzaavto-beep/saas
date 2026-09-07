@@ -2,8 +2,9 @@
 SaaS-сборщик АВТО-СПИСАНИЯ FBS Ozon → tenant.stock_moves / stock_move_gaps (спека §3.4).
 
 Источники (всё из БД, API не трогает): tenant.ozon_orders scheme='fbs' (статусы постингов),
-tenant.ozon_sales is_return=1 по posting_number/product_id, existing_return_refs (дедуп
-возврата — статусный и продажный путь не зачисляют одну единицу дважды). План —
+tenant.ozon_sales is_return=1 по posting_number/product_id, existing_return_qty (дедуп
+возврата по количеству — статусный и продажный путь не зачисляют одну единицу дважды,
+а частичные возвраты по одному постингу зачисляются оба). План —
 worker/fbs_writeoff_core.plan_ozon, запись — worker/stock_ledger.apply_moves (идемпотентно
 по stock_moves_src_uq). Тик main (после ozon_orders/ozon_sales). SAAS_PROBE=1 — печатает
 план и не пишет. Идемпотентен: повторный прогон → 0 applied, N duplicate.
@@ -59,40 +60,43 @@ def collect():
         print("##OBS rows=0", flush=True)
         return 0
     postings = db_pg.ozon_fbs_postings_for_writeoff()
-    moves, gaps = core.plan_ozon(
+    moves, gaps, closed_refs = core.plan_ozon(
         postings, loc_by_wh=loc_by_wh, items=db_pg.fbs_items_by_location(),
         existing_out=db_pg.existing_out_moves("ozon_posting"), returns=db_pg.ozon_fbs_returns(),
-        existing_returns=db_pg.existing_return_refs(["ozon_posting", "ozon_return"]))
+        existing_returns=db_pg.existing_return_qty(["ozon_posting", "ozon_return"]))
     if _probe.is_probe():
         _probe.dump("план движений", moves, n=10)
         _probe.dump("пробелы", gaps, n=10)
         return 0
     res = stock_ledger.apply_moves(moves)
     _FAILED = len(res["failed"])
+    by_ref = {f"{p['posting_number']}:{p['product_id']}": p for p in postings}
 
-    def _posting_for(base):
-        posting_number, product_id = base.split(":")
-        return next((x for x in postings if x["posting_number"] == posting_number and str(x["product_id"]) == product_id), None)
+    def _gap(ref, src_kind, reason):
+        # Пробел заводится под src_kind ТОГО движения, которое не прошло: у возврата это
+        # ozon_return, у списания — ozon_posting. Базовый реф у обоих один
+        # (posting_number:product_id), склад/артикул/кол-во берутся из постинга.
+        base = ref.split("#", 1)[0]
+        p = by_ref.get(base)
+        gaps.append({"src_kind": src_kind, "src_ref": base, "platform": "ozon",
+                     "warehouse_id": p and p.get("warehouse_id"), "sku_key": p and p.get("product_id"),
+                     "qty": (p and int(p.get("qty") or 0)) or 1, "reason": reason})
 
-    for ref in res["insufficient"]:
-        base = ref.split("#", 1)[0]
-        p = _posting_for(base)
-        gaps.append({"src_kind": "ozon_posting", "src_ref": base, "platform": "ozon",
-                     "warehouse_id": p and p.get("warehouse_id"), "sku_key": p and p.get("product_id"),
-                     "qty": (p and int(p.get("qty") or 0)) or 1, "reason": "insufficient"})
-    for ref in res["missing"]:
-        base = ref.split("#", 1)[0]
-        p = _posting_for(base)
-        gaps.append({"src_kind": "ozon_posting", "src_ref": base, "platform": "ozon",
-                     "warehouse_id": p and p.get("warehouse_id"), "sku_key": p and p.get("product_id"),
-                     "qty": (p and int(p.get("qty") or 0)) or 1, "reason": "no_item"})
+    for ref, src_kind in res["insufficient"]:
+        _gap(ref, src_kind, "insufficient")
+    for ref, src_kind in res["missing"]:
+        _gap(ref, src_kind, "no_item")
     stock_ledger.record_gaps(gaps)
-    bad_refs = {r.split("#", 1)[0] for r in res["insufficient"]} | {r.split("#", 1)[0] for r in res["missing"]} \
-        | {r.split("#", 1)[0] for r, _ in res["failed"]}
-    done_refs = {m["src_ref"].split("#", 1)[0] for m in moves if m["src_kind"] == "ozon_posting" and m["src_ref"].split("#", 1)[0] not in bad_refs}
-    resolved = stock_ledger.resolve_gaps("ozon_posting", done_refs)
+    bad = {(k, r.split("#", 1)[0]) for r, k in res["insufficient"]} \
+        | {(k, r.split("#", 1)[0]) for r, k in res["missing"]} \
+        | {(k, r.split("#", 1)[0]) for r, k, _ in res["failed"]}
+    done = {(m["src_kind"], m["src_ref"].split("#", 1)[0]) for m in moves} - bad
+    # closed_refs — постинги, по которым списания уже не будет никогда (отменены до отгрузки):
+    # их пробелы закрываем наравне с отработанными, иначе они висят вечно.
+    done |= {("ozon_posting", ref) for ref in closed_refs}
+    resolved = stock_ledger.resolve_gaps(done)
     by = Counter(g["reason"] for g in gaps)
-    err_note = f", ошибок {len(res['failed'])}: {res['failed'][0][1]}" if res["failed"] else f", ошибок {len(res['failed'])}"
+    err_note = f", ошибок {len(res['failed'])}: {res['failed'][0][2]}" if res["failed"] else f", ошибок {len(res['failed'])}"
     print(f"[ozon_fbs_writeoff] постинги {len(postings)}: списано {res['applied']}, дублей {res['duplicate']}, "
           f"не хватило {len(res['insufficient'])}, пропало {len(res['missing'])}{err_note}, "
           f"пробелов {len(gaps)} (no_location {by['no_location']}, no_item {by['no_item']}, "

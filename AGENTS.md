@@ -360,8 +360,9 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   `worker/stock_ledger.py` (`apply_moves` — savepoint на движение, результат по вёдрам
   `applied/duplicate/insufficient/missing/failed`; `record_gaps`/`resolve_gaps`). Уникальность
   источника `(cabinet_id, src_kind, src_ref, kind)` → повтор = no-op. Прямых `UPDATE ff_inventory
-  SET qty` вне этих двух файлов в коде нет (проверка: `grep -rn "SET qty" app lib --include=*.js
-  | grep -v lib/stockLedger.js` → пусто).
+  SET qty` вне этих двух файлов в коде нет — проверка покрывает и панель, и воркер:
+  `grep -rn "SET qty" app lib worker --include=*.js --include=*.py | grep -v "stockLedger.js\|stock_ledger.py"`
+  → пусто.
 - **Виды**: `in` (закупка/ручное добавление), `out_fbo` (документ отгрузки), `out_fbs`
   (авто-списание FBS), `transfer_out`/`transfer_in` (перемещение ФФ→ФФ, `/transfers`), `adjust`
   (ручная правка qty — причина обязательна; удаление документа отгрузки = `adjust` по каждой

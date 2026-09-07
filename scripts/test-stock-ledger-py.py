@@ -51,7 +51,11 @@ conn = FakeConn([
     RuntimeError("boom"),
 ])
 res = L.apply_moves_conn(conn, moves)
-assert res == {"applied": 1, "duplicate": 1, "insufficient": ["r9"], "missing": ["r5"], "failed": [("r7", "boom")]}, res
+# Вёдра несут пару (src_ref, src_kind) — пробел заводится под источником САМОГО движения
+# (возврат пишется как wb_fbs_return, списание — как wb_fbs_task); failed — тройка с текстом.
+assert res == {"applied": 1, "duplicate": 1,
+               "insufficient": [("r9", "wb_fbs_task")], "missing": [("r5", "wb_fbs_task")],
+               "failed": [("r7", "wb_fbs_task", "boom")]}, res
 ops = [s for s, _ in conn.cur.sql]
 assert ops.count("SAVEPOINT") == 5 and ops.count("ROLLBACK") == 3 and ops.count("RELEASE") == 2, ops
 ins = [p for s, p in conn.cur.sql if s == "INSERT"][0]
@@ -62,4 +66,30 @@ assert conn.cur.closed, "курсор должен закрываться (fix r
 # moved_at в INSERT (fix round 1, п.1 — источник может отдать NULL-дату, moved_at NOT NULL).
 assert "archived_at IS NULL" in L._SQL_UPD, L._SQL_UPD
 assert "COALESCE(%s, now())" in L._SQL_INS, L._SQL_INS
-print("OK: 6 проверок")
+# resolve_gaps принимает пары (src_kind, src_ref) — один вызов закрывает пробелы разных
+# источников (списание + возврат по тому же рефу) и дедуплицирует вход.
+class FakeCurU:
+    def __init__(self): self.calls = []; self.rowcount = 3
+    def execute(self, sql, params=None): self.calls.append((sql, params))
+    def close(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class FakeConnU:
+    def __init__(self): self.cur = FakeCurU()
+    def cursor(self): return self.cur
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+import contextlib
+_conn = FakeConnU()
+L.db_pg = type("M", (), {"get_connection": staticmethod(lambda: contextlib.nullcontext(_conn))})()
+assert L.resolve_gaps([]) == 0
+assert L.resolve_gaps([("wb_fbs_return", "r1"), ("wb_fbs_task", "r1"), ("wb_fbs_task", "r1")]) == 3
+sql, params = _conn.cur.calls[0]
+assert "(src_kind, src_ref) IN" in sql and "unnest" in sql, sql
+assert params == (["wb_fbs_return", "wb_fbs_task"], ["r1", "r1"]), params  # дедуп + сортировка
+
+print("OK: 10 проверок")

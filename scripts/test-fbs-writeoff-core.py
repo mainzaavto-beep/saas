@@ -34,7 +34,7 @@ tasks = [
     {"rid": "r7", "nm_id": 111, "warehouse_id": None, "wb_status": "sold", "supply_id": None, "wb_status_at": "2026-09-02T10:00:00+03:00", "created_at": "2026-09-01T15:00:00+03:00"},
     {"rid": "r8", "nm_id": None, "warehouse_id": 500, "wb_status": "sold", "supply_id": None, "wb_status_at": "2026-09-02T10:00:00+03:00", "created_at": "2026-09-01T16:00:00+03:00"},
 ]
-moves, gaps = c.plan_wb(tasks, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={}, returns=[])
+moves, gaps, closed = c.plan_wb(tasks, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={}, returns=[])
 assert [(m["src_ref"], m["kind"], m["qty"], m["ff_inventory_id"]) for m in moves] == [("r1", "out_fbs", -1, 10)], moves
 assert sorted((g["src_ref"], g["reason"]) for g in gaps) == [
     ("r3", "no_location"), ("r4", "no_item"), ("r5", "insufficient"), ("r7", "no_location"), ("r8", "no_item"),
@@ -51,26 +51,29 @@ tasks2 = [
     {"rid": "r1", "nm_id": 111, "warehouse_id": 500, "wb_status": "canceled_by_client", "supply_id": "S1", "wb_status_at": "2026-09-03T10:00:00+03:00", "created_at": "2026-09-01T10:00:00+03:00"},
     {"rid": "r6", "nm_id": 111, "warehouse_id": 500, "wb_status": "canceled", "supply_id": None, "wb_status_at": "2026-09-03T10:00:00+03:00", "created_at": "2026-09-01T10:00:00+03:00"},
 ]
-moves, gaps = c.plan_wb(tasks2, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={"r1": [(10, 1)]},
-                        returns=[{"sale_id": "R77", "srid": "r1", "sale_dt": "2026-09-05"}])
+moves, gaps, closed = c.plan_wb(tasks2, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={"r1": [(10, 1)]},
+                                returns=[{"sale_id": "R77", "srid": "r1", "sale_dt": "2026-09-05"}])
 kinds = sorted((m["src_kind"], m["src_ref"], m["kind"], m["qty"], m["ff_inventory_id"]) for m in moves)
 assert kinds == [("wb_fbs_task", "r1", "return_in", 1, 10)], kinds
 assert gaps == []
+# r6 отменён, а списания не было и не будет — безнадёжный пробел, реф уходит в closed_refs
+# (сборщик закроет по нему пробел вместе с отработанными).
+assert closed == ["r6"], closed
 
 # WB: обратный порядок — продажный возврат уже существует (existing_returns из БД) →
 # статусный путь пропускается (fix round 1, п.3, добавленный кейс по ruling).
 tasks3 = [
     {"rid": "r1", "nm_id": 111, "warehouse_id": 500, "wb_status": "canceled_by_client", "supply_id": "S1", "wb_status_at": "2026-09-03T10:00:00+03:00", "created_at": "2026-09-01T10:00:00+03:00"},
 ]
-moves, gaps = c.plan_wb(tasks3, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={"r1": [(10, 1)]},
-                        returns=[], existing_returns={"r1"})
-assert moves == [] and gaps == [], (moves, gaps)
+moves, gaps, closed = c.plan_wb(tasks3, supplies_closed={"S1"}, loc_by_wh=loc, items=items, existing_out={"r1": [(10, 1)]},
+                                returns=[], existing_returns={"r1": 1})
+assert moves == [] and gaps == [] and closed == [], (moves, gaps, closed)
 
 # WB: продажный возврат сам по себе (нет конкурирующего статусного пути в этом прогоне) —
 # src_ref = rid (тот же базовый реф, что у списания — не sale_id), sale_id уходит в note.
 tasks4 = []
-moves, gaps = c.plan_wb(tasks4, supplies_closed=set(), loc_by_wh=loc, items=items, existing_out={"r9": [(30, 1)]},
-                        returns=[{"sale_id": "R88", "srid": "r9", "sale_dt": "2026-09-06"}])
+moves, gaps, closed = c.plan_wb(tasks4, supplies_closed=set(), loc_by_wh=loc, items=items, existing_out={"r9": [(30, 1)]},
+                                returns=[{"sale_id": "R88", "srid": "r9", "sale_dt": "2026-09-06"}])
 assert moves == [{"ff_inventory_id": 30, "kind": "return_in", "qty": 1, "src_kind": "wb_fbs_return",
                   "src_ref": "r9", "moved_at": "2026-09-06", "note": "возврат покупателя: R88"}], moves
 assert gaps == []
@@ -86,10 +89,47 @@ postings = [
     {"posting_number": "P5", "product_id": 4988, "qty": 1, "warehouse_id": None, "status": "delivered", "last_change_dt": "2026-09-02T10:00:00Z", "in_process_at": None},
     {"posting_number": "P6", "product_id": None, "qty": 1, "warehouse_id": 9, "status": "delivered", "last_change_dt": "2026-09-02T10:00:00Z", "in_process_at": None},
 ]
-moves, gaps = c.plan_ozon(postings, loc_by_wh=loc, items=items, existing_out={"P3:4988": [(20, 1)]},
-                          returns=[{"posting_number": "P1", "product_id": 4988, "qty": 2}])
+moves, gaps, closed = c.plan_ozon(postings, loc_by_wh=loc, items=items, existing_out={"P3:4988": [(20, 1)]},
+                                  returns=[{"posting_number": "P1", "product_id": 4988, "qty": 2}])
 got = sorted((m["src_kind"], m["src_ref"], m["kind"], m["qty"], m["ff_inventory_id"]) for m in moves)
 assert got == [("ozon_posting", "P1:4988", "out_fbs", -2, 20), ("ozon_posting", "P3:4988", "return_in", 1, 20),
                ("ozon_return", "P1:4988", "return_in", 2, 20)], got
 assert sorted((g["src_ref"], g["reason"]) for g in gaps) == [("P5:4988", "no_location"), ("P6:None", "no_item")], gaps
-print("OK: 13 проверок")
+assert closed == ["P2:4988"], closed  # отменён до отгрузки — списания не будет никогда
+
+# Ozon, ЧАСТИЧНЫЕ ВОЗВРАТЫ ПО КОЛИЧЕСТВУ: списание −3, возвраты 2 + 1 → зачислено 3 двумя
+# движениями (второе с суффиксом #r<n>, иначе уникальный индекс stock_moves съел бы его),
+# третий возврат сверх списанного → ничего.
+p3 = [{"posting_number": "P7", "product_id": 4988, "qty": 3, "warehouse_id": 9, "status": "delivered",
+       "last_change_dt": "2026-09-02T10:00:00Z", "in_process_at": None}]
+it3 = {(8, "ozon", 4988): [{"id": 20, "qty": 5, "completed_at": None}]}
+rets = [{"posting_number": "P7", "product_id": 4988, "qty": 2, "moved_at": "2026-09-03"},
+        {"posting_number": "P7", "product_id": 4988, "qty": 1, "moved_at": "2026-09-04"},
+        {"posting_number": "P7", "product_id": 4988, "qty": 1, "moved_at": "2026-09-05"}]
+moves, gaps, closed = c.plan_ozon(p3, loc_by_wh=loc, items=it3, existing_out={}, returns=rets)
+got = [(m["src_kind"], m["src_ref"], m["kind"], m["qty"], m["ff_inventory_id"]) for m in moves]
+assert got == [("ozon_posting", "P7:4988", "out_fbs", -3, 20),
+               ("ozon_return", "P7:4988", "return_in", 2, 20),
+               ("ozon_return", "P7:4988#r3", "return_in", 1, 20)], got
+assert gaps == [] and closed == [], (gaps, closed)
+
+# Тот же вход на СЛЕДУЮЩЕМ прогоне (списание и оба возврата уже в БД) → ни одного движения:
+# дедуп по количеству идемпотентен, повторный возврат не дозачисляется.
+moves, gaps, closed = c.plan_ozon(p3, loc_by_wh=loc, items=it3, existing_out={"P7:4988": [(20, 3)]},
+                                  returns=rets, existing_returns={"P7:4988": 3})
+assert moves == [] and gaps == [], (moves, gaps)
+
+# Возврат МЕНЬШЕ списания на повторном прогоне: постинг −3, единственный возврат на 2 уже
+# зачислён → второй прогон НЕ должен дозачислять третью штуку (наивное min(qty, остаток)
+# дозачислило бы).
+moves, _g, _c = c.plan_ozon(p3, loc_by_wh=loc, items=it3, existing_out={"P7:4988": [(20, 3)]},
+                            returns=rets[:1], existing_returns={"P7:4988": 2})
+assert moves == [], moves
+
+# Отгруженный постинг с qty = 0 → пробел no_item (а не молчаливый пропуск).
+p0 = [{"posting_number": "P8", "product_id": 4988, "qty": 0, "warehouse_id": 9, "status": "delivered",
+       "last_change_dt": "2026-09-02T10:00:00Z", "in_process_at": None}]
+moves, gaps, closed = c.plan_ozon(p0, loc_by_wh=loc, items=it3, existing_out={}, returns=[])
+assert moves == [] and [(g["src_ref"], g["reason"]) for g in gaps] == [("P8:4988", "no_item")], (moves, gaps)
+
+print("OK: 22 проверки")

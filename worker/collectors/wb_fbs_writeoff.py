@@ -2,8 +2,8 @@
 SaaS-сборщик АВТО-СПИСАНИЯ FBS WB → tenant.stock_moves / stock_move_gaps (спека §3.4).
 
 Источники (всё из БД, API не трогает): tenant.wb_fbs_tasks (статусы часового опроса),
-wb_supplies.closed_at, wb_sales 'R…' по srid, existing_return_refs (дедуп возврата —
-статусный и продажный путь не зачисляют одну единицу дважды). План —
+wb_supplies.closed_at, wb_sales 'R…' по srid, existing_return_qty (дедуп возврата по
+количеству — статусный и продажный путь не зачисляют одну единицу дважды). План —
 worker/fbs_writeoff_core.plan_wb, запись — worker/stock_ledger.apply_moves (идемпотентно
 по stock_moves_src_uq). Тик fbsstatus (часовой, после wb_fbs_status) и main. SAAS_PROBE=1 —
 печатает план и не пишет. Идемпотентен: повторный прогон → 0 applied, N duplicate.
@@ -59,35 +59,46 @@ def collect():
         print("##OBS rows=0", flush=True)
         return 0
     tasks = db_pg.wb_fbs_tasks_for_writeoff()
-    moves, gaps = core.plan_wb(
+    moves, gaps, closed_refs = core.plan_wb(
         tasks, supplies_closed=db_pg.wb_supplies_closed(), loc_by_wh=loc_by_wh,
         items=db_pg.fbs_items_by_location(), existing_out=db_pg.existing_out_moves("wb_fbs_task"),
         returns=db_pg.wb_fbs_returns(),
-        existing_returns=db_pg.existing_return_refs(["wb_fbs_task", "wb_fbs_return"]))
+        existing_returns=db_pg.existing_return_qty(["wb_fbs_task", "wb_fbs_return"]))
     if _probe.is_probe():
         _probe.dump("план движений", moves, n=10)
         _probe.dump("пробелы", gaps, n=10)
         return 0
     res = stock_ledger.apply_moves(moves)
     _FAILED = len(res["failed"])
-    for ref in res["insufficient"]:
+    by_rid = {t["rid"]: t for t in tasks}
+
+    def _gap(ref, src_kind, reason):
+        # Пробел заводится под src_kind ТОГО движения, которое не прошло: у возврата это
+        # wb_fbs_return, у списания — wb_fbs_task. Базовый реф у обоих один (rid), поэтому
+        # склад/артикул берутся из задания.
         base = ref.split("#", 1)[0]
-        t = next((x for x in tasks if x["rid"] == base), None)
-        gaps.append({"src_kind": "wb_fbs_task", "src_ref": base, "platform": "wb",
-                     "warehouse_id": t and t.get("warehouse_id"), "sku_key": t and t.get("nm_id"), "qty": 1, "reason": "insufficient"})
-    for ref in res["missing"]:
-        base = ref.split("#", 1)[0]
-        t = next((x for x in tasks if x["rid"] == base), None)
-        gaps.append({"src_kind": "wb_fbs_task", "src_ref": base, "platform": "wb",
-                     "warehouse_id": t and t.get("warehouse_id"), "sku_key": t and t.get("nm_id"), "qty": 1, "reason": "no_item"})
+        t = by_rid.get(base)
+        gaps.append({"src_kind": src_kind, "src_ref": base, "platform": "wb",
+                     "warehouse_id": t and t.get("warehouse_id"), "sku_key": t and t.get("nm_id"),
+                     "qty": 1, "reason": reason})
+
+    for ref, src_kind in res["insufficient"]:
+        _gap(ref, src_kind, "insufficient")
+    for ref, src_kind in res["missing"]:
+        _gap(ref, src_kind, "no_item")
     stock_ledger.record_gaps(gaps)
-    bad_refs = {r.split("#", 1)[0] for r in res["insufficient"]} | {r.split("#", 1)[0] for r in res["missing"]} \
-        | {r.split("#", 1)[0] for r, _ in res["failed"]}
-    done_refs = {m["src_ref"].split("#", 1)[0] for m in moves if m["src_kind"] == "wb_fbs_task" and m["src_ref"].split("#", 1)[0] not in bad_refs}
-    resolved = stock_ledger.resolve_gaps("wb_fbs_task", done_refs)
+    bad = {(k, r.split("#", 1)[0]) for r, k in res["insufficient"]} \
+        | {(k, r.split("#", 1)[0]) for r, k in res["missing"]} \
+        | {(k, r.split("#", 1)[0]) for r, k, _ in res["failed"]}
+    done = {(m["src_kind"], m["src_ref"].split("#", 1)[0]) for m in moves} - bad
+    # closed_refs — задания, по которым списания уже не будет никогда (отменены до отгрузки):
+    # их пробелы закрываем наравне с отработанными, иначе они висят вечно.
+    done |= {("wb_fbs_task", ref) for ref in closed_refs}
+    resolved = stock_ledger.resolve_gaps(done)
     by = Counter(g["reason"] for g in gaps)
+    err_note = f", ошибок {len(res['failed'])}: {res['failed'][0][2]}" if res["failed"] else f", ошибок {len(res['failed'])}"
     print(f"[wb_fbs_writeoff] задания {len(tasks)}: списано {res['applied']}, дублей {res['duplicate']}, "
-          f"не хватило {len(res['insufficient'])}, пропало {len(res['missing'])}, ошибок {len(res['failed'])}, "
+          f"не хватило {len(res['insufficient'])}, пропало {len(res['missing'])}{err_note}, "
           f"пробелов {len(gaps)} (no_location {by['no_location']}, no_item {by['no_item']}, "
           f"insufficient {by['insufficient']}), закрыто пробелов {resolved}", flush=True)
     print(f"##OBS rows={res['applied']}", flush=True)

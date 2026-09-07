@@ -32,7 +32,7 @@ def apply_moves_conn(conn, moves):
                 if row is None:
                     # Позиция не найдена или архивна — списывать/зачислять некуда.
                     cur.execute(f"ROLLBACK TO SAVEPOINT {sp}")
-                    res["missing"].append(m["src_ref"])
+                    res["missing"].append((m["src_ref"], m["src_kind"]))
                     continue
                 cur.execute(_SQL_INS, (m["ff_inventory_id"], row["location_id"], m["kind"], m["qty"], m["src_kind"], m["src_ref"], m["moved_at"], m.get("note")))
                 if cur.fetchone() is None:
@@ -42,7 +42,7 @@ def apply_moves_conn(conn, moves):
                 cur.execute(_SQL_UPD, (m["qty"], m["ff_inventory_id"], m["kind"] == "adjust", m["qty"]))
                 if cur.fetchone() is None:
                     cur.execute(f"ROLLBACK TO SAVEPOINT {sp}")
-                    res["insufficient"].append(m["src_ref"])
+                    res["insufficient"].append((m["src_ref"], m["src_kind"]))
                     continue
                 cur.execute(f"RELEASE SAVEPOINT {sp}")
                 res["applied"] += 1
@@ -50,7 +50,7 @@ def apply_moves_conn(conn, moves):
                 # Любая другая ошибка на движении (сеть/констрейнт/тип) — откатить только
                 # его, продолжить батч; сборщик решает, что делать с failed.
                 cur.execute(f"ROLLBACK TO SAVEPOINT {sp}")
-                res["failed"].append((m["src_ref"], str(e)[:200]))
+                res["failed"].append((m["src_ref"], m["src_kind"], str(e)[:200]))
     finally:
         cur.close()
     return res
@@ -79,14 +79,20 @@ def record_gaps(gaps):
     return len(gaps)
 
 
-def resolve_gaps(src_kind, src_refs):
-    """Пробелы, по которым движение теперь создано, закрываются."""
-    if not src_refs:
+def resolve_gaps(pairs):
+    """Пробелы закрываются по ПАРАМ (src_kind, src_ref): движение теперь создано либо его
+    уже никогда не будет (задание/постинг отменён — closed_refs планировщика). Пара, а не
+    один src_kind на вызов: возврат пишется своим источником (wb_fbs_return/ozon_return),
+    и его пробел заведён под тем же src_kind — закрывать его как wb_fbs_task было бы мимо."""
+    uniq = sorted({(str(k), str(r)) for k, r in pairs})
+    if not uniq:
         return 0
     with db_pg.get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE tenant.stock_move_gaps SET resolved_at = now() "
-                        "WHERE src_kind = %s AND resolved_at IS NULL AND src_ref = ANY(%s)", (src_kind, list(src_refs)))
+                        "WHERE resolved_at IS NULL AND (src_kind, src_ref) IN "
+                        "(SELECT * FROM unnest(%s::text[], %s::text[]))",
+                        ([k for k, _ in uniq], [r for _, r in uniq]))
             return cur.rowcount
 
 

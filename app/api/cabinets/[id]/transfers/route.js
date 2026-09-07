@@ -9,6 +9,7 @@
 //                  moved_at, note, created_at, lines: [...] }] }  (любая роль)
 // POST { action:"create", from_location_id, to_location_id, moved_at?, note?,
 //        lines:[{ff_inventory_id, qty}] } → { ok, id }            (role: manager)
+//        Место назначения проверяется на существование и is_active → иначе 400.
 //
 // ⚠ Нехватка остатка = 400 и НИЧЕГО не записано. Почему предпроверка, а не
 // «попробовать и откатить»: withCabinet коммитит транзакцию withTenant при любом
@@ -61,12 +62,25 @@ export const POST = withCabinet(async (req, { session }) => {
   const { fromLocationId, toLocationId, movedAt, note, lines } = n.doc;
   const userId = session?.user_id ?? null;
 
+  // Место назначения должно существовать и быть активным: иначе перемещение уводит
+  // товар в никуда (и на неактивном месте позиции не показываются в /inventory).
+  const dest = (await tenantQuery(
+    `SELECT id FROM tenant.stock_ff_locations WHERE id = $1 AND is_active`, [toLocationId]
+  ))[0];
+  if (!dest) {
+    return NextResponse.json({ error: "место назначения не найдено или неактивно" }, { status: 400 });
+  }
+
   // Предпроверка ДО любой записи: все строки лежат на месте-источнике, живые,
-  // и остатка хватает. FOR UPDATE блокирует их до конца транзакции.
-  const ids = lines.map((l) => l.ffInventoryId);
+  // и остатка хватает. FOR UPDATE блокирует их до конца транзакции. ORDER BY id —
+  // детерминированный порядок блокировок (LockRows стоит над Sort, строки лочатся уже
+  // отсортированными): два одновременных перемещения с пересекающимся составом иначе
+  // могли бы взять блокировки в разном порядке и встать в дедлок.
+  const ids = lines.map((l) => l.ffInventoryId).sort((a, b) => a - b);
   const src = await tenantQuery(
     `SELECT id, qty FROM tenant.ff_inventory
      WHERE id = ANY($1::bigint[]) AND location_id = $2 AND archived_at IS NULL
+     ORDER BY id
      FOR UPDATE`,
     [ids, fromLocationId]
   );

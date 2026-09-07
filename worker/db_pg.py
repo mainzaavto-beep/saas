@@ -956,7 +956,9 @@ def fbs_items_by_location():
 def existing_out_moves(src_kind):
     """{base_ref: [(ff_inventory_id, qty_abs), …]} уже сделанных out_fbs по источнику, в порядке
     создания движения (id ASC) — для возврата по позициям разнесения и идемпотентности.
-    src_ref вида 'ref#<id>' (списание разнесено по нескольким позициям) сводится к базовому 'ref'."""
+    src_ref вида 'ref#<id>' (списание разнесено по нескольким позициям) сводится к базовому
+    'ref' — тем же срезом до первого '#', что и в existing_return_qty (там он снимает ещё и
+    суффикс возврата '#r<n>')."""
     out = {}
     for r in query("SELECT src_ref, ff_inventory_id, qty FROM tenant.stock_moves "
                    "WHERE src_kind = %s AND kind = 'out_fbs' ORDER BY id", (src_kind,)):
@@ -965,14 +967,21 @@ def existing_out_moves(src_kind):
     return out
 
 
-def existing_return_refs(src_kinds):
-    """{base_ref, …} — рефы (без суффикса #<id>) уже созданных return_in движений по списку
-    src_kind. Для дедупликации возврата: статусный путь (wb_fbs_task/ozon_posting) и продажный
-    путь (wb_fbs_return/ozon_return) не должны зачислять одну и ту же единицу дважды —
-    объединённый набор обоих src_kind передаётся планировщику как existing_returns."""
-    return {r["src_ref"].split("#", 1)[0] for r in query(
-        "SELECT src_ref FROM tenant.stock_moves WHERE src_kind = ANY(%s) AND kind = 'return_in'",
-        (list(src_kinds),))}
+def existing_return_qty(src_kinds):
+    """{base_ref: сколько уже зачислено} по return_in движениям указанных src_kind. Дедуп
+    возврата ведётся ПО КОЛИЧЕСТВУ, а не по факту «реф уже возвращали»: списание может
+    вернуться частями (постинг на 3 → возвраты 2 и 1), и второй возврат обязан пройти, а
+    сумма зачислений по рефу не должна превысить списанного. Статусный путь
+    (wb_fbs_task/ozon_posting) и продажный (wb_fbs_return/ozon_return) считаются вместе —
+    одно физическое событие не зачисляется дважды. Базовый реф — src_ref до первого '#':
+    так отсекаются оба суффикса, и '#<ff_inventory_id>' (разнесение по партиям), и
+    '#r<n>' (второй и последующий возврат по рефу)."""
+    out = {}
+    for r in query("SELECT src_ref, qty FROM tenant.stock_moves "
+                   "WHERE src_kind = ANY(%s) AND kind = 'return_in'", (list(src_kinds),)):
+        base = r["src_ref"].split("#", 1)[0]
+        out[base] = out.get(base, 0) + abs(int(r["qty"] or 0))
+    return out
 
 
 def wb_fbs_tasks_for_writeoff():

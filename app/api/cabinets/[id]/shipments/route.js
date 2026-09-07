@@ -159,7 +159,10 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     // остался бы в базе. Поэтому нехватку остатка ловим здесь, когда писать ещё
     // нечего, и отдаём честный 400. FOR UPDATE держит строки до конца транзакции,
     // так что между проверкой и движением остаток не уедет.
-    for (const n of norm) {
+    // Блокируем строки в порядке возрастания id: два одновременных документа с
+    // пересекающимся составом иначе могли бы взять блокировки в разном порядке и
+    // встать в дедлок (Postgres снял бы одну транзакцию с ошибкой).
+    for (const n of [...norm].sort((a, b) => a.ff_inventory_id - b.ff_inventory_id)) {
       const row = (await tenantQuery(
         `SELECT qty FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL FOR UPDATE`,
         [n.ff_inventory_id]

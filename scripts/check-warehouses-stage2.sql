@@ -52,7 +52,9 @@ LEFT JOIN (SELECT DISTINCT split_part(src_ref,'#',1) AS src_ref FROM tenant.stoc
 LEFT JOIN tenant.stock_move_gaps g ON g.cabinet_id=o.cabinet_id AND g.src_kind='ozon_posting' AND g.src_ref=o.posting_number||':'||o.product_id AND g.resolved_at IS NULL
 WHERE o.cabinet_id=1 AND o.scheme='fbs' AND o.warehouse_id IS NOT NULL AND o.status IN ('awaiting_deliver','delivering','delivered');
 
--- 6. Возвраты не превышают списаний по той же позиции и источнику
+-- 6. Возвраты не превышают списаний по той же позиции и источнику.
+-- split_part(src_ref,'#',1) сводит к базовому рефу оба суффикса: '#<ff_inventory_id>'
+-- (разнесение по партиям) и '#r<n>' (второй и последующий частичный возврат).
 SELECT 'returns_not_exceed' AS check, COUNT(*) = 0 AS ok, COUNT(*) AS bad
 FROM (SELECT ff_inventory_id, split_part(src_ref,'#',1) AS ref,
              SUM(qty) FILTER (WHERE kind='out_fbs') AS out_q, SUM(qty) FILTER (WHERE kind='return_in') AS ret_q
