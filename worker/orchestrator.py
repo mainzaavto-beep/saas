@@ -189,6 +189,7 @@ WB_COLLECTORS = [
     "wb_supplies",     # поставки FBS → tenant.wb_supplies (лаг отгрузки на СЦ)
     "wb_fbs_tasks",    # FBS-задания → связка rid↔поставка (время до покупателя)
     "wb_fbs_status",   # статусы заданий → pvz_at «доехало до ПВЗ» (часовой таймер saas-fbs-status)
+    "wb_fbs_writeoff", # авто-списание FBS → stock_moves (после wb_fbs_status: читает его статусы; читает wb_sales из main)
 ]
 OZON_COLLECTORS = [
     "ozon_catalog",

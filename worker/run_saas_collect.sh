@@ -50,7 +50,7 @@ DAYS_TO="${3:-0}"
 # активный отчёт кабинета одновременно — прогон занимает ~9 минут НА КАБИНЕТ
 # (опрос статуса до готовности отчёта), заметно дольше остальных Ozon-сборщиков
 # в этом списке — учтено в docs/metrics-contract.md (окно сбора/расписание).
-MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad,wb_supplies,wb_fbs_tasks,ozon_supply_orders"
+MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad,wb_supplies,wb_fbs_tasks,ozon_supply_orders,wb_fbs_writeoff"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks,wb_fbs_stocks,ozon_fbs_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
@@ -79,7 +79,7 @@ SKUAD_COLLECTORS="ozon_sku_ad"
 # опросами, точность = шаг таймера. Один дешёвый POST на ≤1000 заданий.
 # Сам сборщик в MAIN_COLLECTORS не нужен: order_id заданий даёт лента
 # wb_fbs_tasks из main-тика, статусы — этот таймер.
-FBSSTATUS_COLLECTORS="wb_fbs_status"
+FBSSTATUS_COLLECTORS="wb_fbs_status,wb_fbs_writeoff"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;
