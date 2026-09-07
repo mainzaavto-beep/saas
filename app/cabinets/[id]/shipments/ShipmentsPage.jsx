@@ -276,7 +276,11 @@ function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
 // либо подсказки кандидатов + ручной ввод номера (если нет). suggestions — топ-3 из GET.
 function SupplyLink({ doc, cabinetId, reload, canManage }) {
   const [busy, setBusy] = useState(false);
-  const [pick, setPick] = useState("__manual");
+  // По умолчанию — топ-1 кандидат (лучшее совпадение), «указать вручную» — последней
+  // опцией в списке (решение ревью раунд 1, 2026-09-07).
+  const [pick, setPick] = useState(() =>
+    doc.suggestions && doc.suggestions.length > 0 ? String(doc.suggestions[0].id) : "__manual"
+  );
   const [manualId, setManualId] = useState("");
 
   async function link(mpSupplyId) {

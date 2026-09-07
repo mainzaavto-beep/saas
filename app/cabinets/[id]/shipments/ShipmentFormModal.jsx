@@ -16,7 +16,9 @@ import { useState, useMemo, useEffect } from "react";
 //
 // inventoryItems: позиции склада с qty>0 (для выбора в составе), формат GET /inventory
 //   (каждая позиция несёт location_id/location_name — «Откуда» строится из них, отдельного
-//   списка мест не запрашиваем).
+//   списка мест не запрашиваем). «Откуда» необязательно (ревью раунд 1, 2026-09-07): у
+//   кабинета 1 пока ни одна позиция ФФ не привязана к месту, поэтому пустой выбор — все
+//   позиции с остатком (без места и с местом), выбранный — фильтр по месту.
 // warehouses: { wb:[{id,name,region}], ozon:[{id,name,cluster}] } — справочники складов МП
 //   для «Склада назначения». Если null — форма подтянет его сама из GET /shipments
 //   (используется при вызове с /inventory).
@@ -50,6 +52,9 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
   const whByPlatform = whList || EMPTY_WH;
 
   // «Откуда» строим из мест, где реально лежат позиции с остатком (inventoryItems).
+  // Поле необязательное (решение ревью раунд 1, 2026-09-07): у кабинета 1 пока ни одна
+  // позиция ФФ не привязана к месту, поэтому требовать выбор блокировало бы создание
+  // отгрузки вовсе.
   const locations = useMemo(() => {
     const m = new Map();
     for (const it of inventoryItems) {
@@ -60,11 +65,17 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
     }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "ru"));
   }, [inventoryItems]);
+  // Позиции без места — для мягкой подсказки над составом, когда «Откуда» не выбрано.
+  const noLocCount = useMemo(
+    () => inventoryItems.filter((it) => it.location_id == null).length,
+    [inventoryItems]
+  );
 
-  // Позиции выбранного места (для состава). Смена «Откуда» сбрасывает состав —
-  // старые строки могли лежать на другом месте (как в TransferFormModal).
+  // Позиции для состава: пустое «Откуда» → все позиции с остатком (без места и с местом);
+  // выбранное «Откуда» → фильтр по этому месту. Смена «Откуда» сбрасывает состав — старые
+  // строки могли лежать на другом месте (как в TransferFormModal).
   const locItems = useMemo(
-    () => (fromLocationId ? inventoryItems.filter((it) => it.location_id === Number(fromLocationId)) : []),
+    () => (fromLocationId ? inventoryItems.filter((it) => it.location_id === Number(fromLocationId)) : inventoryItems),
     [inventoryItems, fromLocationId]
   );
   function changeFrom(v) {
@@ -112,7 +123,7 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
   const destWh = (whByPlatform[platform] || []).find((w) => String(w.id) === String(destWhId)) || null;
 
   async function submit() {
-    if (!fromLocationId) { alert("Выберите место-источник («Откуда»)"); return; }
+    // «Откуда» необязательно — пустое значение уйдёт как location_id: null.
     // Валидация строк.
     const norm = [];
     for (const [i, l] of lines.entries()) {
@@ -133,7 +144,7 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
         body: JSON.stringify({
           action: "create",
           doc_no: docNo, platform, ship_dt: shipDt,
-          location_id: Number(fromLocationId),
+          location_id: fromLocationId ? Number(fromLocationId) : null,
           dest_warehouse_id: destWh ? destWh.id : null,
           dest_warehouse: destWh ? destWh.name : null,
           status: shipNow ? "shipped" : "draft",
@@ -168,9 +179,9 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
           <Field label="Дата отгрузки">
             <input type="date" value={shipDt} onChange={(e) => setShipDt(e.target.value)} style={{ ...inputStyle, width: "auto" }} />
           </Field>
-          <Field label="Откуда">
+          <Field label="Откуда (опц.)">
             <select value={fromLocationId} onChange={(e) => changeFrom(e.target.value)} style={{ ...inputStyle, width: 190 }}>
-              <option value="">— выберите место —</option>
+              <option value="">— не указывать —</option>
               {locations.map((l) => (
                 <option key={l.id} value={l.id}>{l.name}{l.loc_type === "ff" ? " (ФФ)" : ""}</option>
               ))}
@@ -199,18 +210,18 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.4 }}>
           Состав отгрузки
         </div>
+        {!fromLocationId && noLocCount > 0 && (
+          <div style={{ fontSize: 11, color: C.warn, marginBottom: 6 }}>
+            Позиции без места: привяжите их в «📍 Места» на странице «Остатки склад/ФФ», чтобы план поставок их видел.
+          </div>
+        )}
         <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: 8, background: C.surfaceAlt }}>
-          {!fromLocationId && (
+          {locItems.length === 0 && (
             <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
-              Сначала выберите место-источник («Откуда»).
+              {fromLocationId ? "На этом месте нет позиций с остатком." : "На складе нет позиций с остатком."}
             </div>
           )}
-          {fromLocationId && locItems.length === 0 && (
-            <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
-              На этом месте нет позиций с остатком.
-            </div>
-          )}
-          {fromLocationId && lines.length === 0 && locItems.length > 0 && (
+          {lines.length === 0 && locItems.length > 0 && (
             <div style={{ fontSize: 12, color: C.faint, padding: "6px 4px" }}>
               Добавьте хотя бы один товар.
             </div>
@@ -242,7 +253,7 @@ export function ShipmentFormModal({ cabinetId, inventoryItems, warehouses, prese
             );
           })}
           <button onClick={addLine}
-            disabled={!fromLocationId || lines.length >= locItems.length}
+            disabled={lines.length >= locItems.length}
             style={{ ...miniBtn, color: C.accent, marginTop: 4 }}
             title="Добавить товар в отгрузку">
             + добавить товар
