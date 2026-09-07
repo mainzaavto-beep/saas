@@ -13,7 +13,10 @@
 //
 // GET → { docs, totals, warehouses, warehouseNames }
 //   docs: последние ~200 документов с развёрнутыми строками (lines[] с qty_accepted),
-//         total_qty, total_cost, status, shipped_at, location_id/location_name,
+//         total_qty, total_cost, shipped_at, location_id/location_name,
+//         status — вычисляется по ФАКТУ приёмки на лету (effectiveStatus, без записи:
+//         факт приезжает сборщиком, а не действием пользователя), status_saved — то,
+//         что лежит в БД,
 //         dest_warehouse_id, mp_supply_id/mp_supply_kind, supply (факт приёмки),
 //         suggestions (топ-3 кандидата связи для документов без mp_supply_id).
 //   warehouses: справочники складов МП — { wb:[{id,name,region}], ozon:[{id,name,cluster}] }.
@@ -35,7 +38,7 @@ import { withCabinet } from "@/lib/withCabinet.js";
 import { applyMove } from "@/lib/stockLedger.js";
 import {
   createShipmentDoc, shipDoc, linkSupply, acceptDoc,
-  loadSupply, loadSupplyCandidates, matchSupply,
+  loadSupply, loadSupplyCandidates, matchSupply, effectiveStatus,
 } from "@/lib/shipmentDocs.js";
 
 export const runtime = "nodejs";
@@ -161,7 +164,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       dest_warehouse_id: d.dest_warehouse_id,
       location_id: d.location_id,
       location_name: d.location_name,
-      status: d.status,
+      status: effectiveStatus(d, lines, supply),   // по факту приёмки, без записи
+      status_saved: d.status,
       shipped_at: d.shipped_at,
       mp_supply_id: d.mp_supply_id,
       mp_supply_kind: d.mp_supply_kind,
@@ -207,19 +211,21 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
       status: b.status,          // 'draft' | 'shipped'; по умолчанию 'shipped' (как раньше)
       lines: b.lines,
       userId,
-      applyMove,
-    }));
+    }, { applyMove }));
   }
 
   // ── ship: черновик → отгружен ────────────────────────────────────────────
   if (b.action === "ship") {
-    return respond(await shipDoc(tenantQuery, { id: b.id, userId, applyMove }));
+    return respond(await shipDoc(tenantQuery, { id: b.id, userId }, { applyMove }));
   }
 
   // ── link_supply: связь документа с приёмкой/поставкой МП ─────────────────
   if (b.action === "link_supply") {
     return respond(await linkSupply(tenantQuery, {
-      id: b.id, mpSupplyId: b.mp_supply_id, kind: b.mp_supply_kind,
+      id: b.id,
+      // ключ обязателен: отсутствие ≠ снятие связи (null снимает) — валидирует библиотека
+      mpSupplyId: "mp_supply_id" in b ? b.mp_supply_id : undefined,
+      kind: b.mp_supply_kind,
     }));
   }
 
