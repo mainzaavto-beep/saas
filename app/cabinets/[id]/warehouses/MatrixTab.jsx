@@ -122,7 +122,14 @@ export function MatrixTab({ cabinetId, onSignals }) {
 
   const allColumns = data?.matrix?.columns || [];
   const allRows = data?.matrix?.rows || [];
-  const hasFfColumns = allColumns.some((c) => c.kind === "ff");
+  // Подсказка «привяжите места» — не по наличию ФФ-колонок самих по себе (место может
+  // быть заведено, но ни у одной позиции нет в нём данных), а по тому, есть ли хоть у
+  // одной строки хоть одна ФФ-ячейка (решение контроллера, ревью раунд 1).
+  const ffColumnKeys = useMemo(() => allColumns.filter((c) => c.kind === "ff").map((c) => c.key), [allColumns]);
+  const hasFfData = useMemo(
+    () => allRows.some((r) => ffColumnKeys.some((k) => r.cells?.[k])),
+    [allRows, ffColumnKeys]
+  );
 
   const columns = useMemo(
     () => allColumns.filter((c) => c.kind === "ff" || platform === "all" || c.platform === platform),
@@ -188,7 +195,7 @@ export function MatrixTab({ cabinetId, onSignals }) {
         <span style={{ fontSize: 11, color: C.faint }}>{rows.length} строк, {columns.length} колонок</span>
       </div>
 
-      {!hasFfColumns && (
+      {!hasFfData && (
         <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: soft("warn", 12), color: C.warn, fontSize: 12 }}>
           Позиции ФФ не привязаны к местам — привяжите их в «Остатки склад/ФФ» → 📍 Места; без этого свой учёт в матрице не виден.
         </div>
