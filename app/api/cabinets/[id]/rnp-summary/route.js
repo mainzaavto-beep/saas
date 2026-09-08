@@ -18,7 +18,13 @@ export const dynamic = "force-dynamic";
 //    • Заказы факт/план            — факт COUNT(orders, is_cancel=0);
 //                                    план = sales_plan × (дней пересеч. / дней в месяце)
 //    • CTR % + динамика ▲▼          — рекламный: 100×ad_clicks/ad_views (daily_metrics)
-//    • ДРР % факт/план              — факт 100×ad_spend/salesRub; план = sales_plan.drr_plan
+//    • ДРР % факт/план              — факт 100×ad_spend/orderRub (решение владельца
+//      08.09.2026 — реклама приносит ЗАКАЗЫ, важен расход именно на них; orderRub =
+//      Σ price_with_disc/price×qty из orders, включая отмены — тот же канон, что
+//      products-summary/route.js). drrSalesPctFact = 100×ad_spend/salesRub — вторая,
+//      справочная цифра (от продаж). План = sales_plan.drr_plan (задан долей от
+//      revenue_plan — плана заказов в ₽ в sales_plan нет, план НЕ переведён на
+//      базу заказов).
 //    • ДРР ₽ факт/план              — факт SUM(ad_spend); план = drr_plan × revenue_plan_prop
 //    • Скидка за счёт МП %          — WB: AVG(orders.spp); Ozon: соинвест из
 //      снимков ozon_prices (1 − marketing_price/marketing_seller_price);
@@ -183,13 +189,14 @@ function trendOf(cur, prev) {
 function aggTotals(items) {
   const t = {
     orderedFact: 0, orderedPlan: 0,
-    salesRub: 0, profitFact: 0, profitPlan: 0,
+    salesRub: 0, orderRub: 0, profitFact: 0, profitPlan: 0,
     adSpend: 0, adClicks: 0, adViews: 0,
   };
   for (const i of items) {
     t.orderedFact += i.orderedFact || 0;
     t.orderedPlan += i.orderedPlan || 0;
     t.salesRub += i.salesRub || 0;
+    t.orderRub += i.orderRub || 0;
     t.profitFact += i.profitFact || 0;
     t.profitPlan += i.profitPlan || 0;
     t.adSpend += i.adSpend || 0;
@@ -197,7 +204,11 @@ function aggTotals(items) {
     t.adViews += i.adViews || 0;
   }
   t.ctrPct = t.adViews ? round2(100 * t.adClicks / t.adViews) : null;
-  t.drrPct = t.salesRub ? round2(100 * t.adSpend / t.salesRub) : null;
+  // ДРР факт (решение владельца 08.09.2026): реклама ÷ сумма ЗАКАЗОВ —
+  // основная база (реклама приносит заказы). drrSalesPct — вторая, справочная
+  // цифра от продаж (старая, до 08.09.2026, формула). Контракт §15.3.
+  t.drrPct = t.orderRub ? round2(100 * t.adSpend / t.orderRub) : null;
+  t.drrSalesPct = t.salesRub ? round2(100 * t.adSpend / t.salesRub) : null;
   return t;
 }
 
@@ -271,6 +282,20 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
      GROUP BY nm_id`
   ).all(from, toEnd)) {
     ordered[r.nm_id] = r.n || 0;
+  }
+
+  // 1б) Сумма ЗАКАЗОВ (orderRub) — канон products-summary/route.js (решение
+  // владельца 08.09.2026: ДРР считается от заказов, реклама приносит заказы,
+  // не продажи напрямую). SUM(price_with_disc) по ВСЕМ заказам периода,
+  // ВКЛЮЧАЯ отмены (честная «сумма заказов», симметрично products-summary).
+  // Отдельно от `ordered` выше (тот — COUNT факта, is_cancel=0, НЕ трогаем).
+  const orderRub = {};
+  for (const r of await db.prepare(
+    `SELECT nm_id, SUM(price_with_disc) AS s FROM orders
+     WHERE order_dt >= ? AND order_dt <= ? AND nm_id IS NOT NULL
+     GROUP BY nm_id`
+  ).all(from, toEnd)) {
+    orderRub[r.nm_id] = r.s || 0;
   }
 
   // 2) Товары с активностью в order_costs периода — универсум для денег
@@ -433,6 +458,7 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
     const dp = dmp[nm] || {};
     const id = ident[nm] || {};
     const salesRub = f.revenue || 0;
+    const orderRb = orderRub[nm] || 0;
     const adSp = round2(d.spend || 0);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
@@ -444,9 +470,12 @@ async function collectWB(from, toEnd, prevFrom, prevToEnd, shopName, taxMode) {
       grp: id.subject || "", im_url: id.im_url || null,
       platform: "wb", shop: shopName,
       orderedFact: ordered[nm] || 0,
-      salesRub,
+      salesRub, orderRub: round2(orderRb),
       ctrPct, ctrPrevPct: dp.ctrPct != null ? dp.ctrPct : null,
-      drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
+      // ДРР факт (решение владельца 08.09.2026) — от суммы заказов (основной);
+      // drrSalesPctFact — от продаж (вторая, справочная цифра). Контракт §15.3.
+      drrPctFact: orderRb ? round2(100 * adSp / orderRb) : null,
+      drrSalesPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: spp[nm] != null ? round2(spp[nm])
         : (sppFromSite[nm] != null ? sppFromSite[nm]
@@ -479,6 +508,19 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
      GROUP BY product_id`
   ).all(from, toEnd)) {
     ordered[r.product_id] = r.n || 0;
+  }
+
+  // 1б) Сумма ЗАКАЗОВ (orderRub) — см. коммент в collectWB выше; канон
+  // products-summary/route.js (SUM(price*qty) из orders, включая отмены —
+  // решение владельца 08.09.2026, ДРР считается от заказов).
+  const orderRub = {};
+  for (const r of await db.prepare(
+    `SELECT product_id, SUM(price * qty) AS s FROM orders
+     WHERE substr(order_dt,1,10) >= ? AND substr(order_dt,1,10) <= ?
+       AND product_id IS NOT NULL
+     GROUP BY product_id`
+  ).all(from, toEnd)) {
+    orderRub[r.product_id] = r.s || 0;
   }
 
   // 2) Товары с активностью в order_costs периода — универсум для денег
@@ -597,6 +639,7 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
     const dp = dmp[nm] || {};
     const id = ident[nm] || {};
     const salesRub = f.revenue || 0;
+    const orderRb = orderRub[nm] || 0;
     const adSp = round2(d.spend || 0);
     const ctrPct = d.views ? round2(100 * (d.clicks || 0) / d.views) : null;
     const s5 = sold5[nm] || 0;
@@ -608,9 +651,12 @@ async function collectOzon(from, toEnd, prevFrom, prevToEnd, prevTo, shopName, t
       grp: id.category || "", im_url: id.im_url || null,
       platform: "ozon", shop: shopName,
       orderedFact: ordered[nm] || 0,
-      salesRub,
+      salesRub, orderRub: round2(orderRb),
       ctrPct, ctrPrevPct: dp.ctrPct != null ? dp.ctrPct : null,
-      drrPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
+      // ДРР факт (решение владельца 08.09.2026) — от суммы заказов (основной);
+      // drrSalesPctFact — от продаж (вторая, справочная цифра). Контракт §15.3.
+      drrPctFact: orderRb ? round2(100 * adSp / orderRb) : null,
+      drrSalesPctFact: salesRub ? round2(100 * adSp / salesRub) : null,
       drrRubFact: adSp,
       mpDiscount: boost[nm] != null ? boost[nm] : null,
       mpDiscountPrev: boostPrev[nm] != null ? boostPrev[nm] : null,

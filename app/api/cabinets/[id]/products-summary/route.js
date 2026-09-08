@@ -102,7 +102,14 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       it.avgProfit = it.sold ? round2(it.profit / it.sold) : null;
       it.margin = it.salesRub ? round2(100 * it.profit / it.salesRub) : null;
       it.roi = it.costRub ? round2(100 * it.profit / it.costRub) : null;
-      it.drr = it.adSpend && it.salesRub ? round2(100 * it.adSpend / it.salesRub) : null;
+      // ДРР (решение владельца 08.09.2026): реклама приносит ЗАКАЗЫ, поэтому
+      // основной ДРР = реклама ÷ сумма ЗАКАЗОВ (orderRub), не продаж — иначе
+      // нельзя понять расход на заказы, которые реклама реально принесла.
+      // drrSales (от продаж, salesRub) — вторая, отдельная цифра, контракт
+      // §15.3. Тон пилла в UI (SummaryPage.jsx::drrPillTone) сравнивает
+      // drrSales с margin (обе на одной базе — % от salesRub), а показывает drr.
+      it.drr = it.adSpend && it.orderRub ? round2(100 * it.adSpend / it.orderRub) : null;
+      it.drrSales = it.adSpend && it.salesRub ? round2(100 * it.adSpend / it.salesRub) : null;
       it.cpa = it.adSpend && it.sold ? round2(it.adSpend / it.sold) : null;
       it.romi = it.adSpend ? round2(100 * it.profit / it.adSpend) : null;
       it.turnoverDays = it.avgDailySales > 0 ? Math.round(it.avgStock / it.avgDailySales) : null;
@@ -265,6 +272,12 @@ function aggTotals(items) {
     ? round2(100 * t.sold / (t.sold + t.returns + t.cancelled)) : null;
   t.margin = t.salesRub ? round2(100 * t.profit / t.salesRub) : null;
   t.avgCheck = t.ordered ? round2(t.orderRub / t.ordered) : null;
+  // ДРР итогов — та же пара баз, что у item.drr/item.drrSales выше (решение
+  // владельца 08.09.2026): drr от заказов (основной), drrSales от продаж.
+  // Перезаписывается ниже в buildTotals ПОСЛЕ довычета кабинетного остатка
+  // рекламы (totals.adSpend меняется на fullAd) — см. коммент там.
+  t.drr = t.adSpend && t.orderRub ? round2(100 * t.adSpend / t.orderRub) : null;
+  t.drrSales = t.adSpend && t.salesRub ? round2(100 * t.adSpend / t.salesRub) : null;
   return t;
 }
 
@@ -400,6 +413,11 @@ async function buildTotals(cabinet, platform, from, to, includeInactive, stat) {
     unallocatedAds = Math.max(0, round2(fullAd - sumItemAd));
     totals.profit = round2((totals.profit || 0) - unallocatedAds);
     if (totals.salesRub) totals.margin = round2(100 * totals.profit / totals.salesRub);
+    // totals.adSpend только что перезаписан ПОЛНОЙ кабинетной рекламой (fullAd,
+    // строка выше) — пересчитываем drr/drrSales на неё же (решение владельца
+    // 08.09.2026), иначе они остались бы посчитаны на Σ item.adSpend из aggTotals.
+    totals.drr = totals.adSpend && totals.orderRub ? round2(100 * totals.adSpend / totals.orderRub) : null;
+    totals.drrSales = totals.adSpend && totals.salesRub ? round2(100 * totals.adSpend / totals.salesRub) : null;
   }
 
   return { items, totals, unallocatedAds };

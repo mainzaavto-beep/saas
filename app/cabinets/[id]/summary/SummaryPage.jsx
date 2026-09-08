@@ -38,11 +38,17 @@ const pct = (v) => (v == null || !Number.isFinite(v) ? "—" : r2(v) + "%");
 
 // ДРР-пилл: пороги ОТНОСИТЕЛЬНО маржи товара (решение владельца 25.08):
 // ok < margin/2; warn < margin; bad ≥ margin | реклама без продаж | margin≤0.
-function drrPillTone(drr, margin, ads, sold) {
+// С 08.09.2026 (решение владельца): показываемый ДРР считается от суммы
+// ЗАКАЗОВ (it.drr — реклама приносит заказы, важен расход именно на них),
+// а не от продаж — но тон пилла по-прежнему сравнивает с маржой НА ОДНОЙ
+// БАЗЕ (обе % от salesRub), поэтому сюда передаётся drrSales (ДРР от
+// продаж), не drr. drr и drrSales теперь МОГУТ расходиться по величине —
+// ожидаемо (разные знаменатели), контракт §15.3.
+function drrPillTone(drrSales, margin, ads, sold) {
   if (!ads) return null;                    // рекламы нет — пилла нет
   if (!sold || margin == null || margin <= 0) return "bad";
-  if (drr < margin / 2) return "ok";
-  if (drr < margin) return "warn";
+  if (drrSales < margin / 2) return "ok";
+  if (drrSales < margin) return "warn";
   return "bad";
 }
 
@@ -428,8 +434,12 @@ export default function SummaryPage({ cabinetId }) {
         <Kpi
           label="Реклама, ₽"
           value={money(t.adSpend)}
-          sub={t.salesRub ? `ДРР ${pct(100 * (t.adSpend || 0) / t.salesRub)}` : "ДРР —"}
-          title="Вся реклама кабинета за период (= плитка «ДРР (общий)»); товарная часть видна в колонке «Реклама, ₽» таблицы; реклама и выручка — по всему кабинету целиком, фильтрами не меняется"
+          sub={t.orderRub ? `ДРР ${pct(100 * (t.adSpend || 0) / t.orderRub)}` : "ДРР —"}
+          title={
+            "ДРР = реклама ÷ сумма заказов (решение владельца 08.09.2026 — реклама приносит заказы)"
+            + (t.salesRub ? `; от продаж ${pct(100 * (t.adSpend || 0) / t.salesRub)}` : "")
+            + "; товарная часть видна в колонке «Реклама, ₽» таблицы; реклама, заказы и выручка — по всему кабинету целиком, фильтрами не меняется"
+          }
         />
         <Kpi
           label="Продано, шт"
@@ -554,7 +564,7 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{money(it.payout)}</Td>
                 <Td right><span style={{ color: (it.margin || 0) >= 0 ? C.pos : C.neg, fontWeight: 600 }}>{pct(it.margin)}</span></Td>
                 <Td right>{pct(it.roi)}</Td>
-                <Td right><DrrPill drr={it.drr} margin={it.margin} ads={it.adSpend} sold={it.sold} /></Td>
+                <Td right><DrrPill drr={it.drr} drrSales={it.drrSales} margin={it.margin} ads={it.adSpend} sold={it.sold} /></Td>
                 <Td right>{pct(it.romi)}</Td>
                 <Td right>{money(it.cpa)}</Td>
                 <Td right>{it.turnoverDays != null ? num(it.turnoverDays) + " дн" : "—"}</Td>
@@ -718,12 +728,16 @@ export default function SummaryPage({ cabinetId }) {
 
 // ДРР-пилл: tone==null → голый % (как раньше); иначе цветная подложка
 // (drrPillTone — пороги ОТНОСИТЕЛЬНО маржи, решение владельца 25.08).
-function DrrPill({ drr, margin, ads, sold }) {
-  const tone = drrPillTone(drr, margin, ads, sold);
+// Показывает drr (от ЗАКАЗОВ, основной — решение владельца 08.09.2026),
+// тон считается по drrSales (от продаж, одна база с margin — см. коммент
+// у drrPillTone); title пилла даёт drrSales для сверки.
+function DrrPill({ drr, drrSales, margin, ads, sold }) {
+  const tone = drrPillTone(drrSales, margin, ads, sold);
+  const title = drrSales != null ? `от продаж ${pct(drrSales)}` : undefined;
   if (tone == null) return pct(drr);
   const token = tone === "ok" ? "pos" : tone === "warn" ? "warn" : "neg";
   return (
-    <span style={{
+    <span title={title} style={{
       display: "inline-block", fontSize: 11.5, fontWeight: 600, borderRadius: 6,
       padding: "2px 8px", color: C[token], background: soft(token, 13),
     }}>
@@ -797,7 +811,8 @@ const COLS = [
   { key: "avgProfit",   label: "Ср. прибыль",    minW: 90, sort: "num" },
   { key: "margin",      label: "Маржа",          minW: 70, sort: "num" },
   { key: "roi",         label: "ROI",            minW: 65, sort: "num" },
-  { key: "drr",         label: "ДРР",            minW: 60, sort: "num" },
+  { key: "drr",         label: "ДРР",            minW: 60, sort: "num",
+    hint: "реклама ÷ сумма заказов (решение владельца 08.09.2026 — реклама приносит заказы); наведите на пилл — ДРР от продаж" },
   { key: "romi",        label: "ROMI",           minW: 70, sort: "num" },
   { key: "cpa",         label: "CPA, ₽",         minW: 80, sort: "num" },
   { key: "turnoverDays",label: "Оборач., дн",    minW: 85, sort: "num" },

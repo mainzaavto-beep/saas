@@ -165,7 +165,14 @@ export default function RnpPage({ cabinetId }) {
         <Kpi label="Заказы факт" value={num(t.orderedFact)} />
         <Kpi label="Прибыль факт" value={money(t.profitFact)} color={t.profitFact >= 0 ? C.pos : C.neg} />
         <Kpi label="CTR (рекл.)" value={pct(t.ctrPct)} />
-        <Kpi label="ДРР %" value={pct(t.drrPct)} />
+        <Kpi
+          label="ДРР %"
+          value={pct(t.drrPct)}
+          title={
+            "Реклама ÷ сумма заказов (решение владельца 08.09.2026 — реклама приносит заказы)"
+            + (t.drrSalesPct != null ? `; от продаж ${pct(t.drrSalesPct)}` : "")
+          }
+        />
         <Kpi label="Реклама, ₽" value={money(t.adSpend)} color={C.neg} />
       </div>
 
@@ -239,7 +246,12 @@ export default function RnpPage({ cabinetId }) {
                 <Td right>{num(it.orderedFact)}</Td>
                 <Td right style={planCell(it.orderedFact, it.orderedPlan)}>{it.orderedPlan != null ? num(it.orderedPlan) : "—"}</Td>
                 <Td right>{pct1(it.ctrPct)} <Trend trend={it.ctrTrend} /></Td>
-                <Td right>{pct(it.drrPctFact)}</Td>
+                <Td right>
+                  {pct(it.drrPctFact)}
+                  {it.drrSalesPctFact != null && (
+                    <span style={{ display: "block", fontSize: 10, color: C.faint }}>от продаж {pct(it.drrSalesPctFact)}</span>
+                  )}
+                </Td>
                 <Td right>{it.drrPctPlan != null ? pct(it.drrPctPlan) : "—"}</Td>
                 <Td right>{money(it.drrRubFact)}</Td>
                 <Td right>{it.drrRubPlan != null ? money(it.drrRubPlan) : "—"}</Td>
@@ -270,7 +282,7 @@ export default function RnpPage({ cabinetId }) {
                 <td style={tdFootR}>{num(t.orderedFact)}</td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{pct(t.ctrPct)}</td>
-                <td style={tdFootR}>{pct(t.drrPct)}</td>
+                <td style={tdFootR} title={t.drrSalesPct != null ? `от продаж ${pct(t.drrSalesPct)}` : undefined}>{pct(t.drrPct)}</td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{money(t.adSpend)}</td>
                 <td style={tdFootR}>—</td>
@@ -316,7 +328,8 @@ const COLS = [
   { key: "orderedFact", label: "Заказы факт",      minW: 95, sort: "num" },
   { key: "orderedPlan", label: "Заказы план",      minW: 95, sort: "num" },
   { key: "ctrPct",      label: "CTR, %",           minW: 95, sort: "num" },
-  { key: "drrPctFact",  label: "ДРР, %",           minW: 75, sort: "num" },
+  { key: "drrPctFact",  label: "ДРР, %",           minW: 90, sort: "num",
+    hint: "реклама ÷ сумма заказов (решение владельца 08.09.2026 — реклама приносит заказы); мелким — то же от продаж" },
   { key: "drrPctPlan",  label: "ДРР план, %",      minW: 90, sort: "num" },
   { key: "drrRubFact",  label: "ДРР, ₽",           minW: 95, sort: "num" },
   { key: "drrRubPlan",  label: "ДРР план, ₽",      minW: 95, sort: "num" },
@@ -372,7 +385,7 @@ function Th({ col, sort, setSort }) {
         cursor: sortable ? "pointer" : "default", color: isActive ? C.ink : C.muted,
         minWidth: col.minW, position: "sticky", top: 0, zIndex: 1,
       }}
-      title={sortable ? "Сортировка" : undefined}
+      title={col.hint ? (sortable ? `Сортировка · ${col.hint}` : col.hint) : (sortable ? "Сортировка" : undefined)}
     >
       {col.label}{isActive ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
     </th>
@@ -390,9 +403,9 @@ function Td({ children, right, left, title, style }) {
 const tdFootL = { padding: "10px 8px", fontSize: 12.5, fontWeight: 800, color: C.ink, textAlign: "left", whiteSpace: "nowrap" };
 const tdFootR = { padding: "10px 8px", fontSize: 12.5, color: C.ink, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" };
 
-function Kpi({ label, value, color }) {
+function Kpi({ label, value, color, title }) {
   return (
-    <div style={{ padding: "12px 16px", borderRadius: 10, background: C.surface, border: `1px solid ${C.line}`, minWidth: 130 }}>
+    <div style={{ padding: "12px 16px", borderRadius: 10, background: C.surface, border: `1px solid ${C.line}`, minWidth: 130 }} title={title}>
       <div style={{ fontSize: 10, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 800, color: color || C.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
     </div>
