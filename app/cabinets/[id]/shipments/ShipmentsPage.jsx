@@ -32,7 +32,7 @@ const STATUS_LABEL = { draft: "Черновик", shipped: "Отгружено",
 const STATUS_TOKEN = { draft: "muted", shipped: "accent", accepted: "pos", partial: "warn", rejected: "neg" };
 const KIND_BY_PLATFORM = { wb: "wb_income", ozon: "ozon_supply_order" };
 
-export default function ShipmentsPage({ cabinetId }) {
+export default function ShipmentsPage({ cabinetId, embedded = false }) {
   const [data, setData] = useState(null);
   const [inv, setInv] = useState(null);  // позиции склада для состава формы/приёмки
   const [role, setRole] = useState(null);
@@ -87,7 +87,7 @@ export default function ShipmentsPage({ cabinetId }) {
 
   return (
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px", maxWidth: 1600, margin: "0 auto" }}>
-      <Header />
+      {!embedded && <Header />}
 
       <SupplyPlanSection cabinetId={cabinetId} canManage={canManage} onDocCreated={reload}
         wbWarehouses={warehouses.wb || []} />
