@@ -361,8 +361,9 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   `applied/duplicate/insufficient/missing/failed`; `record_gaps`/`resolve_gaps`). Уникальность
   источника `(cabinet_id, src_kind, src_ref, kind)` → повтор = no-op. Прямых `UPDATE ff_inventory
   SET qty` вне этих двух файлов в коде нет — проверка покрывает и панель, и воркер:
-  `grep -rn "SET qty" app lib worker --include=*.js --include=*.py | grep -v "stockLedger.js\|stock_ledger.py"`
-  → пусто.
+  `grep -rnE "SET qty\b" app lib worker --include=*.js --include=*.py | grep -v "stockLedger.js\|stock_ledger.py"`
+  → пусто (форма с `\b` — без неё команда ложно ловит легитимный `SET qty_accepted` в
+  `lib/shipmentDocs.js`, этап 3).
 - **Виды**: `in` (закупка/ручное добавление), `out_fbo` (документ отгрузки), `out_fbs`
   (авто-списание FBS), `transfer_out`/`transfer_in` (перемещение ФФ→ФФ, `/transfers`), `adjust`
   (ручная правка qty — причина обязательна; удаление документа отгрузки = `adjust` по каждой
@@ -396,6 +397,69 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
 - Первые содержательные списания появятся после того, как владелец расставит места у позиций и
   привяжет склады продавца к местам (на 07.09 у всех 12 позиций кабинета #1 места нет — план
   сборщиков пуст, 349 открытых пробелов `no_location`).
+
+### 🆕 Склады 2.0 — этап 3 «Поставки» (с 2026-09-08)
+
+Спека `docs/superpowers/specs/2026-09-06-multi-warehouse-stock-control-design.md` (§4), план
+`docs/superpowers/plans/2026-09-07-warehouses-stage3-supplies.md`. Миграции 055–056.
+
+- **Таблицы**: `ff_shipment_docs` — `location_id` (откуда), `dest_warehouse_id`, `status`
+  (`draft`|`shipped`|`accepted`|`partial`|`rejected`), `shipped_at`, `mp_supply_id`,
+  `mp_supply_kind` (`wb_income`|`ozon_supply_order`); `ff_shipment_lines.qty_accepted`;
+  `ff_inventory.pack_qty` (кратность упаковки, `NULL`=1); `auth.cabinets.settings JSONB`
+  (пороги планирования); новая `tenant.wb_incomes` (приёмки FBO WB, PK `cabinet_id,
+  income_id, nm_id, barcode`; `quantity` = принято/`NULL` до приёмки; `quantity_declared` =
+  заявлено, миграция 056).
+- **Сборщик `wb_incomes`**: источник — supplies-api (`POST /api/v1/supplies` список,
+  `GET .../{id}` детали, `GET .../{id}/goods` строки), НЕ старый statistics-api
+  `/supplier/incomes` (WB отключил его 2026-09-07 — 404 на гейтвее). `POST /supplies`
+  игнорирует и `dateFrom`, и пагинацию — отдаёт всю историю аккаунта одним ответом; окно
+  `SAAS_INCOMES_DAYS` (90 по умолчанию) фильтруется на своей стороне по `createDate`.
+  Терминальные поставки (`statusID=5` + `date_close` заполнен) повторно не опрашиваются
+  (`db_pg.wb_incomes_terminal_ids`) — коды отклонения WB не наблюдались, набор пуст,
+  дополнять по факту. `quantity` пишется только после `factDate` поставки;
+  `quantity_declared` — всегда. Зарегистрирован в `WB_COLLECTORS` (`worker/orchestrator.py`)
+  **и** в `MAIN_COLLECTORS` (`worker/run_saas_collect.sh`) — оба места (урок из памяти). Окно
+  90 дней не покрывает старые поставки — разовый полный бэкфилл: `SAAS_INCOMES_DAYS=400`.
+- **Планировщик** `lib/supplyPlan.js` (чистые функции: `velocityPerDay`, `coverageDays`
+  (`null` при нулевой скорости), `needQty` с округлением вверх до `pack_qty`, `pickSources`
+  по близости региона, `buildSupplyPlan`) + адаптер `lib/supplyPlanData.js`. Ozon — цель на
+  КАЖДЫЙ FBO-склад; WB — ОДНА цель на товар на кабинет (`warehouseKey='wb'`), потому что с
+  25.08.2026 WB отдаёт остатки одной строкой «Склад WB» без разбивки. Окно скорости продаж
+  зафиксировано на 28 дней, не настройка кабинета. Источники — места ФФ с привязанными
+  артикулами (`ff_inventory_skus`); позиции без места в план не попадают. Пороги
+  `target_days`/`min_days` — `lib/supplyDays.js` (дефолты 30/14, зажим 1..365), хранятся в
+  `auth.cabinets.settings`. Роут `app/api/cabinets/[id]/supply-plan/route.js`: GET — план,
+  POST `create_doc` — черновик документа отгрузки (списания ещё нет).
+- **Документы отгрузки** `lib/shipmentDocs.js` + `app/api/cabinets/[id]/shipments/route.js`:
+  жизненный цикл `draft → shipped → accepted|partial|rejected`. `create`/`ship` — списание
+  `out_fbo` через `applyMove` (`src_ref='<doc_id>:<line_id>'`), ровно один раз при переходе в
+  `shipped`. `link_supply` — связь с приёмкой МП (WB: `wb_income` ↔ `tenant.wb_incomes` по
+  `income_id`; Ozon: `ozon_supply_order` ↔ `tenant.ozon_supply_orders` по `order_id`; вид
+  поставки сверяется с площадкой документа; `mp_supply_id:null` снимает связь). `accept` —
+  `qty_accepted` по строкам (400, если принято больше отгруженного). `delete` — только
+  `draft` (у отгруженного — `adjust` с комментарием). Статус в GET считается на лету по
+  факту приёмки (`effectiveStatus`) — не дожидаясь ручных действий; `status_saved` — то, что
+  лежит в БД. Подсказки связи (`matchSupply`): склад +2 (id либо нормализованное имя), дата
+  ±3 дня +1, количество ±10 % +1; окно кандидатов — 60 дней. WB `rejected` — по кодам
+  `WB_INCOME_REJECTED_STATUS_IDS` (пока пусто, WB убрал текстовые статусы 03.11.2025). Факт
+  WB однороден внутри поставки: «принято» берётся, только если оно заполнено у ВСЕХ строк
+  `income_id`, иначе используется заявленное.
+- **UI `/shipments`**: `SupplyPlanSection.jsx` — карточки рекомендаций по (место → склад),
+  кнопка «Создать черновик»; `ShipmentsPage.jsx` — статусы-пиллы, связь/отвязка с поставкой
+  (подсказки-кандидаты либо номер вручную); `AcceptModal.jsx` — приёмка с предзаполнением
+  `qty_accepted` из факта WB по `nm_id` (`lines_by_nm`; у Ozon факта по товару нет — ввод
+  руками); `ShipmentFormModal.jsx` — «Откуда» необязательно, склад назначения — из
+  справочника площадки. Пороги планирования — два поля в «⚙️ Настройки» (`SettingsPage.jsx`).
+- **Сторож**: `scripts/check-warehouses-stage3.sql` (8 проверок, кабинет #1, запуск как у
+  этапа 2). Тесты: `lib/__tests__/{supplyPlan,shipmentDocs,supplyPlanData}.test.mjs`,
+  `scripts/test-wb-incomes-parse.py`.
+- **Что руками**: без привязки мест и складов продавца в «📍 Места» план пуст и
+  авто-списание молчит (как в этапе 2); склад назначения WB выбирается вручную (нет
+  разбивки остатков по складам); приёмка Ozon вводится целиком руками — API не отдаёт факт
+  приёмки по товару.
+- **Что не делаем** (спека §4.4): создание поставок в кабинетах МП через API (запись в
+  кабинеты WB/Ozon) — только рекомендация и учёт факта.
 
 ## Правила работы с кодом
 
