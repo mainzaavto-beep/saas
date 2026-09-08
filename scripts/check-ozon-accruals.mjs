@@ -59,6 +59,13 @@
 // кабинет 1, 1 постинг/99,00 ₽ кабинет 1008 — эти числа НЕ хардкожены здесь,
 // см. ниже).
 //
+// Второй известный класс — «сторно начисления» (§7.6, 07.09.2026): операция
+// «Доставка покупателю — отмена начисления» зеркалит начисление продажи и
+// сопровождается повторным начислением; старый источник держит её в «прочее»,
+// новый по эвристике ролей — в «возврат»/«логистика возврата». Деньги те же,
+// канон прибыли (ozon_order_costs, допуск полного сторно) не затронут.
+// Детектор stornoSql ниже + applyStorno (scripts/lib/ozonAccrualsStorno.mjs).
+//
 // ⚠️ Ревью задачи 6 плана «унификация формул прибыли» (fix-раунд, п.2,
 // .superpowers/sdd/2026-08-20-profit-unification/task-6-report.md):
 // СТРУКТУРНЫЙ детектор вместо фиксированных −835/−99. `casusSql` ниже
@@ -82,6 +89,7 @@ import pg from 'pg';
 import { compare } from '../lib/reference.js';
 import { readonlyPgConfig } from './lib/pgpass.mjs';
 import { applyCasus72 } from './lib/ozonAccrualsCasus72.mjs';
+import { applyStorno } from './lib/ozonAccrualsStorno.mjs';
 
 const cabinetId = Number(process.argv[2] || 1);
 const dateFrom = process.argv[3] || '2026-07-01';
@@ -94,7 +102,7 @@ const padL = (s, n) => String(s).padStart(n);
 
 const pool = new pg.Pool(readonlyPgConfig());
 
-let oldRow, newRow, coverage, newCoverage, casus;
+let oldRow, newRow, coverage, newCoverage, casus, storno;
 try {
   // ── покрытие старого источника: предупреждаем, а не молчим, если период
   //    выходит за границы того, что реально лежит в tenant.ozon_finance_report ──
@@ -191,6 +199,39 @@ try {
       AND NOT f.is_sale
       AND a.unit_number IN (SELECT posting_id FROM zero_postings)`;
   ({ rows: [casus] } = await pool.query(casusSql, [cabinetId, dateFrom, dateTo]));
+
+  // ── СТРУКТУРНЫЙ детектор «сторно начисления» (§7.6, найден 07.09.2026 на
+  // августе-2026 кабинета 1). Старый источник помечает сторно СВОИМ типом
+  // операции «… — отмена начисления» и держит его в «прочее»; новый типа не
+  // знает и по эвристике ролей кладёт отрицательный commission-блок в
+  // «возврат», а логистику того же accrual (NOT is_sale) — в «логистика
+  // возврата». operation_id старого = accrual_id нового (проверено: 1/1) —
+  // join по нему, без угадывания по суммам. Найденные Σ применяются чистой
+  // функцией applyStorno (scripts/lib/ozonAccrualsStorno.mjs), селф-тест
+  // scripts/check-ozon-accruals-storno-selftest.mjs. Касты ::date — по той
+  // же причине, что в casusSql. ──
+  const stornoSql = `
+    WITH storno_ops AS (
+      SELECT DISTINCT operation_id
+      FROM tenant.ozon_finance_report
+      WHERE cabinet_id = $1 AND substr(operation_dt, 1, 10) BETWEEN $2 AND $3
+        AND operation_type_name LIKE '%— отмена начисления'
+    ),
+    posting_sale_flag AS (
+      SELECT cabinet_id, accrual_id, bool_or(type_id IS NULL AND accrued > 0) AS is_sale
+      FROM tenant.ozon_accruals
+      WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date AND accrued_category = 'POSTING'
+      GROUP BY 1, 2
+    )
+    SELECT count(DISTINCT a.accrual_id) AS n,
+      COALESCE(sum(a.accrued) FILTER (WHERE a.type_id IS NULL AND a.accrued < 0), 0) AS block,
+      COALESCE(sum(a.accrued) FILTER (WHERE a.type_id IN (32, 29, 45, 59, 98) AND NOT f.is_sale), 0) AS logistics
+    FROM tenant.ozon_accruals a
+    JOIN posting_sale_flag f ON f.cabinet_id = a.cabinet_id AND f.accrual_id = a.accrual_id
+    WHERE a.cabinet_id = $1 AND a.date BETWEEN $2::date AND $3::date
+      AND a.accrued_category = 'POSTING'
+      AND a.accrual_id IN (SELECT operation_id FROM storno_ops)`;
+  ({ rows: [storno] } = await pool.query(stornoSql, [cabinetId, dateFrom, dateTo]));
 } catch (e) {
   console.error(`БД недоступна или запрос не выполнился: ${e.message}`);
   await pool.end().catch(() => {});
@@ -246,6 +287,26 @@ if (casusN > 0) {
   newRowForCompare = applyCasus72(newRow, casusAmount);
 } else {
   console.log('ℹ️  известный казус §7.2: 0 отправлений в этом периоде — коррекция не применялась (не 0 по подгонке, а честный результат SQL).');
+}
+
+// ── Сторно начисления §7.6 — структурно найдено (см. stornoSql выше).
+// Печатается ВСЕГДА; переносит блок/логистику сторно-accrual'ов из
+// «возврат»/«логистика возврата» в остаточное «прочее» — туда, где их держит
+// старый источник. ──
+const stornoN = Number(storno?.n) || 0;
+const stornoBlock = num(storno?.block);
+const stornoLogistics = num(storno?.logistics);
+if (stornoN > 0) {
+  console.log(
+    `ℹ️  известное сторно §7.6 (docs/ozon-accrual-reconciliation.md): ${stornoN} операци${stornoN === 1 ? 'я' : 'й'} `
+    + `«… — отмена начисления» — старый источник держит их в "прочее", новый по эвристике ролей положил `
+    + `commission-блок ${fmtRub(stornoBlock)} ₽ в "возврат" и логистику ${fmtRub(stornoLogistics)} ₽ в "логистика возврата". `
+    + `Перенесено в "прочее" до сравнения ниже (возврат ${stornoBlock <= 0 ? '+' : '-'}${fmtRub(Math.abs(stornoBlock))} ₽, `
+    + `логистика возврата ${stornoLogistics >= 0 ? '-' : '+'}${fmtRub(Math.abs(stornoLogistics))} ₽).`
+  );
+  newRowForCompare = applyStorno(newRowForCompare, { block: stornoBlock, logistics: stornoLogistics });
+} else {
+  console.log('ℹ️  известное сторно §7.6: 0 операций «— отмена начисления» в этом периоде — коррекция не применялась.');
 }
 console.log('');
 
