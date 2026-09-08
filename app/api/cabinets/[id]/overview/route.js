@@ -11,6 +11,7 @@ import {
 } from "@/lib/wbMetrics.js";
 import { ozOrdersByDay, ozProfitCabinet, ozRawProfitCabinetByDay } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode, describeCombinedTaxMode } from "@/lib/tax.js";
+import { loadWarehouseSignals } from "@/lib/warehousesData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -160,7 +161,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   // ревью: MiniStat «Логистика» усох, деньги исчезли с главной).
   const expenses = k.commission + k.services + k.logistics + k.storage;
 
-  // --- lossMakers / lowStock: WB-only ---
+  // --- lossMakers / noCogsCount: WB-only. lowStock — обеих площадок, см. ниже (сигналы склада). ---
   let lossMakers = [];
   let lowStock = [];
   let noCogsCount = 0;
@@ -221,37 +222,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       costMissing: !withCost.has(nm),
     }));
 
-    lowStock = await db.prepare(
-      `WITH last_stock AS (
-         SELECT nm_id, SUM(quantity) AS qty
-         FROM daily_stock
-         WHERE date = (SELECT MAX(date) FROM daily_stock)
-         GROUP BY nm_id
-       ),
-       avg_sales AS (
-         SELECT nm_id, AVG(qty) AS daily
-         FROM (
-           SELECT nm_id, DATE(order_dt) AS d, COUNT(*) AS qty
-           FROM orders WHERE is_cancel = 0
-             AND DATE(order_dt) >= ? AND DATE(order_dt) <= ?
-           GROUP BY nm_id, DATE(order_dt)
-         )
-         GROUP BY nm_id
-       )
-       SELECT ls.nm_id,
-              COALESCE(a.name, CAST(ls.nm_id AS TEXT), '') AS name,
-              ls.qty,
-              CAST(COALESCE(as_.daily,0) AS REAL) AS daily_sales,
-              CASE WHEN COALESCE(as_.daily,0) > 0
-                   THEN ls.qty / as_.daily ELSE NULL END AS days_to_oos
-       FROM last_stock ls
-       LEFT JOIN avg_sales as_ ON as_.nm_id = ls.nm_id
-       LEFT JOIN articles a ON a.nm_id = ls.nm_id
-       WHERE ls.qty > 0 AND COALESCE(as_.daily,0) > 0
-       ORDER BY days_to_oos ASC
-       LIMIT 5`
-    ).all(from, to);
-
     noCogsCount = (await db.prepare(
       `SELECT COUNT(DISTINCT s.nm_id) AS c
        FROM finance_report s
@@ -265,6 +235,18 @@ export const GET = withCabinet(async (req, { cabinet }) => {
          AND (co.cost IS NULL OR co.cost <= 0) AND s.rr_dt >= ? AND s.rr_dt <= ?`
     ).get(from, toEnd)).c || 0;
   }
+
+  // Сигналы склада (Склады 2.0, этап 4) — тот же расчёт, что вкладка /warehouses; канон 28/28,
+  // остаток «доступно». Виджет «Заканчиваются на складе» с 2026-09-08 считает по нему (обе
+  // площадки, с местом/складом) — раньше был отдельный WB-only расчёт по дням с продажами.
+  let warehouses = [];
+  try {
+    warehouses = await loadWarehouseSignals(cabinet.cabinet_id);
+  } catch (e) {
+    console.error("[overview] warehouse signals failed:", e?.message || e);
+  }
+  const lowSig = warehouses.find((s) => s.kind === "low_coverage");
+  lowStock = (lowSig?.items || []).map((x) => ({ name: x.name, where: x.where, qty: x.qty, days_to_oos: x.coverage }));
 
   // --- Временной ряд для графика на Главной (по дням). ---
   // WB: выручка, маржинальная прибыль (sales − commission − acquiring − logistics −
@@ -386,7 +368,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       cancelRate,
       sold: k.sold,
     },
-    alerts: { lossMakers, lowStock, noCogsCount },
+    alerts: { lossMakers, lowStock, noCogsCount, warehouses },
     timeseries,
     taxLabel: describeCombinedTaxMode(cabinet.shopTax, { short: true }),
   });

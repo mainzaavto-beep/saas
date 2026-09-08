@@ -289,7 +289,7 @@ export default function OverviewClient({ cabinetId }) {
 
           {/* Проблемные места */}
           <h2 style={{ ...h2, marginTop: 26 }}>⚠ Проблемные места</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
             <Card>
               <CardTitle icon="🔴" title="Товары в минусе" hint="прибыль < 0 за период" />
               {!data.alerts.lossMakers || data.alerts.lossMakers.length === 0 ? (
@@ -316,14 +316,20 @@ export default function OverviewClient({ cabinetId }) {
               )}
             </Card>
             <Card>
-              <CardTitle icon="🟡" title="Заканчиваются на складе" hint="дней до OOS" />
+              {/* Канон покрытия (Склады 2.0, этап 4, 2026-09-08) — те же данные,
+                  что вкладка /warehouses, сигнал low_coverage: обе площадки, остаток
+                  «доступно» (FBO+FF минус учтённое в пути), окно продаж 28 дн, порог
+                  минимального запаса 28 дн. Раньше — WB-only, среднее по дням с
+                  продажами за выбранный период; НЕ «починка обратно», смена канона. */}
+              <CardTitle icon="🟡" title="Заканчиваются на складе" hint="покрытие < минимального запаса, канон 28 дн" />
               {!data.alerts.lowStock || data.alerts.lowStock.length === 0 ? (
-                <Empty>Нет критичных остатков за период</Empty>
+                <Empty>Нет критичных остатков</Empty>
               ) : (
-                <Table head={["Товар", "Остаток", "дней"]}>
+                <Table head={["Товар", "Где", "Остаток", "дней"]}>
                   {data.alerts.lowStock.map((t) => (
-                    <tr key={t.nm_id}>
-                      <Td>{t.name || t.nm_id}</Td>
+                    <tr key={`${t.name}|${t.where}`}>
+                      <Td>{t.name}</Td>
+                      <Td>{t.where}</Td>
                       <Td right>{num(t.qty)} шт</Td>
                       <Td right style={{ color: t.days_to_oos < 14 ? C.neg : C.muted }}>
                         {t.days_to_oos != null ? num(t.days_to_oos) : "—"}
@@ -332,6 +338,10 @@ export default function OverviewClient({ cabinetId }) {
                   ))}
                 </Table>
               )}
+            </Card>
+            <Card>
+              <CardTitle icon="🏬" title="Склады" hint="сигналы учёта и поставок" />
+              <WarehouseSignals base={base} signals={data.alerts.warehouses} />
             </Card>
           </div>
 
@@ -421,6 +431,42 @@ function QuickLink({ href, label }) {
     <Link href={href} style={{ display: "block", textDecoration: "none", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "14px 16px", color: C.ink, fontWeight: 600, fontSize: 14 }}>
       {label} <span style={{ color: C.accent, float: "right" }}>→</span>
     </Link>
+  );
+}
+
+// Карточка «Склады» (Склады 2.0, этап 4, 2026-09-08) — та же полоса сигналов, что
+// вкладка /warehouses (SignalsStrip), но здесь не переиспользована: та строит ссылки
+// относительными query-параметрами (?tab=…) — на странице /cabinets/[id] это увело бы
+// клик на текущий путь вместо /warehouses. Здесь — те же kind→таргеты, абсолютные ссылки.
+const WAREHOUSE_SIGNAL_TARGET = {
+  discrepancy: "warehouses?tab=matrix&problems=1",
+  low_coverage: "warehouses?tab=matrix&problems=1",
+  gaps: "warehouses?tab=places",
+  waiting_accept: "warehouses?tab=supplies",
+};
+function WarehouseSignals({ base, signals }) {
+  if (!signals || signals.length === 0) {
+    return <Empty>Проблем на складах нет</Empty>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {signals.map((s) => (
+        <Link
+          key={s.kind}
+          href={`${base}/${WAREHOUSE_SIGNAL_TARGET[s.kind] || "warehouses"}`}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, textDecoration: "none",
+            padding: "6px 10px", borderRadius: 8,
+            background: soft(s.level === "crit" ? "neg" : "warn", 12),
+            color: C.ink, fontSize: 13,
+          }}
+        >
+          <span>{s.level === "crit" ? "🔴" : "🟠"}</span>
+          <span style={{ flex: 1 }}>{s.text}</span>
+          <span style={{ color: C.accent }}>→</span>
+        </Link>
+      ))}
+    </div>
   );
 }
 
