@@ -396,6 +396,10 @@ def _env_for_shop(shop):
     # whitelist SAFE_INHERIT не трогаем — пробрасываем явно, как SAAS_RUN_KIND.
     if os.environ.get("SAAS_PROBE"):
         env["SAAS_PROBE"] = os.environ["SAAS_PROBE"]
+    # Окно сборщика wb_incomes (этап 3 «Склады 2.0»): разовый бэкфилл истории приёмок —
+    # SAAS_INCOMES_DAYS=400. Не секрет, пробрасываем явно, как SAAS_PROBE.
+    if os.environ.get("SAAS_INCOMES_DAYS"):
+        env["SAAS_INCOMES_DAYS"] = os.environ["SAAS_INCOMES_DAYS"]
     return env, mp
 
 
