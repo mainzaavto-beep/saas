@@ -421,6 +421,20 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   `quantity_declared` — всегда. Зарегистрирован в `WB_COLLECTORS` (`worker/orchestrator.py`)
   **и** в `MAIN_COLLECTORS` (`worker/run_saas_collect.sh`) — оба места (урок из памяти). Окно
   90 дней не покрывает старые поставки — разовый полный бэкфилл: `SAAS_INCOMES_DAYS=400`.
+- **Канон покрытия (с 2026-09-08)** — `lib/stockCoverage.js`, одна пара функций на всю
+  панель: `velocityPerDay(ordersQty, days)` и `coverageDays(stock, inTransit, velocity)`
+  (`null` при нулевой скорости), окно `VELOCITY_WINDOW_DAYS = 28`. **Скорость = заказы за 28
+  календарных дней / 28** — делим на длину окна, а НЕ на «дни, в которые были продажи»
+  (старая формула завышала скорость редко продающихся товаров). **Остаток для покрытия —
+  «доступно»**: WB `wb_daily_stock.quantity`, Ozon `fbo_present − fbo_reserved` (не
+  `quantity_full` и не голый `fbo_present` — зарезервированное покупателем продать второй раз
+  нельзя). На этот helper переведены и рекомендации перевозки между складами WB
+  (`app/api/cabinets/[id]/stocks/route.js`, `buildReallocRecommendations` — блок
+  «Рекомендации к перемещению» во вкладке «Эффективность»), и карточки товаров там же
+  (velocity/`days_to_oos`, окно остаётся пользовательским `?vel=7|14|30|60`, но делится на
+  окно). ⚠️ **Цифры в блоке рекомендаций перевозки после 08.09 другие** (скорость ниже,
+  остаток меньше, часть пар ушла/добавилась) — это смена канона, а не баг: чинить «обратно»
+  не нужно.
 - **Планировщик** `lib/supplyPlan.js` (чистые функции: `velocityPerDay`, `coverageDays`
   (`null` при нулевой скорости), `needQty` с округлением вверх до `pack_qty`, `pickSources`
   по близости региона, `buildSupplyPlan`) + адаптер `lib/supplyPlanData.js`. Ozon — цель на
@@ -429,16 +443,23 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   зафиксировано на 28 дней, не настройка кабинета. Источники — места ФФ с привязанными
   артикулами (`ff_inventory_skus`); позиции без места в план не попадают. Пороги
   `target_days`/`min_days` — `lib/supplyDays.js` (дефолты 30/14, зажим 1..365), хранятся в
-  `auth.cabinets.settings`. Роут `app/api/cabinets/[id]/supply-plan/route.js`: GET — план,
-  POST `create_doc` — черновик документа отгрузки (списания ещё нет).
+  `auth.cabinets.settings`. Скорость/покрытие — через общий `lib/stockCoverage.js` (см.
+  «Канон покрытия»); `velocityPerDay`/`coverageDays` из `lib/supplyPlan.js` — ре-экспорт
+  оттуда же. Роут `app/api/cabinets/[id]/supply-plan/route.js`: GET — план (`uncovered[]`
+  приходит с `itemName`/`warehouseName`/`platform` — `enrichUncovered`), POST `create_doc` —
+  черновик документа отгрузки (списания ещё нет); числовой `warehouseKey` становится
+  `dest_warehouse_id` на ОБЕИХ площадках (у WB его даёт селект склада в карточке).
 - **Документы отгрузки** `lib/shipmentDocs.js` + `app/api/cabinets/[id]/shipments/route.js`:
   жизненный цикл `draft → shipped → accepted|partial|rejected`. `create`/`ship` — списание
   `out_fbo` через `applyMove` (`src_ref='<doc_id>:<line_id>'`), ровно один раз при переходе в
   `shipped`. `link_supply` — связь с приёмкой МП (WB: `wb_income` ↔ `tenant.wb_incomes` по
   `income_id`; Ozon: `ozon_supply_order` ↔ `tenant.ozon_supply_orders` по `order_id`; вид
   поставки сверяется с площадкой документа; `mp_supply_id:null` снимает связь). `accept` —
-  `qty_accepted` по строкам (400, если принято больше отгруженного). `delete` — только
-  `draft` (у отгруженного — `adjust` с комментарием). Статус в GET считается на лету по
+  `qty_accepted` по строкам (400, если принято больше отгруженного). `update` — правка шапки
+  ЧЕРНОВИКА (склад назначения, № документа, дата, примечание; не-черновик → 400 без записи).
+  `delete` — только `draft` (у отгруженного — `adjust` с комментарием). Документ читается
+  `SELECT … FOR UPDATE` во всех действиях, которые его меняют (`ship`, `update`,
+  `link_supply`, `accept`). Статус в GET считается на лету по
   факту приёмки (`effectiveStatus`) — не дожидаясь ручных действий; `status_saved` — то, что
   лежит в БД. Подсказки связи (`matchSupply`): склад +2 (id либо нормализованное имя), дата
   ±3 дня +1, количество ±10 % +1; окно кандидатов — 60 дней. WB `rejected` — по кодам
@@ -446,13 +467,22 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   WB однороден внутри поставки: «принято» берётся, только если оно заполнено у ВСЕХ строк
   `income_id`, иначе используется заявленное.
 - **UI `/shipments`**: `SupplyPlanSection.jsx` — карточки рекомендаций по (место → склад),
-  кнопка «Создать черновик»; `ShipmentsPage.jsx` — статусы-пиллы, связь/отвязка с поставкой
-  (подсказки-кандидаты либо номер вручную); `AcceptModal.jsx` — приёмка с предзаполнением
-  `qty_accepted` из факта WB по `nm_id` (`lines_by_nm`; у Ozon факта по товару нет — ввод
-  руками); `ShipmentFormModal.jsx` — «Откуда» необязательно, склад назначения — из
-  справочника площадки. Пороги планирования — два поля в «⚙️ Настройки» (`SettingsPage.jsx`).
+  селект склада назначения WB в карточке, кнопка «Создать черновик»; при пустом плане с
+  непокрытым дефицитом — блок «Нечем закрыть с ФФ» с подсказкой про привязку мест;
+  `ShipmentsPage.jsx` — статусы-пиллы, связь/отвязка с поставкой (подсказки-кандидаты либо
+  номер вручную), у черновика кнопка «✏️ Изменить» → форма правки шапки (`update`);
+  `AcceptModal.jsx` — приёмка с предзаполнением `qty_accepted` из факта WB по `nm_id`
+  (`lines_by_nm`, агрегат разносится по строкам одного `nm` последовательно, не дублируется;
+  у Ozon факта по товару нет — ввод руками); `ShipmentFormModal.jsx` — «Откуда»
+  необязательно, склад назначения — из справочника площадки. Кратность упаковки правится
+  прямо в строке `/inventory` (колонка «Кратность, шт»). Пороги планирования — два поля в
+  «⚙️ Настройки» (`SettingsPage.jsx`).
 - **Сторож**: `scripts/check-warehouses-stage3.sql` (8 проверок, кабинет #1, запуск как у
-  этапа 2). Тесты: `lib/__tests__/{supplyPlan,shipmentDocs,supplyPlanData}.test.mjs`,
+  этапа 2). Проверка 3 требует движение `out_fbo` у ЛЮБОГО не-черновика (не только
+  `shipped`); проверка 2 меряет покрытие `income_id` заказов и не ловит поставки старше
+  клиентского окна сборщика (`SAAS_INCOMES_DAYS=90`) — сырое покрытие поднимает разовый
+  бэкфилл `SAAS_INCOMES_DAYS=400`. Тесты:
+  `lib/__tests__/{supplyPlan,shipmentDocs,supplyPlanData}.test.mjs`,
   `scripts/test-wb-incomes-parse.py`.
 - **Что руками**: без привязки мест и складов продавца в «📍 Места» план пуст и
   авто-списание молчит (как в этапе 2); склад назначения WB выбирается вручную (нет

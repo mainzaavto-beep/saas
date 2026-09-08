@@ -1,7 +1,8 @@
 -- 055_supplies_stage3.sql — Склады 2.0, этап 3 «Поставки» (спека §4).
 -- Документ отгрузки получает статусы и связь с фактом приёмки; приёмки FBO WB
--- (statistics-api /api/v1/supplier/incomes) — новая таблица; пороги планирования —
--- auth.cabinets.settings. Идемпотентно.
+-- (supplies-api: POST /api/v1/supplies, GET .../{id}, GET .../{id}/goods — старый
+-- statistics-api /supplier/incomes WB отключил 2026-09-07, см. миграцию 056) —
+-- новая таблица; пороги планирования — auth.cabinets.settings. Идемпотентно.
 BEGIN;
 
 ALTER TABLE tenant.ff_shipment_docs ADD COLUMN IF NOT EXISTS location_id       BIGINT;        -- откуда (место)
@@ -15,7 +16,7 @@ ALTER TABLE tenant.ff_shipment_lines ADD COLUMN IF NOT EXISTS qty_accepted     I
 ALTER TABLE tenant.ff_inventory      ADD COLUMN IF NOT EXISTS pack_qty         INTEGER;       -- кратность упаковки (NULL = 1)
 ALTER TABLE auth.cabinets            ADD COLUMN IF NOT EXISTS settings         JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- Приёмки FBO WB: statistics-api GET /api/v1/supplier/incomes (строка = incomeId × nmId × barcode)
+-- Приёмки FBO WB: supplies-api (строка = incomeId × nmId × barcode; incomeId = supplyID)
 CREATE TABLE IF NOT EXISTS tenant.wb_incomes (
     cabinet_id     BIGINT  NOT NULL,
     income_id      BIGINT  NOT NULL,

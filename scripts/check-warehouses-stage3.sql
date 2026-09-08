@@ -14,27 +14,33 @@ WHERE f.cabinet_id=1;
 
 -- 1. wb_incomes собраны и внутренне непротиворечивы: quantity_declared всегда заполнено,
 -- date_close заполнен ⟺ статус '5' («Принято» — по коду WB statusID, не по тексту).
+-- status сравниваем через COALESCE(status,''): NULL-статус (WB не прислал statusID) —
+-- это тоже «не 5», и с заполненным date_close он обязан считаться несоответствием,
+-- а не проваливаться мимо обоих фильтров на трёхзначной логике (ревью 2026-09-08).
 SELECT 'wb_incomes_collected' AS check,
        COUNT(*) > 0
        AND COUNT(*) FILTER (WHERE quantity_declared IS NULL) = 0
-       AND COUNT(*) FILTER (WHERE status = '5' AND date_close IS NULL) = 0
-       AND COUNT(*) FILTER (WHERE status <> '5' AND date_close IS NOT NULL) = 0 AS ok,
+       AND COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL) = 0
+       AND COUNT(*) FILTER (WHERE COALESCE(status,'') <> '5' AND date_close IS NOT NULL) = 0 AS ok,
        COUNT(*) AS rows_total,
        COUNT(*) FILTER (WHERE quantity_declared IS NULL) AS no_declared,
-       COUNT(*) FILTER (WHERE status = '5') AS status5,
+       COUNT(*) FILTER (WHERE COALESCE(status,'') = '5') AS status5,
+       COUNT(*) FILTER (WHERE status IS NULL) AS status_null,
        COUNT(*) FILTER (WHERE date_close IS NOT NULL) AS date_close_filled,
-       COUNT(*) FILTER (WHERE status = '5' AND date_close IS NULL) AS mismatch_accepted_no_close,
-       COUNT(*) FILTER (WHERE status <> '5' AND date_close IS NOT NULL) AS mismatch_close_not_accepted
+       COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL) AS mismatch_accepted_no_close,
+       COUNT(*) FILTER (WHERE COALESCE(status,'') <> '5' AND date_close IS NOT NULL) AS mismatch_close_not_accepted
 FROM tenant.wb_incomes WHERE cabinet_id=1;
 
--- 2. Приёмки покрывают income_id заказов. Источник wb_incomes сменился 2026-09-07
--- (supplies-api вместо отключённого WB statistics-api, миграция 056) и историю до
--- смены не тянет: у заказов остаются income_id старых поставок, которых в принципе
--- никогда не будет в wb_incomes. «Дата первого собранного income» на практике —
--- MIN(income_id) в wb_incomes (WB присваивает id монотонно по времени создания
--- поставки), им и сужаем денежный охват заказов вместо календарного окна, которое
--- старые income'ы не отсекает (они разбросаны по всей истории заказов, не только
--- в начале). ok — по суженной доле; сырая 60-дневная доля идёт диагностикой.
+-- 2. Приёмки покрывают income_id заказов. Непокрытые income_id — это поставки СТАРШЕ
+-- клиентского окна сборщика (SAAS_INCOMES_DAYS=90 дней по createDate, фильтруется на
+-- нашей стороне): API supplies-api историю отдаёт целиком, ограничиваем её мы сами,
+-- чтобы не выжигать лимиты. То есть это не потеря данных и не сбой источника —
+-- разовый бэкфилл `SAAS_INCOMES_DAYS=400 python worker/collectors/wb_incomes.py`
+-- поднимает сырое покрытие. Порог ok считаем по СУЖЕННОМУ множеству: MIN(income_id)
+-- в wb_incomes — граница собранного (WB присваивает id монотонно по времени создания
+-- поставки), заказы со старшими income_id из знаменателя исключаются; календарное
+-- окно так не сработало бы — старые income'ы разбросаны по всей истории заказов.
+-- Сырая 60-дневная доля идёт диагностикой (incomes_60d_raw / covered_60d_raw).
 WITH scope AS (
   SELECT o.income_id,
          EXISTS (SELECT 1 FROM tenant.wb_incomes wi WHERE wi.cabinet_id=1 AND wi.income_id = o.income_id) AS covered
@@ -56,9 +62,13 @@ SELECT 'incomes_coverage_60d' AS check,
        (SELECT COUNT(*) FROM narrowed) AS incomes_in_scope,
        (SELECT COUNT(*) FILTER (WHERE covered) FROM narrowed) AS covered_in_scope;
 
--- 3. Документы отгрузки согласованы со списаниями: 'shipped' ⇒ у каждой строки есть
--- out_fbo (stock_moves src_kind='ff_shipment_doc', src_ref='<doc_id>:<line_id>');
--- 'draft' ⇒ движения ещё нет. Кабинет без документов новых статусов — вакуумно ok=t.
+-- 3. Документы отгрузки согласованы со списаниями: ЛЮБОЙ статус кроме 'draft'
+-- (shipped / accepted / partial / rejected) ⇒ у каждой строки есть out_fbo
+-- (stock_moves src_kind='ff_shipment_doc', src_ref='<doc_id>:<line_id>'); 'draft' ⇒
+-- движения ещё нет. Проверять только 'shipped' было дырой: документ уходит в
+-- accepted/partial/rejected сразу после приёмки, и пропавшее списание переставало
+-- ловиться ровно там, где документ живёт дольше всего (ревью 2026-09-08).
+-- Кабинет без документов новых статусов — вакуумно ok=t.
 WITH doc_lines AS (
   SELECT d.id AS doc_id, d.status AS doc_status, l.id AS line_id,
          EXISTS (SELECT 1 FROM tenant.stock_moves m
@@ -69,11 +79,11 @@ WITH doc_lines AS (
   WHERE d.cabinet_id = 1
 )
 SELECT 'doc_status_moves' AS check,
-       COUNT(*) FILTER (WHERE doc_status = 'shipped' AND NOT has_move) = 0
+       COUNT(*) FILTER (WHERE doc_status <> 'draft' AND NOT has_move) = 0
        AND COUNT(*) FILTER (WHERE doc_status = 'draft' AND has_move) = 0 AS ok,
        COUNT(*) AS lines_total,
-       COUNT(*) FILTER (WHERE doc_status = 'shipped') AS shipped_lines,
-       COUNT(*) FILTER (WHERE doc_status = 'shipped' AND NOT has_move) AS shipped_missing_move,
+       COUNT(*) FILTER (WHERE doc_status <> 'draft') AS shipped_lines,
+       COUNT(*) FILTER (WHERE doc_status <> 'draft' AND NOT has_move) AS shipped_missing_move,
        COUNT(*) FILTER (WHERE doc_status = 'draft') AS draft_lines,
        COUNT(*) FILTER (WHERE doc_status = 'draft' AND has_move) AS draft_unexpected_move
 FROM doc_lines;

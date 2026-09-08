@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { wbSalesLocalityByWarehouse } from "@/lib/geoMetrics.js";
+import { velocityPerDay, VELOCITY_WINDOW_DAYS } from "@/lib/stockCoverage.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,9 +25,14 @@ export const dynamic = "force-dynamic";
 //    Ozon: daily_stock (FBO по складам) + daily_metrics.orders (velocity)
 //          + cost_overrides (себест) + products.price (цена) + products (имя/кат)
 //
-//  velocity = SUM(orders за vel дней) / GREATEST(число дней с продажами, 1) —
-//  деление на дни-с-продажами (а не на vel) делает показатель устойчивым к
-//  провалам/новым товарам. Нет продаж → velocity=0 → status='no_sales'.
+//  velocity = SUM(orders за окно) / ДЛИНУ окна (канон lib/stockCoverage.js,
+//  velocityPerDay). До 2026-09-08 делили на дни-с-продажами — это завышало скорость
+//  редко продающихся товаров и держало в одном файле две правды о velocity (карточки
+//  товаров и рекомендации перевозки считали по-разному). Нет продаж → velocity=0 →
+//  status='no_sales' (классификация не изменилась: продаж нет ⇔ скорость 0).
+//  Окно карточек товара выбирает пользователь (?vel=7|14|30|60); рекомендации
+//  перевозки жёстко считают по каноническому окну VELOCITY_WINDOW_DAYS = 28 дней —
+//  это тот же helper, что у плана поставок (/supply-plan).
 // =====================================================================
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -194,21 +200,16 @@ async function collectWB(vel) {
      ) m ON m.nm_id = st.nm_id`
   ).all(date, date)).map((it) => ({ ...it, platform: "wb", article: String(it.sku) }));
 
-  // velocity по nm_id за vel дней: SUM(orders) / GREATEST(число дней с продажами, 1).
+  // velocity по nm_id: SUM(orders) за окно / ДЛИНУ окна (канон velocityPerDay).
   // WB metrics.orders — уже чистые (is_cancel не применим к metrics; продажи считаются там).
   const velRows = await db.prepare(
-    `SELECT nm_id,
-            SUM(orders) AS ord,
-            COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
+    `SELECT nm_id, SUM(orders) AS ord
      FROM daily_metrics
      WHERE date >= current_date - ?::int
      GROUP BY nm_id`
   ).all(vel);
   const velBySku = {};
-  for (const r of velRows) {
-    const days = Number(r.days) || 0;
-    velBySku[r.nm_id] = days > 0 ? (Number(r.ord) || 0) / days : 0;
-  }
+  for (const r of velRows) velBySku[r.nm_id] = velocityPerDay(r.ord, vel);
   const items = stockRows.map((it) => ({
     ...it,
     velocity: round2(velBySku[it.sku] || 0),
@@ -329,20 +330,15 @@ async function collectOzon(vel) {
     article: it.offer_id || String(it.sku),
   }));
 
-  // velocity Ozon через daily_metrics.orders (симметрично WB).
+  // velocity Ozon через daily_metrics.orders (симметрично WB, тот же канон).
   const velRows = await db.prepare(
-    `SELECT product_id,
-            SUM(orders) AS ord,
-            COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
+    `SELECT product_id, SUM(orders) AS ord
      FROM daily_metrics
      WHERE date >= current_date - ?::int
      GROUP BY product_id`
   ).all(vel);
   const velBySku = {};
-  for (const r of velRows) {
-    const days = Number(r.days) || 0;
-    velBySku[r.product_id] = days > 0 ? (Number(r.ord) || 0) / days : 0;
-  }
+  for (const r of velRows) velBySku[r.product_id] = velocityPerDay(r.ord, vel);
   const items = stockRows.map((it) => ({
     ...it,
     velocity: round2(velBySku[it.sku] || 0),
@@ -579,8 +575,9 @@ async function buildWarehouseEfficiency(vel) {
     avg_local_pct: c._local_n > 0 ? round2(c._local_sum / c._local_n) : null,
   })).sort((a, b) => (b.sales_rub || 0) - (a.sales_rub || 0));
 
-  // 5) Рекомендации по перевозке (старая логика, переиспользуем) — блок внутри вкладки.
-  const realloc = await buildReallocRecommendations(vel);
+  // 5) Рекомендации по перевозке — блок внутри вкладки. Окно скорости у них
+  // каноническое (28 дней), не пользовательское ?vel — см. buildReallocRecommendations.
+  const realloc = await buildReallocRecommendations();
 
   return { byWarehouse, byCluster, realloc };
 }
@@ -600,11 +597,19 @@ async function buildWarehouseEfficiency(vel) {
 //    нет — реальный коробочный расчёт невозможен). Тариф = boxTariff[0].value
 //    (диапазон 0–1500г, базовый).
 //
+//  КАНОН покрытия (с 2026-09-08, финальное ревью этапа 3): скорость = заказы за
+//  VELOCITY_WINDOW_DAYS (28 календарных дней) / 28 — общий helper velocityPerDay из
+//  lib/stockCoverage.js, тот же, что у плана поставок /supply-plan. Остаток берём
+//  ДОСТУПНЫЙ (daily_stock.quantity), а не полный (quantity_full с зарезервированным):
+//  зарезервированное покупателем перевезти нельзя. Раньше здесь делили на
+//  дни-с-продажами и считали по quantity_full — цифры блока «Рекомендации к
+//  перемещению» после смены канона другие, это не баг.
+//
 //  ⚠️ Допущения (явно в UI): WB не отдаёт regional velocity → рекомендация про
 //  ВЫРАВНИВАНИЕ распределения, не про «где купят быстрее». Тариф — за коробку
 //  0–1500г; кол-во коробок селлер считает сам.
 // =====================================================================
-async function buildReallocRecommendations(vel) {
+async function buildReallocRecommendations() {
   const db = new DatabaseSync("wb", { readOnly: true });
 
   // Полные пути shared.* — convertSql их не трогает (negative lookbehind на точку).
@@ -614,23 +619,23 @@ async function buildReallocRecommendations(vel) {
       -- Последняя дата снимка остатков WB.
       s_max AS (SELECT MAX(date) AS d FROM daily_stock),
       -- Остатки по (nm, warehouse) на свежую дату + имя склада из справочника.
+      -- quantity = ДОСТУПНО (канон покрытия), не quantity_full.
       sk AS (
         SELECT st.nm_id,
                st.warehouse            AS wh_from_name,
                COALESCE(wfw.name, st.warehouse) AS wh_from_canon,
                st.warehouse_id         AS wh_from_id,
-               SUM(st.quantity_full)   AS qty_from
+               SUM(st.quantity)        AS qty_from
         FROM daily_stock st
         CROSS JOIN s_max
         LEFT JOIN shared.wb_warehouses wfw ON wfw.id = st.warehouse_id
         WHERE st.date = s_max.d
         GROUP BY st.nm_id, st.warehouse, st.warehouse_id, wfw.name
       ),
-      -- velocity по nm_id (как в collectWB: SUM(orders)/дни-с-продажами).
+      -- velocity по nm_id: SUM(orders) за каноническое окно; делится на длину окна
+      -- уже в JS (velocityPerDay), чтобы формула жила в одном месте.
       vel AS (
-        SELECT nm_id,
-               SUM(orders) AS ord,
-               COUNT(DISTINCT date) FILTER (WHERE orders > 0) AS days
+        SELECT nm_id, SUM(orders) AS ord
         FROM daily_metrics
         WHERE date >= current_date - ?::int
         GROUP BY nm_id
@@ -651,7 +656,7 @@ async function buildReallocRecommendations(vel) {
         t.tar_dest_canon                       AS to_warehouse,
         sk.qty_from,
         st_total.qty_total,
-        v.ord, v.days,
+        v.ord,
         t.pallet_tariff,
         t.box_first_value                      AS box_tariff_rub
     FROM sk
@@ -671,13 +676,13 @@ async function buildReallocRecommendations(vel) {
       LEFT JOIN shared.wb_warehouses wtd ON wtd.name = tt.destination_warehouse_name
       WHERE tt.transit_warehouse_name = sk.wh_from_canon
     ) t ON true
-    WHERE v.days > 0                              -- только продающиеся товары
+    WHERE COALESCE(v.ord, 0) > 0                  -- только продающиеся товары
       AND st_total.qty_total > 0
       -- Избыток на from-складе: ≥40% остатка SKU ИЛИ (на 1 складе >60% при wh_count>1)
       AND (sk.qty_from * 100.0 / st_total.qty_total >= 40
            OR (st_total.wh_count > 1 AND sk.qty_from * 100.0 / st_total.qty_total > 60))
     ORDER BY sk.qty_from DESC`
-  ).all(vel);
+  ).all(VELOCITY_WINDOW_DAYS);
 
   // Фильтрация в JS: оставляем только пары, где dest — реальный склад этого SKU
   // (с дефицитом), и расчёт финальных полей. SQL дал все тариф-направления от
@@ -716,7 +721,7 @@ async function buildReallocRecommendations(vel) {
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const vel = (Number(r.days) || 0) > 0 ? (Number(r.ord) || 0) / Number(r.days) : 0;
+    const vel = velocityPerDay(r.ord, VELOCITY_WINDOW_DAYS);
     const qtyFrom = Number(r.qty_from) || 0;
     const qtyTotal = Number(r.qty_total) || 0;
 

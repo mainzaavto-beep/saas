@@ -13,8 +13,11 @@ import { C, soft } from "@/lib/palette.js";
 // ⚠ С 2026-07-16 склад НЕ пишет в cost_overrides: складская себестоимость независима
 // от страницы «Себестоимость» (/items) и не влияет на P&L/юнитку.
 //
+// «Кратность, шт» (`pack_qty`, миграция 055) — кратность упаковки позиции: план
+// поставок округляет «нужно везти» вверх до неё (lib/supplyPlan.js needQty). Пусто = 1.
+//
 // Источник: GET /api/cabinets/[id]/inventory → { items(…skus[]), totals }.
-// Запись: POST link_sku / unlink_sku / update_qty.
+// Запись: POST link_sku / unlink_sku / update_qty / update_field (в т.ч. pack_qty).
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { ShipmentFormModal } from "../shipments/ShipmentFormModal.jsx";
 import { TransferFormModal } from "./TransferFormModal.jsx";
@@ -235,6 +238,7 @@ export default function InventoryPage({ cabinetId }) {
               <th style={thLeft}>Место</th>
               <th style={thR}>Кол-во</th>
               <th style={thR}>Себест. до МП ₽</th>
+              <th style={thR} title="Кратность упаковки: план поставок округляет «нужно» вверх до неё. Пусто = 1">Кратность, шт</th>
               <th style={thR}>Сумма ₽</th>
               <th style={thLeft}>Категория</th>
               <th style={thLeft}>Артикул МП</th>
@@ -246,7 +250,7 @@ export default function InventoryPage({ cabinetId }) {
               <Row key={it.id} it={it} cabinetId={cabinetId} locations={locations} reload={reload} onShipFromRow={openShipWithPreset} />
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.muted }}>
+              <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: C.muted }}>
                 {items.length === 0
                   ? "Склад пуст. Завершите партию на странице «Закупки» или добавьте товар вручную."
                   : "Ничего не найдено по выбранным фильтрам."}
@@ -259,6 +263,7 @@ export default function InventoryPage({ cabinetId }) {
                 <td style={tdFootLeft}>Итого ({totals.items} поз.)</td>
                 <td style={tdFootLeft}></td>
                 <td style={{ ...tdFootRight, fontWeight: 800, color: C.accent }}>{num(totals.qty)}</td>
+                <td style={tdFootRight}>—</td>
                 <td style={tdFootRight}>—</td>
                 <td style={{ ...tdFootRight, fontWeight: 800 }}>{money(totals.sum)}</td>
                 <td style={tdFootLeft} colSpan={3}></td>
@@ -378,6 +383,13 @@ function Row({ it, cabinetId, locations, reload, onShipFromRow }) {
         <InlineNumber value={it.unit_cost} placeholder="0"
           fmt={money}
           onCommit={(v) => saveField("unit_cost", v)} accent />
+      </td>
+      {/* Кратность упаковки (inline). Пусто = 1 (без кратности) — план поставок
+          округляет «нужно» вверх до неё (lib/supplyPlan.js needQty). */}
+      <td style={tdRight}>
+        <InlineNumber value={it.pack_qty} placeholder="1"
+          fmt={(v) => num(v)}
+          onCommit={(v) => saveField("pack_qty", v)} />
       </td>
       {/* Сумма */}
       <td style={tdRight}><strong>{money(it.sum)}</strong></td>

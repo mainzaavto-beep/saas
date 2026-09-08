@@ -34,6 +34,12 @@ quantity = ПРИНЯТО, NULL пока не принято (date_close IS NULL
 заявленное количество, есть всегда.
 
 Мягкая деградация. SAAS_PROBE=1 — дамп списка и окна, без записи.
+
+Exit-коды (контракт orchestrator.py:80-82): 0 — прогон состоялся (в том числе когда
+писать нечего: все поставки окна уже терминальны — это норма, не «ПРОПУСК»);
+3 — partial: часть поставок опросить не удалось (detail/goods недоступны), записано
+меньше, чем планировалось. Ноль строк и exit 0 — законный исход, поэтому ##OBS rows=0
+печатается и в этом случае: наблюдаемость должна видеть, что сборщик отработал.
 """
 import os
 import sys
@@ -56,6 +62,16 @@ SUPPLY_GOODS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/goo
 INCOMES_DAYS = int(os.getenv("SAAS_INCOMES_DAYS", "90"))
 MAX_ATTEMPTS = 4
 BETWEEN_CALLS = 0.4  # пауза между detail/goods — лимиты supplies-api строгие
+
+# Сколько поставок не удалось опросить в последнем прогоне (для partial_exit_code).
+_NOT_FETCHED = 0
+
+
+def partial_exit_code(n_not_fetched):
+    """Контракт exit-кодов (orchestrator.py:80-82, образец —
+    ozon_supply_orders.py::partial_exit_code): опрошено меньше поставок, чем
+    планировалось → 3 (partial: то, что удалось, записано; падать нельзя)."""
+    return 3 if n_not_fetched else None
 
 
 def _request(method, url, body=None):
@@ -137,6 +153,8 @@ def parse_rows(income_id, detail, goods) -> list[dict]:
 
 
 def collect():
+    global _NOT_FETCHED
+    _NOT_FETCHED = 0
     print(f"[wb_incomes] приёмки FBO WB, supplies-api ({datetime.now():%Y-%m-%d %H:%M})", flush=True)
     if not WB_TOKEN:
         print("[wb_incomes] ПРОПУСК: нет WB_TOKEN (exit 0)", flush=True)
@@ -178,10 +196,16 @@ def collect():
         fetched += 1
         time.sleep(BETWEEN_CALLS)
 
+    _NOT_FETCHED = len(to_fetch) - fetched
     print(f"[wb_incomes] окно {cutoff}..сегодня: поставок {len(candidates)}, "
-          f"терминальных пропущено {skipped_terminal}, опрошено {fetched}", flush=True)
+          f"терминальных пропущено {skipped_terminal}, опрошено {fetched}"
+          + (f", не опрошено {_NOT_FETCHED} из {len(to_fetch)}" if _NOT_FETCHED else ""),
+          flush=True)
     if not rows:
-        print("[wb_incomes] ПРОПУСК: нет строк для записи (exit 0)", flush=True)
+        # Не «ПРОПУСК»: прогон состоялся, просто нет ни одной новой/изменившейся
+        # поставки (все терминальные). Строк 0 — законный исход, не деградация.
+        print("[wb_incomes] нечего обновлять: новых строк нет", flush=True)
+        print("##OBS rows=0", flush=True)
         return 0
     written = db_pg.upsert_wb_incomes_many(rows)
     print(f"[wb_incomes] строк {written}", flush=True)
@@ -193,3 +217,6 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     os.environ["NO_PROXY"] = "*"
     collect()
+    _code = partial_exit_code(_NOT_FETCHED)
+    if _code is not None:
+        sys.exit(_code)

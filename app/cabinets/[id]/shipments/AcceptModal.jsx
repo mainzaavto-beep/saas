@@ -14,6 +14,13 @@ import { useState, useMemo } from "react";
 // значение не выдумывается. Для уже сохранённого qty_accepted (повторное открытие модалки)
 // приоритет у сохранённого значения — WB-факт не затирает ручную правку.
 //
+// Факт WB приходит агрегатом по nm_id, а строк документа с одним nm может быть несколько
+// (одна и та же карточка лежит на ФФ разными партиями). Поэтому факт РАСПРЕДЕЛЯЕТСЯ
+// последовательно: первая строка получает min(факт, qty1), вторая — min(остаток, qty2)
+// и так далее (ревью 2026-09-08). Раньше в каждую строку подставлялся весь агрегат —
+// сервер отклонял ввод («принято > отгружено») или сумма приёмки задваивалась.
+// Уже сохранённые значения тоже вычитаются из остатка: они — факт, а не предложение.
+//
 // items: ВСЕ позиции склада (не только qty>0) — GET /inventory items[], нужны привязки skus[].
 export function AcceptModal({ cabinetId, doc, items, onClose, onDone }) {
   const itemById = useMemo(() => {
@@ -34,17 +41,26 @@ export function AcceptModal({ cabinetId, doc, items, onClose, onDone }) {
     return it.platform === "wb" && it.nm_id != null ? it.nm_id : null;
   };
 
-  const [rows, setRows] = useState(() =>
-    (doc.lines || []).map((l) => {
-      let init = l.qty_accepted != null ? String(l.qty_accepted) : "";
-      if (init === "" && isWbIncome) {
-        const nm = nmOf(l);
-        const fact = nm != null ? supply.lines_by_nm?.[nm] : null;
-        if (fact != null) init = String(fact);
+  const [rows, setRows] = useState(() => {
+    const rest = {};                       // nm → сколько факта WB ещё не разнесено
+    const restOf = (nm) => {
+      if (!(nm in rest)) rest[nm] = Number(supply?.lines_by_nm?.[nm] ?? 0) || 0;
+      return rest[nm];
+    };
+    return (doc.lines || []).map((l) => {
+      const nm = isWbIncome ? nmOf(l) : null;
+      const hasFact = nm != null && supply?.lines_by_nm?.[nm] != null;
+      if (l.qty_accepted != null) {
+        // сохранённое значение — приоритет; оно же расходует факт для следующих строк
+        if (hasFact) rest[nm] = Math.max(0, restOf(nm) - (Number(l.qty_accepted) || 0));
+        return { line_id: l.id, value: String(l.qty_accepted) };
       }
-      return { line_id: l.id, value: init };
-    })
-  );
+      if (!hasFact) return { line_id: l.id, value: "" };
+      const take = Math.min(restOf(nm), Number(l.qty) || 0);
+      rest[nm] = restOf(nm) - take;
+      return { line_id: l.id, value: String(take) };
+    });
+  });
   const [busy, setBusy] = useState(false);
 
   function setVal(lineId, v) {

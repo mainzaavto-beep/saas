@@ -1,6 +1,6 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 // SupplyPlanSection — «Рекомендации» на странице /shipments (спека «Склады 2.0» §4.1).
 //
@@ -8,7 +8,14 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 //   { settings:{targetDays,minDays}, groups[], uncovered[], generatedAt }.
 // groups[]: { locationId, locationName, platform, warehouseKey, warehouseName, lines[] }
 //   lines[]: { itemId, itemName, need, qty, velocity, coverageDays, available, positions[] }
-// uncovered[]: { itemId, warehouseKey, qty } — без имён (ищем по groups).
+// uncovered[]: { itemId, warehouseKey, qty, itemName, warehouseName, platform } —
+//   имена приходят из адаптера (enrichUncovered): строка «не покрыто» бывает и там,
+//   где групп нет вовсе, поэтому искать имя по groups нельзя.
+//
+// wbWarehouses — справочник складов WB (GET /shipments → warehouses.wb), приходит
+// пропсом от ShipmentsPage: у WB цель одна на кабинет («WB (все склады)»), а склад
+// назначения владелец выбирает прямо в карточке — выбранный id уходит в POST как
+// warehouseKey и становится dest_warehouse_id черновика.
 //
 // Черновик из группы: POST /supply-plan { action:'create_doc', locationId, platform,
 //   warehouseKey, warehouseName, lines:[{ff_inventory_id,qty}] } — lines собираем из
@@ -23,7 +30,7 @@ const PLATFORM_TABS = [
   { v: "ozon", label: "Ozon" },
 ];
 
-export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
+export function SupplyPlanSection({ cabinetId, canManage, onDocCreated, wbWarehouses = [] }) {
   const [platform, setPlatform] = useState("all");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -44,19 +51,6 @@ export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
   const groups = data?.groups || [];
   const uncovered = data?.uncovered || [];
   const settings = data?.settings || null;
-
-  // Имя товара по itemId — ищем среди строк всех групп (uncovered имён не несёт).
-  const itemNameById = useMemo(() => {
-    const m = {};
-    for (const g of groups) for (const ln of g.lines) m[ln.itemId] = ln.itemName;
-    return m;
-  }, [groups]);
-  // Имя склада по (platform, warehouseKey) — для строки «не покрыто».
-  const whNameByKey = useMemo(() => {
-    const m = {};
-    for (const g of groups) m[`${g.platform}:${g.warehouseKey}`] = g.warehouseName;
-    return m;
-  }, [groups]);
 
   return (
     <div style={{ marginBottom: 20 }}>
@@ -90,7 +84,7 @@ export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
         <div style={{ fontSize: 13, color: C.muted, padding: "8px 2px" }}>Загрузка рекомендаций…</div>
       )}
 
-      {data && groups.length === 0 && (
+      {data && groups.length === 0 && uncovered.length === 0 && (
         <div style={{ ...calloutStyle }}>
           Все остатки покрывают целевой запас — довозить пока нечего.
         </div>
@@ -104,6 +98,7 @@ export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
               group={g}
               cabinetId={cabinetId}
               canManage={canManage}
+              wbWarehouses={wbWarehouses}
               onCreated={() => { reload(); onDocCreated?.(); }}
             />
           ))}
@@ -112,17 +107,23 @@ export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
 
       {uncovered.length > 0 && (
         <div style={{ ...calloutStyle, background: soft("warn", 12), border: `1px solid ${soft("warn", 35)}`, color: C.warn, marginTop: 12 }}>
-          <strong>Не покрыто на ФФ ({uncovered.length}):</strong>
+          <strong>
+            {groups.length === 0
+              ? `Нечем закрыть с ФФ (${uncovered.length}):`
+              : `Не покрыто на ФФ (${uncovered.length}):`}
+          </strong>
+          {groups.length === 0 && (
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              Дефицит на площадке есть, но источников на ФФ план не нашёл: привяжите позиции ФФ
+              к местам в «📍 Места» — без этого план не видит, откуда везти.
+            </div>
+          )}
           <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
-            {uncovered.map((u, i) => {
-              const platform = String(u.itemId).startsWith("ozon:") ? "ozon" : "wb";
-              const whName = whNameByKey[`${platform}:${u.warehouseKey}`] || u.warehouseKey;
-              return (
-                <div key={i} style={{ fontSize: 12 }}>
-                  {itemNameById[u.itemId] || u.itemId} · склад «{whName}» · не хватает {num(u.qty)} шт
-                </div>
-              );
-            })}
+            {uncovered.map((u, i) => (
+              <div key={i} style={{ fontSize: 12 }}>
+                {u.itemName || u.itemId} · склад «{u.warehouseName || u.warehouseKey}» · не хватает {num(u.qty)} шт
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -130,8 +131,12 @@ export function SupplyPlanSection({ cabinetId, canManage, onDocCreated }) {
   );
 }
 
-function PlanGroupCard({ group, cabinetId, canManage, onCreated }) {
+function PlanGroupCard({ group, cabinetId, canManage, onCreated, wbWarehouses = [] }) {
   const [busy, setBusy] = useState(false);
+  // Склад назначения WB: план его не знает (одна цель на кабинет — WB не отдаёт
+  // разбивку остатков по складам), поэтому выбираем руками. "" = не выбран.
+  const [wbWh, setWbWh] = useState("");
+  const isWb = group.platform === "wb";
   const totalQty = group.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   async function createDraft() {
@@ -140,6 +145,11 @@ function PlanGroupCard({ group, cabinetId, canManage, onCreated }) {
       .filter((p) => Number(p.qty) > 0)
       .map((p) => ({ ff_inventory_id: p.ffInventoryId, qty: p.qty }));
     if (lines.length === 0) { alert("В группе нет позиций ФФ для отгрузки"); return; }
+    // Выбранный склад WB подменяет ключ/имя цели: роут кладёт числовой warehouseKey
+    // в dest_warehouse_id, а warehouseName — в dest_warehouse.
+    const picked = isWb && wbWh
+      ? (wbWarehouses.find((w) => String(w.id) === String(wbWh)) || null)
+      : null;
     setBusy(true);
     try {
       const r = await fetch(`/api/cabinets/${cabinetId}/supply-plan`, {
@@ -148,8 +158,8 @@ function PlanGroupCard({ group, cabinetId, canManage, onCreated }) {
           action: "create_doc",
           locationId: group.locationId,
           platform: group.platform,
-          warehouseKey: group.warehouseKey,
-          warehouseName: group.warehouseName,
+          warehouseKey: picked ? picked.id : group.warehouseKey,
+          warehouseName: picked ? picked.name : group.warehouseName,
           lines,
         }),
       });
@@ -194,6 +204,18 @@ function PlanGroupCard({ group, cabinetId, canManage, onCreated }) {
           ))}
         </tbody>
       </table>
+      {isWb && canManage && (
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: C.muted }}>Склад назначения:</span>
+          <select value={wbWh} onChange={(e) => setWbWh(e.target.value)} style={whSelect}
+            title="WB не отдаёт остатки в разрезе складов — склад поставки выбирается вручную">
+            <option value="">— не выбран (WB, все склады) —</option>
+            {wbWarehouses.map((w) => (
+              <option key={w.id} value={String(w.id)}>{w.name}{w.region ? ` · ${w.region}` : ""}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
         <span style={{ fontSize: 12, color: C.muted }}>Σ везём: <strong style={{ color: C.ink }}>{num(totalQty)} шт</strong></span>
         {canManage && (
@@ -224,4 +246,5 @@ const tabBtnActive = { background: soft("accent", 15), color: C.accent, borderCo
 const primaryBtnSm = { padding: "6px 12px", borderRadius: 7, fontSize: 12, cursor: "pointer", fontWeight: 600, background: C.accent, color: "var(--accentInk)", border: "none" };
 const thGroup = { padding: "4px 6px", fontWeight: 600, fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3, textAlign: "right" };
 const tdGroup = { padding: "4px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums" };
+const whSelect = { padding: "3px 6px", borderRadius: 6, fontSize: 11, background: C.bg, color: C.ink, border: `1px solid ${C.line}`, maxWidth: 260 };
 const calloutStyle = { padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.5, background: C.surfaceAlt, border: `1px solid ${C.line}`, color: C.muted };

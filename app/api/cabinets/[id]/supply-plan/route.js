@@ -7,15 +7,19 @@
 //   groups[]: { locationId, locationName, platform, warehouseKey, warehouseName, lines[] }
 //     lines[]: { itemId, itemName, skuKey, need, qty, velocity, coverageDays, available,
 //                positions:[{ffInventoryId, qty}] } — positions готовы к отправке в POST.
-//   uncovered[]: { itemId, warehouseKey, qty } — нужно, но на ФФ нечем закрыть.
+//   uncovered[]: { itemId, warehouseKey, qty, itemName, warehouseName, platform } —
+//     нужно, но на ФФ нечем закрыть (имена — из targets, см. enrichUncovered).
 //
 // POST { action:'create_doc', locationId, platform, warehouseKey, warehouseName,
 //        lines:[{ff_inventory_id, qty}], ship_dt?, note? } (role: manager)
 //   → черновик документа отгрузки (lib/shipmentDocs.js createShipmentDoc, status='draft').
 //   Черновик остаток НЕ списывает — списание произойдёт при «Отгрузить» (ship).
-//   dest_warehouse_id для Ozon = числовой warehouseKey (id склада из shared.ozon_clusters);
-//   для WB — null: цель одна на кабинет («WB (все склады)»), конкретный склад
-//   назначения выбирается уже в документе.
+//   dest_warehouse_id = числовой warehouseKey — и у Ozon (id склада из
+//   shared.ozon_clusters), и у WB, если карточка рекомендации прислала выбранный склад
+//   (shared.wb_warehouses.id): цель у WB одна на кабинет, но склад назначения владелец
+//   выбирает прямо в карточке. Не выбран (warehouseKey='wb') → dest_warehouse_id = null
+//   и dest_warehouse = «WB (все склады)», склад можно проставить позже действием
+//   `update` документа.
 import { NextResponse } from "next/server";
 import { tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
@@ -42,10 +46,12 @@ export const POST = withCabinet(async (req, { session }) => {
   const platform = b.platform === "wb" ? "wb" : b.platform === "ozon" ? "ozon" : null;
   if (!platform) return NextResponse.json({ error: "platform wb|ozon required" }, { status: 400 });
 
-  // Склад назначения: у Ozon warehouseKey — id склада (shared.ozon_clusters), у WB
-  // ключ 'wb' (не число) → dest_warehouse_id остаётся пустым.
+  // Склад назначения: числовой warehouseKey — id склада в справочнике площадки
+  // (Ozon: shared.ozon_clusters.warehouse_id; WB: shared.wb_warehouses.id, приходит
+  // из селекта в карточке рекомендации). Нечисловой ключ (у WB это 'wb' — «склад не
+  // выбран») → dest_warehouse_id пустой, имя остаётся как есть.
   const keyNum = Number(b.warehouseKey);
-  const destWarehouseId = platform === "ozon" && Number.isInteger(keyNum) && keyNum > 0 ? keyNum : null;
+  const destWarehouseId = Number.isInteger(keyNum) && keyNum > 0 ? keyNum : null;
 
   const res = await createShipmentDoc(tenantQuery, {
     platform,

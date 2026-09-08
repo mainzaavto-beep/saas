@@ -13,8 +13,9 @@ import { C, soft } from "@/lib/palette.js";
 // площадки (link_supply) и принят по строкам вручную (accept, AcceptModal).
 //
 // Источник: GET /api/cabinets/[id]/shipments → { docs[], totals, warehouses:{wb,ozon} }.
-// Запись: POST /api/cabinets/[id]/shipments { action } — create | ship | link_supply |
-//   accept | delete (role: manager).
+// Запись: POST /api/cabinets/[id]/shipments { action } — create | ship | update |
+//   link_supply | accept | delete (role: manager). `update` правит шапку ЧЕРНОВИКА
+//   (склад назначения, № документа, дата, примечание) — форма по кнопке «Изменить».
 // Доступные позиции склада (для состава/приёмки): GET /api/cabinets/[id]/inventory → items[].
 // Роль текущего пользователя (для гейтинга кнопок): GET /api/cabinets/[id]/me → { role }.
 import { useEffect, useState, useCallback, useMemo } from "react";
@@ -88,7 +89,8 @@ export default function ShipmentsPage({ cabinetId }) {
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px", maxWidth: 1600, margin: "0 auto" }}>
       <Header />
 
-      <SupplyPlanSection cabinetId={cabinetId} canManage={canManage} onDocCreated={reload} />
+      <SupplyPlanSection cabinetId={cabinetId} canManage={canManage} onDocCreated={reload}
+        wbWarehouses={warehouses.wb || []} />
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <Kpi label="Документов" value={num(totals.docs)} accent />
@@ -128,7 +130,7 @@ export default function ShipmentsPage({ cabinetId }) {
           <tbody>
             {docs.map((d) => (
               <DocRow key={d.id} doc={d} cabinetId={cabinetId} reload={reload} canManage={canManage}
-                onAccept={() => setAcceptDoc(d)} />
+                warehouses={warehouses} onAccept={() => setAcceptDoc(d)} />
             ))}
             {docs.length === 0 && (
               <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.muted }}>
@@ -164,9 +166,10 @@ export default function ShipmentsPage({ cabinetId }) {
 }
 
 // Строка документа с разворачиваемым составом.
-function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
+function DocRow({ doc, cabinetId, reload, canManage, warehouses, onAccept }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function post(body) {
     const r = await fetch(`/api/cabinets/${cabinetId}/shipments`, {
@@ -211,7 +214,9 @@ function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
             <MpBadge platform={doc.platform} />
             <span style={{ fontWeight: 600 }}>{doc.doc_no || <span style={{ color: C.faint }}>без номера</span>}</span>
           </div>
-          <SupplyLink doc={doc} cabinetId={cabinetId} reload={reload} canManage={canManage} />
+          {/* key по mp_supply_id: связали → отвязали — компонент пересоздаётся и
+              выбор кандидата берётся из свежих suggestions, а не из устаревшего state */}
+          <SupplyLink key={doc.mp_supply_id ?? "none"} doc={doc} cabinetId={cabinetId} reload={reload} canManage={canManage} />
         </td>
         <td style={tdLeft}>{doc.location_name || <span style={{ color: C.faint }}>—</span>}</td>
         <td style={tdLeft}>{doc.dest_warehouse || <span style={{ color: C.faint }}>—</span>}</td>
@@ -231,6 +236,12 @@ function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
               {busy ? "⏳" : "🚚 Отгрузить"}
             </button>
           )}
+          {canManage && doc.status_saved === "draft" && (
+            <button onClick={() => setEditing((v) => !v)} style={{ ...miniBtn, marginRight: 4 }}
+              title="Правка шапки черновика: склад назначения, номер, дата, примечание">
+              {editing ? "✕ Отмена" : "✏️ Изменить"}
+            </button>
+          )}
           {canManage && doc.status_saved !== "draft" && (
             <button onClick={onAccept} style={{ ...miniBtn, color: C.pos, marginRight: 4 }} title="Ввести/поправить приёмку по строкам">
               📥 Приёмка
@@ -243,6 +254,16 @@ function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
           )}
         </td>
       </tr>
+      {editing && (
+        <tr style={{ background: C.surfaceAlt }}>
+          <td></td>
+          <td colSpan={9} style={{ padding: "6px 10px 12px" }}>
+            <DraftEditForm doc={doc} cabinetId={cabinetId} warehouses={warehouses}
+              onClose={() => setEditing(false)}
+              onDone={() => { setEditing(false); reload(); }} />
+          </td>
+        </tr>
+      )}
       {open && linesCount > 0 && (
         <tr style={{ background: C.surfaceAlt }}>
           <td></td>
@@ -269,6 +290,69 @@ function DocRow({ doc, cabinetId, reload, canManage, onAccept }) {
         </tr>
       )}
     </>
+  );
+}
+
+// Правка шапки ЧЕРНОВИКА: склад назначения (из справочника своей площадки), № документа,
+// дата отгрузки, примечание. POST { action:'update', ... } — сервер отклонит правку
+// не-черновика (400), даже если кнопка как-то показалась.
+function DraftEditForm({ doc, cabinetId, warehouses, onClose, onDone }) {
+  const list = (warehouses && warehouses[doc.platform]) || [];
+  const [whId, setWhId] = useState(doc.dest_warehouse_id != null ? String(doc.dest_warehouse_id) : "");
+  const [docNo, setDocNo] = useState(doc.doc_no || "");
+  const [shipDt, setShipDt] = useState(String(doc.ship_dt || "").slice(0, 10));
+  const [note, setNote] = useState(doc.note || "");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const picked = whId ? list.find((w) => String(w.id) === String(whId)) : null;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/shipments`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          id: doc.id,
+          dest_warehouse_id: picked ? picked.id : null,
+          dest_warehouse: picked ? picked.name : null,
+          doc_no: docNo,
+          ship_dt: shipDt,
+          note,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || "update failed");
+      onDone();
+    } catch (e) { alert("Не сохранить: " + e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+      <label style={fieldLabel}>
+        Склад назначения
+        <select value={whId} onChange={(e) => setWhId(e.target.value)} style={{ ...inputStyle, maxWidth: 260 }}>
+          <option value="">— не выбран —</option>
+          {list.map((w) => (
+            <option key={w.id} value={String(w.id)}>{w.name}{w.region || w.cluster ? ` · ${w.region || w.cluster}` : ""}</option>
+          ))}
+        </select>
+      </label>
+      <label style={fieldLabel}>
+        № документа
+        <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="без номера" style={inputStyle} />
+      </label>
+      <label style={fieldLabel}>
+        Дата отгрузки
+        <input type="date" value={shipDt} onChange={(e) => setShipDt(e.target.value)} style={inputStyle} />
+      </label>
+      <label style={{ ...fieldLabel, flex: "1 1 220px" }}>
+        Примечание
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="—" style={{ ...inputStyle, width: "100%" }} />
+      </label>
+      <button onClick={save} disabled={busy} style={primaryBtn}>{busy ? "⏳" : "Сохранить"}</button>
+      <button onClick={onClose} style={resetBtnStyle}>Отмена</button>
+    </div>
   );
 }
 
@@ -403,6 +487,7 @@ function StatusPill({ status }) {
 
 // ---------------- Стили ----------------
 const inputStyle = { padding: "6px 10px", borderRadius: 6, fontSize: 13, background: C.bg, color: C.ink, border: `1px solid ${C.line}`, minWidth: 120 };
+const fieldLabel = { display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.3 };
 const primaryBtn = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", fontWeight: 600, background: C.accent, color: "var(--accentInk)", border: "none" };
 const resetBtnStyle = { padding: "8px 14px", borderRadius: 7, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };
 const miniBtn = { padding: "4px 10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: C.surface, color: C.ink, border: `1px solid ${C.line}` };

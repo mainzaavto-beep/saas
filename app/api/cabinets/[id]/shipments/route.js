@@ -27,6 +27,8 @@
 //                 location_id?, note?, status?='shipped', lines:[{ff_inventory_id,qty}] }
 //                 → документ + строки; при status='shipped' — движения out_fbo.
 //   ship        { id } → draft → shipped (предпроверка остатка + движения out_fbo).
+//   update      { id, dest_warehouse?, dest_warehouse_id?, doc_no?, note?, ship_dt? }
+//                 → правка ЧЕРНОВИКА (иначе 400); переданы только меняемые поля.
 //   link_supply { id, mp_supply_id|null, mp_supply_kind } → связь с приёмкой + статус.
 //   accept      { id, accepted:[{line_id, qty_accepted}] } → приёмка + статус.
 //   delete      { id } → только draft; отгруженный документ удалять нельзя.
@@ -37,7 +39,7 @@ import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { applyMove } from "@/lib/stockLedger.js";
 import {
-  createShipmentDoc, shipDoc, linkSupply, acceptDoc,
+  createShipmentDoc, shipDoc, updateDoc, linkSupply, acceptDoc,
   loadSupply, loadSupplyCandidates, matchSupply, effectiveStatus,
 } from "@/lib/shipmentDocs.js";
 
@@ -217,6 +219,16 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   // ── ship: черновик → отгружен ────────────────────────────────────────────
   if (b.action === "ship") {
     return respond(await shipDoc(tenantQuery, { id: b.id, userId }, { applyMove }));
+  }
+
+  // ── update: правка шапки черновика (склад/номер/дата/примечание) ─────────
+  if (b.action === "update") {
+    // Передаём только присланные ключи: отсутствие ключа = «колонку не трогать».
+    const patch = { id: b.id };
+    for (const k of ["dest_warehouse", "dest_warehouse_id", "doc_no", "note", "ship_dt"]) {
+      if (k in b) patch[k] = b[k];
+    }
+    return respond(await updateDoc(tenantQuery, patch));
   }
 
   // ── link_supply: связь документа с приёмкой/поставкой МП ─────────────────
