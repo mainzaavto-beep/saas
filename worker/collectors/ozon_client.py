@@ -44,6 +44,16 @@ DEPTH_WARN_PAGES = 30  # аномальная глубина offset-пагина
 RETRY_ATTEMPTS = 5
 RETRY_BASE_DELAY_SEC = 2.0
 RETRY_JITTER_SEC = 1.0
+# 429 отдельно (флап 01–08.09.2026, ozon_metrics в ночном тике 05:15 MSK): лимиты
+# Ozon считаются по МИНУТНОМУ окну, а 2+4+8+16 с = 33 с — все пять попыток сгорали
+# внутри одного и того же окна и исчерпание било гарантированно. Пол ожидания на
+# 429 — своя экспонента с базой 5 с: 5 → 10 → 20 → 40 с (+джиттер) = ~75 с за
+# прогон, т.е. хотя бы одна попытка попадает в следующее окно. Retry-After /
+# X-RateLimit-Reset от Ozon по-прежнему уважаем (потолок 60 с), но не короче пола.
+# Цена: один реально задросселенный запрос стоит ≤ ~80 с вместо 33 с — при
+# COLLECTOR_TIMEOUT=900 с и 4 тиках в день это приемлемо. Селф-тест:
+# ozon_client_selftest.py.
+RETRY_429_BASE_DELAY_SEC = 5.0
 
 # Per-request timeout снижен с прежних 60с до 20с (правка 2026-08-27, флап Ozon).
 # Причина: при 5 попытках по 60с ОДИН полностью исчерпанный запрос стоил бы ~5.5 мин —
@@ -121,7 +131,16 @@ class OzonClient:
             if r.status_code == 429:
                 # У Ozon лимит по окну — ждём столько, сколько говорит Ozon, иначе
                 # свой экспоненциальный бэкофф (не голые 30/60с, как раньше).
-                last_reason = "429 too many requests"
+                # Причина исчерпания — с заголовками лимита и началом тела: по
+                # логу должно быть видно, КАКОЙ лимит сработал (08.09.2026 оба
+                # кабинета с разными ключами получили 429 в одну минуту — без
+                # заголовков это было неразличимо от перебора собственным ключом).
+                limit_hdrs = ", ".join(
+                    f"{k.lower()}={v}" for k, v in r.headers.items()
+                    if "ratelimit" in k.lower() or k.lower() == "retry-after")
+                last_reason = ("429 too many requests"
+                               + (f" [{limit_hdrs}]" if limit_hdrs else "")
+                               + f" body={r.text[:120]!r}")
                 if is_last:
                     break
                 retry_after = r.headers.get("Retry-After")
@@ -131,12 +150,13 @@ class OzonClient:
                 elif reset and reset.replace(".", "", 1).isdigit():
                     wait = min(float(reset), 60.0)
                 else:
-                    wait = _backoff_delay(attempt)
+                    wait = 0.0
                 # 05.09.2026: Ozon стал отдавать крошечный Retry-After — все 5
-                # попыток сгорали за 4с и исчерпание билось почти сразу.
-                # Пол ожидания — наш экспоненциальный бэкофф: заголовок Ozon
-                # уважаем, но не короче нижнего предела. Потолок 60с как был.
-                wait = max(wait, _backoff_delay(attempt))
+                # попыток сгорали за 4с. 08.09.2026: и обычный бэкофф (33с) короче
+                # минутного окна. Пол ожидания на 429 — своя экспонента с базой
+                # RETRY_429_BASE_DELAY_SEC (см. комментарий у константы): заголовок
+                # Ozon уважаем, но не короче пола. Потолок заголовка 60с как был.
+                wait = max(wait, _backoff_delay(attempt, RETRY_429_BASE_DELAY_SEC))
                 time.sleep(wait)
                 continue
 
@@ -771,11 +791,12 @@ class OzonClient:
         return data if isinstance(data, dict) else {}
 
 
-def _backoff_delay(attempt: int) -> float:
+def _backoff_delay(attempt: int, base: float = RETRY_BASE_DELAY_SEC) -> float:
     """Пауза перед следующей попыткой (attempt — индекс только что провалившейся
-    попытки, с 0): экспонента RETRY_BASE_DELAY_SEC*2^attempt + джиттер [0, RETRY_JITTER_SEC).
-    При RETRY_ATTEMPTS=5 даёт паузы ~2с → 4с → 8с → 16с перед попытками 2..5."""
-    return RETRY_BASE_DELAY_SEC * (2 ** attempt) + random.uniform(0, RETRY_JITTER_SEC)
+    попытки, с 0): экспонента base*2^attempt + джиттер [0, RETRY_JITTER_SEC).
+    При RETRY_ATTEMPTS=5 и базе 2с даёт паузы ~2с → 4с → 8с → 16с перед попытками
+    2..5; на 429 база RETRY_429_BASE_DELAY_SEC=5с → ~5 → 10 → 20 → 40с (≥ минутное окно)."""
+    return base * (2 ** attempt) + random.uniform(0, RETRY_JITTER_SEC)
 
 
 # --- вспомогательное форматирование дат для тела запроса ---
