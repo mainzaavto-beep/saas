@@ -252,6 +252,12 @@ order_costs → metrics → prices → stocks (зависимости по FK).
   **X и Y — обе «за единицу»** (с 2026-07-15): X=«Логист. до МСК/ед», Y=«Логист.
   МСК→ФФ/ед». Раньше код считал их «за партию» (без ×O) → AA занижался. Колонки
   БД: `logistics_rub_per_unit` (X), `logistics_rub` (Y) — имена не переименовывали.
+- **Сигналы склада и виджет «Заканчиваются на складе» (с 2026-09-08)**: один расчёт —
+  `lib/warehousesData.js loadWarehouseSignals` → `lib/warehousesMetrics.js buildSignals`.
+  Главная (`app/api/cabinets/[id]/overview/route.js`, `alerts.warehouses`) и шапка
+  `/warehouses` (`SignalsStrip.jsx`) читают один и тот же сигнал `low_coverage`; виджет
+  главной больше не считает по-своему (раньше — WB-only, по дням с продажами). Подробности —
+  «Склады 2.0 — этап 4 «Витрина»» ниже.
 
 ### ⚠️ Себестоимость — ЕДИНЫЙ источник `tenant.cost_overrides` (с 2026-07-14)
 
@@ -491,6 +497,94 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   приёмки по товару.
 - **Что не делаем** (спека §4.4): создание поставок в кабинетах МП через API (запись в
   кабинеты WB/Ozon) — только рекомендация и учёт факта.
+
+### 🆕 Склады 2.0 — этап 4 «Витрина» (с 2026-09-08)
+
+Спека `docs/superpowers/specs/2026-09-06-multi-warehouse-stock-control-design.md` (§5), план
+`docs/superpowers/plans/2026-09-08-warehouses-stage4-vitrina.md`. Новых миграций нет.
+
+- **Файлы**: `lib/warehousesMetrics.js` (чистые функции: `buildMatrix`, `buildPlaceCards`,
+  `buildSignals`, `planInventoryAdjust`, `itemKeyOf`, без БД) + адаптер
+  `lib/warehousesData.js` (`loadWarehousesInput`, `loadWarehouseSignals`,
+  `normalizePositions` — запросы строго последовательно, `lib/db.js`: один client на
+  транзакцию, `Promise.all` тут маскирует порядок и риск частичного отката). Роут
+  `app/api/cabinets/[id]/warehouses/route.js`: GET `?tab=matrix|places` → всегда `{signals,
+  settings, generatedAt}` + данные вкладки (`matrix` либо `{places, fboWarehouses, locations,
+  sellerWarehouses, items}`); вкладка «Поставки» ходит в существующие `/supply-plan` и
+  `/shipments`, свой SQL не несёт. POST `{action:'inventory_adjust', location_id, note,
+  lines}` — инвентаризация места (роль manager). UI —
+  `app/cabinets/[id]/warehouses/{page.js, WarehousesPage.jsx, SignalsStrip.jsx, MatrixTab.jsx,
+  PlacesTab.jsx, PlaceCard.jsx, FboCard.jsx, InventoryModal.jsx, SuppliesTab.jsx}`; пункт
+  «Склады» первым в меню «Товары» (`app/cabinets/[id]/layout.js`).
+- **Группировка строк матрицы — связная компонента, не пара (nm_id, product_id)**: спека §5.1
+  формулировала строку как «одну физическую позицию по паре артикулов» — на практике товар
+  часто несёт несколько WB/Ozon-артикулов на разные партии, и «первый WB + первый Ozon»
+  расщепляет его на несколько строк, задваивая FBO-карточки и сигналы. `buildMatrix` строит
+  union-find по ключу `${platform}:${sku_key}` среди позиций: строка = связная компонента
+  (любые две позиции с общим артикулом — одна строка, транзитивно). `row.skus` — минимальный
+  WB/Ozon-артикул компоненты (контракт для API/UI, как раньше, для отображения и ссылок);
+  `row.skuKeys` — ВСЕ артикулы компоненты по каждой площадке, ими сопоставляются снимок FBS,
+  скорость, FBO-цели и gaps (суммы по всем артикулам площадки на строку).
+- **Ячейка ФФ «свой / на МП / Δ»** (§3.5): `own` = Σ `qty` позиций компоненты на месте;
+  `present` — по последнему снимку `mp_fbs_daily_stock` привязанного склада продавца,
+  просуммированный по всем `skuKeys` площадки; `delta = own − present`. Три состояния присут-
+  ствия на МП: (1) по складу продавца в последнем снимке нет НИ ОДНОЙ строки вообще →
+  `{present: null, delta: null}` — «нет данных» (снимок за площадку/склад ещё не пришёл), НЕ
+  расхождение; (2) снимок по складу есть, но конкретного SKU в нём нет → подтверждённый
+  `present = 0` (сборщики `wb_fbs_stocks`/`ozon_fbs_stocks` пишут нулевые строки по всем
+  известным SKU, отсутствие строки было бы аномалией); (3) снимок и SKU есть → фактический
+  `present`. Ячейка красная (`flags.low`) при покрытии по FBS-скорости места < `min_days`,
+  жёлтая (`flags.delta`) при `delta ≠ 0` по любой площадке.
+- **FBS-скорость мест**: `wb_fbs_tasks` (по `warehouse_id`+`nm_id`, окно `VELOCITY_WINDOW_DAYS
+  = 28`, `lib/stockCoverage.js`) БЕЗ отменённых статусов — константа `WB_TASK_CANCELLED =
+  ["canceled_by_client", "declined_by_client", "defect", "canceled"]`
+  (`lib/warehousesData.js`) — тот же список, что `RETURNED_WB` в авто-списании
+  (`worker/fbs_writeoff_core.py:48`); менять оба места вместе. Ozon — `ozon_orders`
+  `scheme='fbs'`, `is_cancel=0`, то же окно. На кабинете #1 на 08.09 Ozon FBS без заказов в
+  окне (последняя запись 12.08 — вне 28 дней): скорость и покрытие ФФ-мест по Ozon сейчас
+  везде 0, это факт данных кабинета, не баг сборщика.
+- **Сигналы** — `lib/warehousesMetrics.js buildSignals` (4 вида): `discrepancy` (строки с
+  `flags.delta`, БЕЗ фильтра `own > 0` — `own=0` при `present>0` на привязанном месте тоже
+  расхождение), `gaps` (открытые `stock_move_gaps`, `level:'crit'`), `waiting_accept`
+  (документы `shipped` старше `WAITING_ACCEPT_DAYS=7` дней без приёмки), `low_coverage` (топ
+  `LOW_COVERAGE_TOP=5` ячеек с покрытием < `minDays` по скорости, `crit` если у топа покрытие
+  < `minDays/2`, иначе `warn`). Потребители: шапка `/warehouses` (`SignalsStrip.jsx`, те же
+  данные из ответа GET) и главная — `app/api/cabinets/[id]/overview/route.js` вызывает
+  `loadWarehouseSignals` напрямую (не через `lib/opsAlerts.js`), кладёт в
+  `alerts.warehouses`; виджет «Заканчиваются на складе» на главной с 2026-09-08 читает
+  `low_coverage` (`items[].{name, where, qty, coverage}`) — канон 28/28 «доступно», обе
+  площадки, колонка «Где» = место/склад. Раньше виджет был WB-only и считал по «дням с
+  продажами» — своим расчётом, независимым от `/warehouses`; теперь одна цифра везде.
+  **Отклонение от спеки §5.4**: там написано «через `lib/opsAlerts.js` на главную и в
+  брифинг» — брифинг (внешняя SQLite-рассылка владельцу) лежит вне этого репозитория,
+  сигналы туда не тянутся; спека поправлена на факт.
+- **Инвентаризация места** — POST `inventory_adjust` (роль manager): `location_id`
+  обязателен (только позиции С местом; без места — как раньше, `/inventory` `update_qty`).
+  Строки блокируются `SELECT … FOR UPDATE` по возрастанию `id`, план дельт — чистая
+  `planInventoryAdjust` (400 ДО первой записи при любой ошибке — `withCabinet` коммитит
+  только на возвращённом ответе). Каждая ненулевая дельта — движение `kind='adjust'`,
+  `src_kind='manual'`, `src_ref='inv:<ISO-stamp>:<ff_inventory_id>'` (один stamp на всю
+  инвентаризацию, отдельная строка на позицию), `note='инвентаризация: <причина>'`.
+- **`lib/useSort.js`** — общий хук сортировки таблиц (`useSort`/`cmpVal`), вынесен из
+  `stocks/StocksPage.jsx`, используется `MatrixTab.jsx`. В `StocksPage.jsx` и
+  `buyer-portrait/BuyerPortraitPage.jsx` остались старые локальные копии — не переведены,
+  бэклог (не баг, просто дублирование).
+- **`LocationsManager`** вынесен из `/inventory` в
+  `app/cabinets/[id]/inventory/LocationsManager.jsx` (переиспользуется настройками места на
+  `/warehouses`). **`ShipmentsPage`** получил проп `embedded` (как `TeamPage`,
+  `ReallocTable`) — прячет свой `<Header>`; `SuppliesTab.jsx` рендерит `<ShipmentsPage
+  cabinetId={cabinetId} embedded />` целиком, без дублирования логики.
+- **Что руками**: без привязки мест и складов продавца (как в этапах 2-3) ячейки ФФ пустые
+  («нет данных»), а не жёлтые/красные.
+- **Кандидаты на удаление из меню после приёмки владельцем** (решает владелец, не код):
+  `/ff-stock` (дублирует `/inventory`), `/shipments` (целиком переехал во вкладку
+  «Поставки» `/warehouses`). Судьба `/mp-stock` и `/move` — тоже решает владелец, пока
+  оставлены (`/mp-stock` — источник для ручной сверки «на МП» до приёмки; `/move` — своя
+  форма перемещения ФФ→ФФ вне модалки `/inventory`). Старые страницы работают без изменений
+  до решения.
+- **Сторож**: `scripts/check-warehouses-stage4.sql` (7 проверок, кабинет #1, запуск как у
+  этапов 2-3). Проверка `fbs_velocity_sources` считает долю совместно по WB+Ozon — площадка
+  без заказов в окне (сейчас Ozon FBS) не топит долю другой площадки.
 
 ## Правила работы с кодом
 
