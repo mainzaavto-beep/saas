@@ -13,8 +13,10 @@ import { useState, useMemo } from "react";
 //
 // items: позиции склада (формат GET /inventory) — фильтруются по выбранному «откуда».
 // locations: справочник мест (id, name, loc_type).
-export function TransferFormModal({ cabinetId, items, locations, onClose, onDone }) {
-  const [fromId, setFromId] = useState("");
+// fromLocationId (опц.) — предвыбор «откуда» (задача 6 плана, карточка места на /warehouses);
+// без пропа поведение прежнее (пустой выбор).
+export function TransferFormModal({ cabinetId, items, locations, onClose, onDone, fromLocationId }) {
+  const [fromId, setFromId] = useState(fromLocationId ? String(fromLocationId) : "");
   const [toId, setToId] = useState("");
   const [movedAt, setMovedAt] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState("");

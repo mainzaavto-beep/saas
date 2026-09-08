@@ -1,14 +1,16 @@
 "use client";
 // app/cabinets/[id]/warehouses/WarehousesPage.jsx — каркас витрины «Склады 2.0» (этап 4,
-// задача 5 плана). Три вкладки: matrix (эта задача) | places | supplies (заглушки до
-// задачи 6 — §5 плана). Вкладка держится в URL (?tab=) через useSearchParams/router.replace,
-// как принято в панели (см. /shipments). SignalsStrip получает signals из MatrixTab через
-// onSignals — общий колбэк для всех вкладок, чтобы полоса сигналов не дублировала запрос.
+// задачи 5-6 плана). Три вкладки: matrix | places | supplies. Вкладка держится в URL (?tab=)
+// через useSearchParams/router.replace, как принято в панели (см. /shipments). SignalsStrip
+// получает signals из активной вкладки через onSignals — общий колбэк, чтобы полоса сигналов
+// не дублировала запрос.
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { C } from "@/lib/palette.js";
 import { SignalsStrip } from "./SignalsStrip";
 import { MatrixTab } from "./MatrixTab";
+import { PlacesTab } from "./PlacesTab";
+import { SuppliesTab } from "./SuppliesTab";
 
 const TABS = [["matrix", "Матрица"], ["places", "Места"], ["supplies", "Поставки"]];
 
@@ -29,11 +31,8 @@ export default function WarehousesPage({ cabinetId }) {
         ))}
       </div>
       {tab === "matrix" && <MatrixTab cabinetId={cabinetId} onSignals={setSignals} />}
-      {tab === "places" && <PlacesTabLazy cabinetId={cabinetId} onSignals={setSignals} />}
-      {tab === "supplies" && <SuppliesTabLazy cabinetId={cabinetId} />}
+      {tab === "places" && <PlacesTab cabinetId={cabinetId} onSignals={setSignals} />}
+      {tab === "supplies" && <SuppliesTab cabinetId={cabinetId} />}
     </div>
   );
 }
-// До задачи 6 вкладки «Места» и «Поставки» — заглушки; задача 6 заменяет их на PlacesTab/SuppliesTab.
-function PlacesTabLazy() { return <div style={{ color: C.muted }}>Карточки мест — следующая задача плана.</div>; }
-function SuppliesTabLazy() { return <div style={{ color: C.muted }}>Поставки — следующая задача плана.</div>; }
