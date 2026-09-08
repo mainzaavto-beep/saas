@@ -1094,6 +1094,13 @@ profit WB систематически врал. Сверка на 2030 зака
     `saas-references.timer` Mon 06:00): тянет warehouses + transit-tariffs + region
     (из stocks-report) в shared.*. Мягкая деградация как у wb_stocks. Режим
     `references` добавлен в `run_saas_collect.sh` + имя в `WB_COLLECTORS` orchestrator.
+    ⚠️ 2026-09-08: оба источника внешне деградированы — supplies-api `/warehouses` и
+    `/transit-tariffs` отдают 404 «This method is temporarily disabled»
+    (release-notes?id=570, с 24.08), а stocks-report — только псевдосклад «Склад WB»
+    (−999999, см. выше). Сборщик на 4xx НЕ падает (раньше три понедельника подряд ронял
+    юнит после успешного stocks-report и ничего не писал): печатает detail, пропускает
+    источник, exit 0; `shared.wb_warehouses`/`wb_transit_tariffs` остаются от 10.08 до
+    возврата методов. Селф-тест без сети/БД: `worker/collectors/wb_references_selftest.py`.
     ⚠️ stocks-report — ПЕРВИЧНЫЙ источник (содержит warehouseId+name+regionName в одном
     ответе, имена совпадают со снимком); /warehouses — дополнение (101 склад без региона,
     т.к. там regionName не отдаётся). is_active/is_transit_active стали nullable (миграция 026)

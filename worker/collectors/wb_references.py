@@ -29,7 +29,11 @@ endpoint создания перевозки, но отдаёт эти спра�
 через COALESCE — если stocks-report недоступен, старый region не затирается.
 
 ⚠️ Отказоустойчивость (как wb_stocks): при недоступности WB API завершается
-exit 0, справочник остаётся с прошлой недели. Сервис не падать.
+exit 0, справочник остаётся с прошлой недели. Сервис не падать. Это касается и
+4xx: с 2026-08-24 WB отдаёт 404 «This method is temporarily disabled»
+(release-notes?id=570) на /warehouses и /transit-tariffs — тогда пишется только
+stocks-report (склады с регионом), тарифы остаются прежними. Селф-тест:
+wb_references_selftest.py.
 """
 import os
 import sys
@@ -98,7 +102,19 @@ def _request(method, url, body):
             print(f"  {r.status_code} (сервер WB), попытка {attempt+1}/{MAX_ATTEMPTS}", flush=True)
             time.sleep(10); waited += 10
             continue
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # 4xx (кроме 429 выше) — эндпоинт недоступен «навсегда» в рамках прогона:
+            # 401/403 — токен, 404 — WB выключил метод. С 2026-08-24 supplies-api
+            # /warehouses и /transit-tariffs отдают 404 «This method is temporarily
+            # disabled» (release-notes?id=570). Ретраить бессмысленно, а падать нельзя:
+            # stocks-report (первичный источник складов + регион) уже собран и должен
+            # быть записан. Возвращаем None — вызывающий код пропускает источник.
+            try:
+                detail = (r.json() or {}).get("detail", "")
+            except Exception:
+                detail = ""
+            print(f"  {r.status_code} {url}: эндпоинт недоступен — пропуск ({detail or r.reason})", flush=True)
+            return None
         return r.json()
     print(f"  {url}: недоступен после {MAX_ATTEMPTS} попыток — пропуск", flush=True)
     return None
