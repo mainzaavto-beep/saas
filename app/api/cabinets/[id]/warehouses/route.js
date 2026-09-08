@@ -1,11 +1,13 @@
 // app/api/cabinets/[id]/warehouses/route.js — витрина «Склады 2.0» (спека §5).
 // GET ?tab=matrix|places → всегда { signals, settings, generatedAt } + данные вкладки.
 //   Вкладка «Поставки» ходит в существующие /supply-plan и /shipments — здесь ничего.
-// POST { action:'inventory_adjust', location_id|null, note, lines:[{ff_inventory_id, qty_fact}] }
-//   (role: manager) — инвентаризация места: по строке движение adjust через applyMove.
+// POST { action:'inventory_adjust', location_id, note, lines:[{ff_inventory_id, qty_fact}] }
+//   (role: manager) — инвентаризация МЕСТА: location_id обязателен (целое > 0), по строке
+//   движение adjust через applyMove. Непривязанные позиции (location_id IS NULL) сюда не
+//   попадают — их правят через /inventory update_qty, как раньше.
 //   Все 400 — ДО первой записи (withCabinet коммитит любой ответ): строки блокируются
-//   SELECT … FOR UPDATE по возрастанию id (как update_qty в /inventory), план дельт —
-//   чистая planInventoryAdjust.
+//   SELECT … FOR UPDATE по возрастанию id, строго по этому месту (как update_qty в
+//   /inventory), план дельт — чистая planInventoryAdjust.
 import { NextResponse } from "next/server";
 import { tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
@@ -34,15 +36,17 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   if (b.action !== "inventory_adjust") return NextResponse.json({ error: `unknown action: ${b.action}` }, { status: 400 });
   const note = String(b.note ?? "").trim();
   if (!note) return NextResponse.json({ error: "note required (причина инвентаризации)" }, { status: 400 });
-  const locationId = b.location_id == null ? null : Number(b.location_id);
-  if (locationId != null && !(Number.isInteger(locationId) && locationId > 0)) return NextResponse.json({ error: "location_id must be a positive integer or null" }, { status: 400 });
+  const locationId = Number(b.location_id);
+  if (!(Number.isInteger(locationId) && locationId > 0)) return NextResponse.json({ error: "location_id required" }, { status: 400 });
   const lines = Array.isArray(b.lines) ? b.lines : [];
   const ids = [...new Set(lines.map((l) => Number(l.ff_inventory_id)).filter((x) => Number.isInteger(x) && x > 0))].sort((a, c) => a - c);
   if (!ids.length) return NextResponse.json({ error: "нет строк" }, { status: 400 });
   // Блокировка по возрастанию id — детерминированный порядок против дедлока (как в этапах 2–3).
+  // Фильтр по location_id строгий: позиция другого места/без места не попадёт в cur →
+  // planInventoryAdjust вернёт «не найдена на этом месте» → 400 до записи.
   const cur = await tenantQuery(
     `SELECT id, qty FROM tenant.ff_inventory
-     WHERE id = ANY($1::bigint[]) AND archived_at IS NULL AND ($2::bigint IS NULL OR location_id = $2)
+     WHERE id = ANY($1::bigint[]) AND archived_at IS NULL AND location_id = $2
      ORDER BY id FOR UPDATE`, [ids, locationId]);
   const plan = planInventoryAdjust(cur.map((r) => ({ id: Number(r.id), qty: Number(r.qty) })), lines);
   if (!plan.ok) return NextResponse.json({ error: plan.error }, { status: 400 });
