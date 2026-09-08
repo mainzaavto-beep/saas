@@ -504,7 +504,7 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
 `docs/superpowers/plans/2026-09-08-warehouses-stage4-vitrina.md`. Новых миграций нет.
 
 - **Файлы**: `lib/warehousesMetrics.js` (чистые функции: `buildMatrix`, `buildPlaceCards`,
-  `buildSignals`, `planInventoryAdjust`, `itemKeyOf`, без БД) + адаптер
+  `buildSignals`, `planInventoryAdjust`, без БД) + адаптер
   `lib/warehousesData.js` (`loadWarehousesInput`, `loadWarehouseSignals`,
   `normalizePositions` — запросы строго последовательно, `lib/db.js`: один client на
   транзакцию, `Promise.all` тут маскирует порядок и риск частичного отката). Роут
@@ -512,7 +512,7 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   settings, generatedAt}` + данные вкладки (`matrix` либо `{places, fboWarehouses, locations,
   sellerWarehouses, items}`); вкладка «Поставки» ходит в существующие `/supply-plan` и
   `/shipments`, свой SQL не несёт. POST `{action:'inventory_adjust', location_id, note,
-  lines}` — инвентаризация места (роль manager). UI —
+  lines:[{ff_inventory_id, qty_fact, qty_known}]}` — инвентаризация места (роль manager). UI —
   `app/cabinets/[id]/warehouses/{page.js, WarehousesPage.jsx, SignalsStrip.jsx, MatrixTab.jsx,
   PlacesTab.jsx, PlaceCard.jsx, FboCard.jsx, InventoryModal.jsx, SuppliesTab.jsx}`; пункт
   «Склады» первым в меню «Товары» (`app/cabinets/[id]/layout.js`).
@@ -534,7 +534,10 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   `present = 0` (сборщики `wb_fbs_stocks`/`ozon_fbs_stocks` пишут нулевые строки по всем
   известным SKU, отсутствие строки было бы аномалией); (3) снимок и SKU есть → фактический
   `present`. Ячейка красная (`flags.low`) при покрытии по FBS-скорости места < `min_days`,
-  жёлтая (`flags.delta`) при `delta ≠ 0` по любой площадке.
+  жёлтая (`flags.delta`) при `delta ≠ 0` по любой площадке. Ячейка вообще НЕ создаётся, если
+  `own = 0` и `present = 0` по всем площадкам (подтверждённый ноль с обеих сторон): иначе
+  каждое привязанное место × каждый товар давало бы пустую «0/0» клетку. Расхождение
+  `own = 0` при `present > 0` при этом остаётся видимым.
 - **FBS-скорость мест**: `wb_fbs_tasks` (по `warehouse_id`+`nm_id`, окно `VELOCITY_WINDOW_DAYS
   = 28`, `lib/stockCoverage.js`) БЕЗ отменённых статусов — константа `WB_TASK_CANCELLED =
   ["canceled_by_client", "declined_by_client", "defect", "canceled"]`
@@ -552,39 +555,77 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   данные из ответа GET) и главная — `app/api/cabinets/[id]/overview/route.js` вызывает
   `loadWarehouseSignals` напрямую (не через `lib/opsAlerts.js`), кладёт в
   `alerts.warehouses`; виджет «Заканчиваются на складе» на главной с 2026-09-08 читает
-  `low_coverage` (`items[].{name, where, qty, coverage}`) — канон 28/28 «доступно», обе
+  `low_coverage` (`items[].{name, where, qty, coverage, itemKey, colKey}` — ключ строки виджета
+  = `itemKey|colKey`, одинаковые имена на разных местах больше не коллидируют) — окно скорости
+  28 дн, порог = `minDays` кабинета (дефолт 14, `SUPPLY_MIN_DEFAULT`; точный `minDays` в ответе
+  `/overview` не приходит, порог цвета на главной — дефолт, бэклог), «доступно», обе
   площадки, колонка «Где» = место/склад. Раньше виджет был WB-only и считал по «дням с
   продажами» — своим расчётом, независимым от `/warehouses`; теперь одна цифра везде.
   **Отклонение от спеки §5.4**: там написано «через `lib/opsAlerts.js` на главную и в
   брифинг» — брифинг (внешняя SQLite-рассылка владельцу) лежит вне этого репозитория,
   сигналы туда не тянутся; спека поправлена на факт.
+  **Блок сигналов на главной — последний в handler'е и под SAVEPOINT** (`SAVEPOINT
+  wh_signals` → `RELEASE` / `ROLLBACK TO` в `catch`, через `tenantQuery(sql, [])`):
+  `withCabinet` держит ОДНУ транзакцию на запрос, и любая ошибка SQL переводит её в aborted —
+  без savepoint сломанные склады роняли бы всю Главную, хотя `catch` их «проглатывает».
+  Проверено на живом соединении: `SAVEPOINT`/`ROLLBACK TO`/`RELEASE` проходят через
+  `client.query(sql, [])` и восстанавливают транзакцию после ошибки.
 - **Инвентаризация места** — POST `inventory_adjust` (роль manager): `location_id`
   обязателен (только позиции С местом; без места — как раньше, `/inventory` `update_qty`).
   Строки блокируются `SELECT … FOR UPDATE` по возрастанию `id`, план дельт — чистая
   `planInventoryAdjust` (400 ДО первой записи при любой ошибке — `withCabinet` коммитит
-  только на возвращённом ответе). Каждая ненулевая дельта — движение `kind='adjust'`,
-  `src_kind='manual'`, `src_ref='inv:<ISO-stamp>:<ff_inventory_id>'` (один stamp на всю
-  инвентаризацию, отдельная строка на позицию), `note='инвентаризация: <причина>'`.
+  только на возвращённом ответе). **`qty_known` обязателен в каждой строке** — это остаток,
+  показанный пользователю в колонке «Учёт» модалки: роут под `FOR UPDATE` сверяет его с
+  фактическим `qty` и при расхождении отдаёт 400 «остаток позиции N изменился (было X, сейчас
+  Y): обновите страницу и повторите» — ДО первого `applyMove`. Без этого «факт», введённый по
+  устаревшему экрану, разносился бы дельтой от чужого учёта и молча затирал движение, приехавшее
+  за это время (списание FBS воркером, перемещение соседа). Каждая ненулевая дельта — движение
+  `kind='adjust'`, `src_kind='manual'`, `src_ref='inv:<ISO-stamp>:<ff_inventory_id>'` (один
+  stamp на всю инвентаризацию, отдельная строка на позицию), `note='инвентаризация: <причина>'`.
+  `src_ref` — НЕ идемпотентный ключ: двойной клик безопасен семантикой «факт» (второй запрос под
+  блокировкой видит новый `qty` → дельта 0 либо 400 по `qty_known`). При переходе контракта на
+  «дельту» ключ придётся делать детерминированным.
 - **`lib/useSort.js`** — общий хук сортировки таблиц (`useSort`/`cmpVal`), вынесен из
   `stocks/StocksPage.jsx`, используется `MatrixTab.jsx`. В `StocksPage.jsx` и
   `buyer-portrait/BuyerPortraitPage.jsx` остались старые локальные копии — не переведены,
   бэклог (не баг, просто дублирование).
 - **`LocationsManager`** вынесен из `/inventory` в
   `app/cabinets/[id]/inventory/LocationsManager.jsx` (переиспользуется настройками места на
-  `/warehouses`). **`ShipmentsPage`** получил проп `embedded` (как `TeamPage`,
-  `ReallocTable`) — прячет свой `<Header>`; `SuppliesTab.jsx` рендерит `<ShipmentsPage
-  cabinetId={cabinetId} embedded />` целиком, без дублирования логики.
+  `/warehouses`; `sellerWarehouses` в ответе GET `?tab=places` несёт `location_id` —
+  тем же `LEFT JOIN`, что `/inventory`, менеджер мест ждёт это поле). **`ShipmentsPage`**
+  получил проп `embedded` (как `TeamPage`, `ReallocTable`) — прячет свой `<Header>` и обнуляет
+  свой `padding` (внешний отступ даёт `WarehousesPage`); `SuppliesTab.jsx` рендерит
+  `<ShipmentsPage cabinetId={cabinetId} embedded />` целиком, без дублирования логики.
+  Вкладка «Поставки» своих сигналов не грузит — `WarehousesPage` дотягивает их одним GET
+  `?tab=matrix` (берёт только `signals`), чтобы полоса не пустовала.
+- **Непривязанные склады продавца — одна сводная карточка** «Склады продавца без места (N)»
+  (`PlaceCard.jsx` `UnboundWarehousesCard`, красная рамка, список «площадка · имя · kind», одна
+  кнопка «Привязать»). `buildPlaceCards` не меняли — она по-прежнему отдаёт плоский `places[]`
+  с `unbound:true`, группировка чисто в UI: десяток карточек-пустышек без метрик выдавливал
+  настоящие места из первого экрана.
 - **Что руками**: без привязки мест и складов продавца (как в этапах 2-3) ячейки ФФ пустые
   («нет данных»), а не жёлтые/красные.
 - **Кандидаты на удаление из меню после приёмки владельцем** (решает владелец, не код):
-  `/ff-stock` (дублирует `/inventory`), `/shipments` (целиком переехал во вкладку
+  `/ff-stock` (страница есть, в меню её уже нет — дублирует `/inventory`), `/shipments` (целиком переехал во вкладку
   «Поставки» `/warehouses`). Судьба `/mp-stock` и `/move` — тоже решает владелец, пока
   оставлены (`/mp-stock` — источник для ручной сверки «на МП» до приёмки; `/move` — своя
   форма перемещения ФФ→ФФ вне модалки `/inventory`). Старые страницы работают без изменений
   до решения.
 - **Сторож**: `scripts/check-warehouses-stage4.sql` (7 проверок, кабинет #1, запуск как у
-  этапов 2-3). Проверка `fbs_velocity_sources` считает долю совместно по WB+Ozon — площадка
-  без заказов в окне (сейчас Ozon FBS) не топит долю другой площадки.
+  этапов 2-3). `matrix_inputs_consistent` (проверка 2) стережёт ИНВАРИАНТЫ ВХОДОВ матрицы —
+  `orphan_location` (место, которого нет), `negative_qty`, `null_sku_key` (привязка артикула
+  без `nm_id`/`product_id`): при каждом из них позиция молча выпадает из матрицы или врёт в
+  ней. Прежнее «сумма с местом + сумма без места = сумма всех» было тавтологией — верно всегда,
+  зелёный цвет ничего не значил; сверка «матрица = /inventory» — приёмка владельцем (спека §6),
+  не SQL. `fbs_velocity_sources` (проверка 7) считает долю ПО КАЖДОЙ ПЛОЩАДКЕ ОТДЕЛЬНО:
+  совместная доля позволяла живой площадке вытянуть мёртвую. Площадка с `total ≤ 20` в окне —
+  только диагностика (шум на малых числах), `ok` не роняет.
+- **Известный риск (бэклог, общий долг с `/supply-plan`)**: `readSupplySettings`
+  (`lib/supplyPlanData.js:91`) читает `auth.cabinets` через пул (`query`), а не `tenantQuery`,
+  то есть внутри транзакции `withTenant` берётся ВТОРОЕ соединение на запрос. RLS и
+  консистентность витрины это не ломает (`auth.cabinets` — не tenant-таблица), но на пике
+  удваивает потребление пула (`max: 10`). Чинить вместе с `/supply-plan`, чтобы не расщеплять
+  источник настроек.
 
 ## Правила работы с кодом
 

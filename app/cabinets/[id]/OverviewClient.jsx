@@ -1,6 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { HINT_PAYOUT_OZON } from "@/lib/profitForms.js";
+import { SUPPLY_MIN_DEFAULT } from "@/lib/supplyDays.js";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
@@ -318,20 +319,23 @@ export default function OverviewClient({ cabinetId }) {
             <Card>
               {/* Канон покрытия (Склады 2.0, этап 4, 2026-09-08) — те же данные,
                   что вкладка /warehouses, сигнал low_coverage: обе площадки, остаток
-                  «доступно» (FBO+FF минус учтённое в пути), окно продаж 28 дн, порог
-                  минимального запаса 28 дн. Раньше — WB-only, среднее по дням с
-                  продажами за выбранный период; НЕ «починка обратно», смена канона. */}
-              <CardTitle icon="🟡" title="Заканчиваются на складе" hint="покрытие < минимального запаса, канон 28 дн" />
+                  «доступно» (FBO+FF минус учтённое в пути), окно скорости 28 дн, порог =
+                  minDays кабинета (по умолчанию 14 дн, /supply-plan → «Настройки»).
+                  Раньше — WB-only, среднее по дням с продажами за выбранный период;
+                  НЕ «починка обратно», смена канона. */}
+              <CardTitle icon="🟡" title="Заканчиваются на складе" hint="покрытие ниже минимального запаса (по умолчанию 14 дн; окно скорости 28 дн)" />
               {!data.alerts.lowStock || data.alerts.lowStock.length === 0 ? (
                 <Empty>Нет критичных остатков</Empty>
               ) : (
                 <Table head={["Товар", "Где", "Остаток", "дней"]}>
                   {data.alerts.lowStock.map((t) => (
-                    <tr key={`${t.name}|${t.where}`}>
+                    <tr key={`${t.itemKey}|${t.colKey}`}>
                       <Td>{t.name}</Td>
                       <Td>{t.where}</Td>
                       <Td right>{num(t.qty)} шт</Td>
-                      <Td right style={{ color: t.days_to_oos < 14 ? C.neg : C.muted }}>
+                      {/* Порог цвета — дефолт кабинета; точный minDays на Главную не приходит
+                          (ответ /overview его не несёт) — бэклог. */}
+                      <Td right style={{ color: t.days_to_oos < SUPPLY_MIN_DEFAULT ? C.neg : C.muted }}>
                         {t.days_to_oos != null ? num(t.days_to_oos) : "—"}
                       </Td>
                     </tr>

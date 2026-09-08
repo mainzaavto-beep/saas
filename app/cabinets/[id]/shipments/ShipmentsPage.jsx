@@ -86,7 +86,9 @@ export default function ShipmentsPage({ cabinetId, embedded = false }) {
   if (!data) return <Centered>Нет данных</Centered>;
 
   return (
-    <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px", maxWidth: 1600, margin: "0 auto" }}>
+    // embedded — страница вложена во вкладку «Поставки» /warehouses, у которой свой padding:16
+    // (WarehousesPage.jsx): собственный отступ здесь дал бы двойную рамку пустоты.
+    <div style={{ fontFamily: FONT, color: C.ink, padding: embedded ? 0 : "20px 28px", maxWidth: 1600, margin: "0 auto" }}>
       {!embedded && <Header />}
 
       <SupplyPlanSection cabinetId={cabinetId} canManage={canManage} onDocCreated={reload}

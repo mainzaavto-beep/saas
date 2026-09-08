@@ -3,8 +3,11 @@
 // задачи 5-6 плана). Три вкладки: matrix | places | supplies. Вкладка держится в URL (?tab=)
 // через useSearchParams/router.replace, как принято в панели (см. /shipments). SignalsStrip
 // получает signals из активной вкладки через onSignals — общий колбэк, чтобы полоса сигналов
-// не дублировала запрос.
-import { useState } from "react";
+// не дублировала запрос. Вкладка «Поставки» своих сигналов не грузит (она — /shipments в
+// embedded-режиме), поэтому на ней полоса осталась бы пустой: если сигналов ещё нет, тянем их
+// здесь одним GET ?tab=matrix и берём ТОЛЬКО signals (матрица не нужна). Ошибка — [] , то
+// есть просто нет полосы: сигналы не должны ронять вкладку поставок.
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { C } from "@/lib/palette.js";
 import { SignalsStrip } from "./SignalsStrip";
@@ -20,6 +23,17 @@ export default function WarehousesPage({ cabinetId }) {
   const tab = TABS.some(([k]) => k === sp.get("tab")) ? sp.get("tab") : "matrix";
   const [signals, setSignals] = useState(null);
   const setTab = (k) => router.replace(`?tab=${k}`);
+
+  useEffect(() => {
+    if (tab !== "supplies" || signals !== null) return;
+    let cancelled = false;
+    fetch(`/api/cabinets/${cabinetId}/warehouses?tab=matrix`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setSignals(d?.error ? [] : (d.signals || [])); })
+      .catch(() => { if (!cancelled) setSignals([]); });
+    return () => { cancelled = true; };
+  }, [tab, signals, cabinetId]);
+
   return (
     <div style={{ padding: 16 }}>
       <h1 style={{ margin: "0 0 4px", fontSize: 22 }}>Склады</h1>

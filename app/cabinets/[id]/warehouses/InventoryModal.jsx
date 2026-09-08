@@ -1,11 +1,14 @@
 "use client";
 // app/cabinets/[id]/warehouses/InventoryModal.jsx — инвентаризация одного места (задача 6
 // плана, этап 4 «Витрина»). POST /api/cabinets/[id]/warehouses { action:'inventory_adjust',
-// location_id, note, lines:[{ff_inventory_id, qty_fact}] } — только по строкам, где поле
-// «факт» не очищено (пустое поле = позицию не трогаем); бэкенд (app/api/cabinets/[id]/
+// location_id, note, lines:[{ff_inventory_id, qty_fact, qty_known}] } — только по строкам, где
+// поле «факт» не очищено (пустое поле = позицию не трогаем); бэкенд (app/api/cabinets/[id]/
 // warehouses/route.js) сам разносит дельты через applyMove(kind:'adjust'). Ответ
 // {applied, unchanged} → тост наверх через onDone(msg); 400 { error } — показываем в модалке,
 // не alert(), модалка остаётся открытой для правки.
+// qty_known — ровно то число, что показано в колонке «Учёт» этой строки. Бэкенд сверяет его с
+// остатком под блокировкой и отвечает 400, если пока модалка была открыта остаток уехал
+// (списание FBS, перемещение соседа) — иначе «факт» затёр бы чужое движение молча.
 import { useMemo, useState } from "react";
 import { C } from "@/lib/palette.js";
 
@@ -31,7 +34,7 @@ export function InventoryModal({ cabinetId, place, items, onClose, onDone }) {
       if (raw === "") continue; // не введено — не трогаем позицию
       const qty = parseInt(raw, 10);
       if (!Number.isInteger(qty) || qty < 0) { setError(`Факт по «${itemName(it)}» должен быть целым числом ≥ 0`); return; }
-      lines.push({ ff_inventory_id: it.id, qty_fact: qty });
+      lines.push({ ff_inventory_id: it.id, qty_fact: qty, qty_known: Number(it.qty) || 0 });
     }
     if (lines.length === 0) { setError("Введите факт хотя бы по одной позиции"); return; }
 

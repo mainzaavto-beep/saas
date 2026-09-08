@@ -1,13 +1,19 @@
 // app/api/cabinets/[id]/warehouses/route.js — витрина «Склады 2.0» (спека §5).
 // GET ?tab=matrix|places → всегда { signals, settings, generatedAt } + данные вкладки.
 //   Вкладка «Поставки» ходит в существующие /supply-plan и /shipments — здесь ничего.
-// POST { action:'inventory_adjust', location_id, note, lines:[{ff_inventory_id, qty_fact}] }
+// POST { action:'inventory_adjust', location_id, note,
+//        lines:[{ff_inventory_id, qty_fact, qty_known}] }
 //   (role: manager) — инвентаризация МЕСТА: location_id обязателен (целое > 0), по строке
 //   движение adjust через applyMove. Непривязанные позиции (location_id IS NULL) сюда не
 //   попадают — их правят через /inventory update_qty, как раньше.
+//   qty_known — остаток, который видел пользователь в колонке «Учёт» модалки, ОБЯЗАТЕЛЕН по
+//   каждой строке. Это оптимистическая блокировка: пока страница висела открытой, остаток мог
+//   уехать (списание FBS воркером, перемещение соседа) — «факт» тогда разнесётся дельтой от
+//   ЧУЖОГО учёта и молча затрёт чужое движение. Сверяем под SELECT … FOR UPDATE: расхождение
+//   хоть по одной строке → 400 целиком, страницу надо обновить и повторить.
 //   Все 400 — ДО первой записи (withCabinet коммитит любой ответ): строки блокируются
 //   SELECT … FOR UPDATE по возрастанию id, строго по этому месту (как update_qty в
-//   /inventory), план дельт — чистая planInventoryAdjust.
+//   /inventory), план дельт — чистая planInventoryAdjust, сверка qty_known — сразу за ним.
 import { NextResponse } from "next/server";
 import { tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
@@ -50,10 +56,30 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
      ORDER BY id FOR UPDATE`, [ids, locationId]);
   const plan = planInventoryAdjust(cur.map((r) => ({ id: Number(r.id), qty: Number(r.qty) })), lines);
   if (!plan.ok) return NextResponse.json({ error: plan.error }, { status: 400 });
+  // Оптимистическая блокировка по qty_known — ПОСЛЕ plan (там уже проверено, что все id есть
+  // на этом месте и не задвоены) и ДО первого applyMove. Читаем qty из cur — строки под
+  // FOR UPDATE, значит чужое движение либо уже видно здесь, либо ждёт нашего COMMIT.
+  const curQty = new Map(cur.map((r) => [Number(r.id), Number(r.qty) || 0]));
+  for (const l of lines) {
+    const id = Number(l.ff_inventory_id);
+    if (l.qty_known == null || !Number.isFinite(Number(l.qty_known))) {
+      return NextResponse.json({ error: "qty_known required" }, { status: 400 });
+    }
+    const known = Number(l.qty_known);
+    const now = curQty.get(id);
+    if (known !== now) {
+      return NextResponse.json({ error: `остаток позиции ${id} изменился (было ${known}, сейчас ${now}): обновите страницу и повторите` }, { status: 400 });
+    }
+  }
   const stamp = new Date().toISOString();
   const userId = session?.user_id ?? null;
   let applied = 0;
   for (const m of plan.moves) {
+    // srcRef несёт метку времени запроса — он НЕ идемпотентный ключ. Двойной клик безопасен
+    // семантикой «факт», а не ключом: второй запрос под FOR UPDATE увидит уже новый qty, и
+    // либо delta=0 (если qty_known прислали свежий), либо 400 по сверке qty_known выше.
+    // Если контракт когда-нибудь поменяется на «дельту» — ключ придётся делать
+    // детерминированным (например, id документа инвентаризации), иначе повтор задвоит движение.
     const r = await applyMove({ ffInventoryId: m.id, kind: "adjust", qty: m.delta, srcKind: "manual", srcRef: `inv:${stamp}:${m.id}`, note: `инвентаризация: ${note}`, userId });
     if (r.applied) applied += 1;
   }

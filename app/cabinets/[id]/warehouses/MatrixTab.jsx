@@ -141,10 +141,13 @@ export function MatrixTab({ cabinetId, onSignals }) {
     if (onlyProblems) rows = rows.filter((r) => r.problem);
     const s = q.trim().toLowerCase();
     if (s) {
+      // Поиск по ВСЕМ артикулам компоненты (skuKeys), а не только по минимальной паре skus:
+      // строка склеивает партии с разным набором артикулов, и поиск по «второму» nm_id/
+      // product_id иначе ничего не находил, хотя товар в матрице есть.
       rows = rows.filter((r) =>
         String(r.name || "").toLowerCase().includes(s)
-        || String(r.skus?.wb ?? "").toLowerCase().includes(s)
-        || String(r.skus?.ozon ?? "").toLowerCase().includes(s)
+        || (r.skuKeys?.wb || []).some((k) => String(k).includes(s))
+        || (r.skuKeys?.ozon || []).some((k) => String(k).includes(s))
       );
     }
     return rows;
@@ -168,11 +171,13 @@ export function MatrixTab({ cabinetId, onSignals }) {
   if (loading && !data) return <div style={{ color: C.muted, padding: 16 }}>Загрузка…</div>;
   if (!data) return null;
 
-  // Пустая матрица (нет ни одной строки вовсе) — своё пустое состояние вместо таблицы.
+  // Пустая матрица (нет ни одной строки вовсе) — это НЕ «места не привязаны», а «позиций нет
+  // совсем»: строки матрицы строятся из ff_inventory, привязка мест на их наличие не влияет.
+  // Мягкая подсказка про привязку мест — ниже, по hasFfData.
   if (allRows.length === 0) {
     return (
       <div style={{ padding: 28, textAlign: "center", color: C.muted, border: `1px dashed ${C.line}`, borderRadius: 10 }}>
-        Позиции ФФ не привязаны к местам — привяжите их в «Места» и в «Остатки склад/ФФ».
+        На складе/ФФ нет позиций — добавьте их в «Остатки склад/ФФ»
       </div>
     );
   }

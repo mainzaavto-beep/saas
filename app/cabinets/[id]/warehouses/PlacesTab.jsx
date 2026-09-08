@@ -5,10 +5,10 @@
 // lib/warehousesMetrics.js buildPlaceCards). Роль — GET /api/cabinets/[id]/me, как в
 // ShipmentsPage.jsx:38-51: без manager/owner кнопки «Перемещение»/«Инвентаризация»/«Привязать»
 // скрыты (карточки — только для чтения).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { C } from "@/lib/palette.js";
-import { PlaceCard } from "./PlaceCard";
+import { PlaceCard, UnboundWarehousesCard } from "./PlaceCard";
 import { FboCard } from "./FboCard";
 import { InventoryModal } from "./InventoryModal";
 import { TransferFormModal } from "../inventory/TransferFormModal";
@@ -51,6 +51,13 @@ export function PlacesTab({ cabinetId, onSignals }) {
     fetch(`/api/cabinets/${cabinetId}/me`).then((r) => r.json()).then((me) => setRole(me?.role || null)).catch(() => {});
   }, [cabinetId, reload]);
 
+  // Тип склада (kind) в places[] не приходит (buildPlaceCards его не кладёт) — берём из
+  // sellerWarehouses того же ответа. Хук объявлен до ранних return'ов: порядок хуков.
+  const kindByWarehouse = useMemo(
+    () => new Map((data?.sellerWarehouses || []).map((w) => [`${w.platform}:${w.warehouse_id}`, w.kind])),
+    [data]
+  );
+
   const flash = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
@@ -69,27 +76,34 @@ export function PlacesTab({ cabinetId, onSignals }) {
   const fboWarehouses = data.fboWarehouses || [];
   const items = data.items || [];
   const minDays = data.settings?.minDays;
+  // Непривязанные склады продавца — не карточками по штуке, а одной сводной (ревью финальной
+  // волны): десяток пустышек без метрик выдавливал настоящие места из первого экрана.
+  // buildPlaceCards не трогаем — группировка чисто в UI; kind добираем из sellerWarehouses.
+  const boundPlaces = places.filter((p) => !p.unbound);
+  const unboundList = places
+    .filter((p) => p.unbound)
+    .map((p) => ({ ...p, kind: kindByWarehouse.get(`${p.platform}:${p.warehouse_id}`) || null }));
 
   return (
     <div>
       <div style={sectionTitle}>Места (ФФ и склады)</div>
-      {places.length === 0 ? (
+      {boundPlaces.length === 0 && unboundList.length === 0 ? (
         <div style={{ padding: 20, textAlign: "center", color: C.muted, border: `1px dashed ${C.line}`, borderRadius: 10 }}>
           Мест пока нет. Создайте хотя бы одно в «⚙ Настройки мест» ниже.
         </div>
       ) : (
         <div style={grid}>
-          {places.map((p) => (
+          {boundPlaces.map((p) => (
             <PlaceCard
-              key={p.id ?? `unbound:${p.platform}:${p.warehouse_id}`}
+              key={p.id}
               place={p}
               minDays={minDays}
               canManage={canManage}
               onTransfer={() => setTransferPlace(p)}
               onInventory={() => setInventoryPlace(p)}
-              onBind={openSettings}
             />
           ))}
+          <UnboundWarehousesCard items={unboundList} canManage={canManage} onBind={openSettings} />
         </div>
       )}
 

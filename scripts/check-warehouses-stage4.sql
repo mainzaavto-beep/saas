@@ -12,29 +12,45 @@ LEFT JOIN (SELECT ff_inventory_id, SUM(qty) AS s FROM tenant.stock_moves WHERE c
        ON m.ff_inventory_id = f.id
 WHERE f.cabinet_id=1;
 
--- 2. «Свой» в матрице (lib/warehousesMetrics.js buildMatrix, ячейка ФФ: own = Σ qty позиций
--- компоненты на месте) нечему разойтись с /inventory: сумма по позициям с местом + сумма по
--- позициям без места = сумма по всем активным позициям (тождество), и отдельно — по
--- независимому GROUP BY location_id (как читает витрина по местам), чтобы поймать возможный
--- перекос группировки, а не только арифметику. Диагностика — сколько позиций/штук без места:
--- они не попадают ни в одну ФФ-колонку матрицы (buildMatrix ffCols — по location_id).
+-- 2. Инварианты ВХОДОВ матрицы (lib/warehousesMetrics.js buildMatrix). Сверка «матрица =
+-- /inventory» здесь невозможна и не нужна: это приёмка владельцем (спека §6), глазами по двум
+-- экранам. SQL-тождество «сумма с местом + сумма без места = сумма всех» было тавтологией —
+-- оно верно всегда, при любом баге, и зелёный цвет ничего не значил. Вместо него — три
+-- инварианта, при нарушении которых позиция МОЛЧА выпадает из матрицы или врёт в ней:
+--   (а) orphan_location — location_id указывает на несуществующее место своего кабинета:
+--       ффCols строятся из stock_ff_locations, own такой позиции не попадёт ни в одну колонку;
+--   (б) negative_qty — отрицательный остаток: ledger этапа 2 его не допускает, а витрина
+--       покажет «свой −N» и посчитает покрытие от отрицательного числа;
+--   (в) null_sku_key — привязка артикула без ключа площадки (wb без nm_id, ozon без
+--       product_id): normalizePositions сделает sku_key=null, union-find такую связь не
+--       увидит, снимок FBS/скорость/FBO по ней не сопоставятся.
+-- Диагностика unplaced_* — позиции без места: они законно вне ФФ-колонок, это сигнал владельцу
+-- («разложите по местам»), не ошибка.
 WITH inv AS (
   SELECT id, qty, location_id FROM tenant.ff_inventory WHERE cabinet_id=1 AND archived_at IS NULL
 ),
-by_loc AS (
-  SELECT location_id, SUM(qty) AS s FROM inv WHERE location_id IS NOT NULL GROUP BY 1
+orphan AS (
+  SELECT COUNT(*) AS c FROM inv
+  WHERE location_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM tenant.stock_ff_locations l WHERE l.cabinet_id=1 AND l.id = inv.location_id)
+),
+neg AS (SELECT COUNT(*) AS c FROM inv WHERE qty < 0),
+nullsku AS (
+  SELECT COUNT(*) AS c
+  FROM tenant.ff_inventory_skus s
+  JOIN inv ON inv.id = s.ff_inventory_id
+  WHERE s.cabinet_id=1
+    AND ((s.platform = 'wb' AND s.nm_id IS NULL) OR (s.platform = 'ozon' AND s.product_id IS NULL))
 )
-SELECT 'matrix_own_equals_inventory' AS check,
-       (SELECT COALESCE(SUM(qty),0) FROM inv WHERE location_id IS NOT NULL)
-         + (SELECT COALESCE(SUM(qty),0) FROM inv WHERE location_id IS NULL)
-         = (SELECT COALESCE(SUM(qty),0) FROM inv)
-       AND (SELECT COALESCE(SUM(s),0) FROM by_loc)
-         = (SELECT COALESCE(SUM(qty),0) FROM inv WHERE location_id IS NOT NULL) AS ok,
+SELECT 'matrix_inputs_consistent' AS check,
+       (orphan.c + neg.c + nullsku.c) = 0 AS ok,
+       orphan.c AS orphan_location,
+       neg.c AS negative_qty,
+       nullsku.c AS null_sku_key,
        (SELECT COUNT(*) FROM inv) AS positions_total,
-       (SELECT COALESCE(SUM(qty),0) FROM inv) AS qty_total,
        (SELECT COUNT(*) FROM inv WHERE location_id IS NULL) AS unplaced_positions,
-       (SELECT COALESCE(SUM(qty),0) FROM inv WHERE location_id IS NULL) AS unplaced_units,
-       (SELECT COALESCE(SUM(s),0) FROM by_loc) AS placed_units_by_group;
+       (SELECT COALESCE(SUM(qty),0) FROM inv WHERE location_id IS NULL) AS unplaced_units
+FROM orphan, neg, nullsku;
 
 -- 3. Снимок FBS-остатков (mp_fbs_daily_stock, читает lib/warehousesData.js loadWarehousesInput)
 -- не старше 2 дней у каждой площадки, у которой вообще есть склады продавца (mp_seller_
@@ -89,11 +105,14 @@ WHERE cabinet_id=1 AND status = 'shipped' AND shipped_at IS NOT NULL
 
 -- 7. FBS-скорость мест (lib/warehousesData.js fbsVelocity) читает wb_fbs_tasks.warehouse_id
 -- (неотменённые: без canceled_by_client/declined_by_client/defect/canceled) и
--- ozon_orders.warehouse_id (scheme='fbs', is_cancel=0) за 28 дней — доля строк с заполненным
--- складом должна быть ≥ 0.95, иначе скорость мест в матрице занижена молча (заказы без склада
--- никуда не попадают). Площадка без строк в окне (например, Ozon FBS сейчас неактивен на
--- кабинете #1 — последняя запись 2026-08-12, вне 28-дневного окна) не портит числитель/
--- знаменатель: считаем СОВМЕСТНО по обеим площадкам, 0/0 по одной не топит другую.
+-- ozon_orders.warehouse_id (scheme='fbs', is_cancel=0) за 28 дней. Заказ без склада никуда не
+-- попадает → скорость места занижена молча, поэтому доля строк со складом должна быть ≥ 0.95.
+-- Доля считается ПО КАЖДОЙ ПЛОЩАДКЕ ОТДЕЛЬНО, а не совместно: при сложении числителей живая
+-- площадка «вытягивает» мёртвую — 10 000 задач WB со складом покрыли бы 300 Ozon-заказов без
+-- склада (0.97 общего при 0.0 у Ozon), и деградация одной площадки прошла бы незамеченной.
+-- Площадка с total ≤ 20 в окне — только диагностика, ok она не роняет: на таких числах одна
+-- строка без склада даёт −5 п.п. доли, это шум, а не сигнал (кабинет #1: Ozon FBS сейчас
+-- неактивен, последняя запись 2026-08-12 — вне 28-дневного окна).
 WITH wb AS (
   SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE warehouse_id IS NOT NULL) AS with_wh
   FROM tenant.wb_fbs_tasks
@@ -107,10 +126,11 @@ oz AS (
     AND order_dt >= to_char(now() - interval '28 days', 'YYYY-MM-DD')
 )
 SELECT 'fbs_velocity_sources' AS check,
-       (wb.total + oz.total) = 0
-       OR (wb.with_wh + oz.with_wh)::numeric / (wb.total + oz.total) >= 0.95 AS ok,
+       (wb.total <= 20 OR wb.with_wh::numeric / wb.total >= 0.95)
+       AND (oz.total <= 20 OR oz.with_wh::numeric / oz.total >= 0.95) AS ok,
        wb.total AS wb_total, wb.with_wh AS wb_with_warehouse,
+       CASE WHEN wb.total = 0 THEN NULL ELSE round(wb.with_wh::numeric / wb.total, 4) END AS wb_ratio,
        oz.total AS ozon_total, oz.with_wh AS ozon_with_warehouse,
-       CASE WHEN (wb.total + oz.total) = 0 THEN NULL
-            ELSE round((wb.with_wh + oz.with_wh)::numeric / (wb.total + oz.total), 4) END AS ratio
+       CASE WHEN oz.total = 0 THEN NULL ELSE round(oz.with_wh::numeric / oz.total, 4) END AS ozon_ratio,
+       (wb.total <= 20) AS wb_below_threshold, (oz.total <= 20) AS ozon_below_threshold
 FROM wb, oz;

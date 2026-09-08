@@ -3,6 +3,11 @@
 // «Места» (задача 6 плана, этап 4 «Витрина»). Контракт места — GET ?tab=places → places[]
 // (см. lib/warehousesMetrics.js buildPlaceCards): unbound:true — склад продавца без места
 // (id:null, только имя/площадка), обычная карточка — полный набор метрик+проблем.
+//
+// PlaceCard рисует ТОЛЬКО настоящее место (unbound:false). Непривязанные склады продавца
+// раньше шли такими же карточками — у кабинета с десятком складов МП сетка тонула в красных
+// пустышках без единой метрики. Теперь они собраны в одну сводную UnboundWarehousesCard
+// (ниже), группировка — в UI: buildPlaceCards отдаёт плоский список, как и раньше.
 import { C, soft } from "@/lib/palette.js";
 
 const num = (v) => (v == null || !Number.isFinite(v) ? "—" : new Intl.NumberFormat("ru-RU").format(v));
@@ -65,26 +70,36 @@ function Problems({ problems }) {
   );
 }
 
-export function PlaceCard({ place, minDays, canManage, onTransfer, onInventory, onBind }) {
-  const { name, city, address, is_active, bindings, positions, units, value, velocity, coverage, problems, unbound } = place;
-
-  if (unbound) {
-    return (
-      <div style={{ ...card, borderColor: C.neg }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div style={{ fontWeight: 700 }}>{name}</div>
-            <div style={{ fontSize: 11, color: C.faint }}>{place.platform === "wb" ? "WB" : "Ozon"} · склад продавца</div>
-          </div>
-          <span style={pill("neg")}>не привязан</span>
-        </div>
-        <div style={{ fontSize: 12, color: C.neg }}>не привязан ни к одному месту</div>
-        {canManage && (
-          <button onClick={onBind} style={{ ...btn, alignSelf: "flex-start" }}>Привязать</button>
-        )}
+// Сводная карточка непривязанных складов продавца: одна на все, красная рамка, список
+// «площадка · имя · тип» и ОДНА кнопка «Привязать» (раскрывает «⚙ Настройки мест»).
+// kind берём из sellerWarehouses ответа (в place его нет — buildPlaceCards не меняли).
+export function UnboundWarehousesCard({ items, canManage, onBind }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div style={{ ...card, borderColor: C.neg, gridColumn: "1 / -1" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ fontWeight: 700 }}>Склады продавца без места ({items.length})</div>
+        <span style={pill("neg")}>не привязаны</span>
       </div>
-    );
-  }
+      <div style={{ fontSize: 12, color: C.muted }}>
+        Пока склад не привязан к месту, его FBS-остатки и списания не попадают в учёт.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {items.map((w) => (
+          <div key={`${w.platform}:${w.warehouse_id}`} style={{ fontSize: 12, color: C.neg }}>
+            {w.platform === "wb" ? "WB" : "Ozon"} · {w.name} · {w.kind || "—"}
+          </div>
+        ))}
+      </div>
+      {canManage && (
+        <button onClick={onBind} style={{ ...btn, alignSelf: "flex-start" }}>Привязать</button>
+      )}
+    </div>
+  );
+}
+
+export function PlaceCard({ place, minDays, canManage, onTransfer, onInventory }) {
+  const { name, city, address, is_active, bindings, positions, units, value, velocity, coverage, problems } = place;
 
   return (
     <div style={card}>

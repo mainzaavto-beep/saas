@@ -1,7 +1,7 @@
 // /api/cabinets/[id]/overview — НАСТОЯЩИЙ overview из data-presenter (PostgreSQL+RLS).
 // Полный перенос: все KPI, lossMakers, lowStock, noCogs.
 import { NextResponse } from "next/server";
-import { DatabaseSync } from "@/lib/db.js";
+import { DatabaseSync, tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { defaultPeriod } from "@/lib/period.js";
 import {
@@ -236,18 +236,6 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     ).get(from, toEnd)).c || 0;
   }
 
-  // Сигналы склада (Склады 2.0, этап 4) — тот же расчёт, что вкладка /warehouses; канон 28/28,
-  // остаток «доступно». Виджет «Заканчиваются на складе» с 2026-09-08 считает по нему (обе
-  // площадки, с местом/складом) — раньше был отдельный WB-only расчёт по дням с продажами.
-  let warehouses = [];
-  try {
-    warehouses = await loadWarehouseSignals(cabinet.cabinet_id);
-  } catch (e) {
-    console.error("[overview] warehouse signals failed:", e?.message || e);
-  }
-  const lowSig = warehouses.find((s) => s.kind === "low_coverage");
-  lowStock = (lowSig?.items || []).map((x) => ({ name: x.name, where: x.where, qty: x.qty, days_to_oos: x.coverage }));
-
   // --- Временной ряд для графика на Главной (по дням). ---
   // WB: выручка, маржинальная прибыль (sales − commission − acquiring − logistics −
   //   loyalty; БЕЗ себестоимости/рекламы/налога — их нет в finance_report по дням),
@@ -337,6 +325,37 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       return o;
     })
     .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  // Сигналы склада (Склады 2.0, этап 4) — тот же расчёт, что вкладка /warehouses; канон 28/28,
+  // остаток «доступно». Виджет «Заканчиваются на складе» с 2026-09-08 считает по нему (обе
+  // площадки, с местом/складом) — раньше был отдельный WB-only расчёт по дням с продажами.
+  //
+  // Блок стоит ПОСЛЕДНИМ и обёрнут в SAVEPOINT намеренно. withCabinet держит ОДНУ транзакцию
+  // на запрос (withTenant, lib/db.js:187-207): любая ошибка SQL внутри переводит транзакцию
+  // в aborted, и все ПОСЛЕДУЮЩИЕ запросы падают с «current transaction is aborted» — то есть
+  // сломанные склады уронили бы всю Главную, хотя catch ниже их «проглатывает». SAVEPOINT
+  // откатывает только этот блок: KPI и график, посчитанные выше, остаются валидны, а Главная
+  // просто рисуется без секции складов.
+  let warehouses = [];
+  try {
+    await tenantQuery("SAVEPOINT wh_signals", []);
+    try {
+      warehouses = await loadWarehouseSignals(cabinet.cabinet_id);
+      await tenantQuery("RELEASE SAVEPOINT wh_signals", []);
+    } catch (e) {
+      console.error("[overview] warehouse signals failed:", e?.message || e);
+      warehouses = [];
+      await tenantQuery("ROLLBACK TO SAVEPOINT wh_signals", []);
+      await tenantQuery("RELEASE SAVEPOINT wh_signals", []);
+    }
+  } catch (e) {
+    // Сюда попадаем, только если сам SAVEPOINT/ROLLBACK не прошёл — транзакция уже мертва,
+    // спасать нечего: отдаём Главную без складов, дальше упадёт (и откатится) withCabinet.
+    console.error("[overview] warehouse signals savepoint failed:", e?.message || e);
+    warehouses = [];
+  }
+  const lowSig = warehouses.find((s) => s.kind === "low_coverage");
+  lowStock = (lowSig?.items || []).map((x) => ({ name: x.name, where: x.where, qty: x.qty, days_to_oos: x.coverage, itemKey: x.itemKey, colKey: x.colKey }));
 
   return NextResponse.json({
     period: { from, to },
