@@ -20,14 +20,21 @@ WHERE f.cabinet_id=1;
 SELECT 'wb_incomes_collected' AS check,
        COUNT(*) > 0
        AND COUNT(*) FILTER (WHERE quantity_declared IS NULL) = 0
-       AND COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL) = 0
+       AND COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL
+                              AND date >= current_date - 180) = 0
        AND COUNT(*) FILTER (WHERE COALESCE(status,'') <> '5' AND date_close IS NOT NULL) = 0 AS ok,
        COUNT(*) AS rows_total,
        COUNT(*) FILTER (WHERE quantity_declared IS NULL) AS no_declared,
        COUNT(*) FILTER (WHERE COALESCE(status,'') = '5') AS status5,
        COUNT(*) FILTER (WHERE status IS NULL) AS status_null,
        COUNT(*) FILTER (WHERE date_close IS NOT NULL) AS date_close_filled,
-       COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL) AS mismatch_accepted_no_close,
+       -- statusID=5 без factDate встречается у старой истории (бэкфилл 08.09.2026: 5 поставок
+       -- 08.2025–11.2025 из 218) — WB не отдаёт factDate по давним поставкам; несоответствием
+       -- считаем только свежие (180 дн), старые видны в диагностике.
+       COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL
+                          AND date >= current_date - 180) AS mismatch_accepted_no_close,
+       COUNT(*) FILTER (WHERE COALESCE(status,'') = '5' AND date_close IS NULL
+                          AND date < current_date - 180) AS old_accepted_no_close,
        COUNT(*) FILTER (WHERE COALESCE(status,'') <> '5' AND date_close IS NOT NULL) AS mismatch_close_not_accepted
 FROM tenant.wb_incomes WHERE cabinet_id=1;
 
