@@ -31,12 +31,6 @@ def collect(since=None, to=None):
     date_from = since.strftime("%Y-%m-%d")
     date_to = to.strftime("%Y-%m-%d")
 
-    # Очистка orders/revenue за период (как боевой, но через PG).
-    with db_pg.get_connection() as conn:
-        conn.execute(
-            "UPDATE tenant.ozon_daily_metrics SET orders = NULL, revenue = NULL "
-            "WHERE date >= %s AND date <= %s", (date_from, date_to))
-
     sku2pid = {}
     for r in db_pg.query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL"):
         if r["fbo_sku"] is not None:
@@ -55,7 +49,12 @@ def collect(since=None, to=None):
     # БЕЗ подчёркивания (hits_tocart, не hits_to_cart) — из-за опечатки метрику
     # считали «недоступной в API» и cart в ozon_daily_metrics пустовал.
     metrics = ["hits_view", "delivered_units", "revenue", "returns", "hits_tocart"]
-    n = 0
+    # 1) Сначала СЕТЬ — весь ответ analytics/data в память. Очистка окна в БД идёт
+    #    только после успешного похода: раньше orders/revenue за 3 дня обнулялись
+    #    ДО запроса, и при 429-исчерпании (ночной тик 01–08.09.2026) скорость Ozon
+    #    на /stocks и портрет покупателя до следующего тика считались по NULL.
+    #    Селф-тест: ozon_metrics_selftest.py.
+    pending = []
     n_orphans = 0
     for row in cli.iter_analytics(since, to, dimensions, metrics):
         dims = row.get("dimensions") or []
@@ -74,9 +73,17 @@ def collect(since=None, to=None):
         mvals = row.get("metrics") or []
         clicks = mvals[0] if len(mvals) > 0 else None
         cart = mvals[4] if len(mvals) > 4 else None
-        orders = orders_map.get((pid, d))
-        db_pg.upsert_ozon_daily(pid, d, clicks=clicks, orders=orders, cart=cart)
-        n += 1
+        pending.append((pid, d, clicks, orders_map.get((pid, d)), cart))
+
+    # 2) Одна транзакция: очистка orders/revenue окна + запись новых строк.
+    n = 0
+    with db_pg.get_connection() as conn:
+        conn.execute(
+            "UPDATE tenant.ozon_daily_metrics SET orders = NULL, revenue = NULL "
+            "WHERE date >= %s AND date <= %s", (date_from, date_to))
+        for pid, d, clicks, orders, cart in pending:
+            db_pg.upsert_ozon_daily(pid, d, conn=conn, clicks=clicks, orders=orders, cart=cart)
+            n += 1
     print(f"[ozon_metrics] записано {n} метрик"
           + (f", пропущено {n_orphans}" if n_orphans else ""), flush=True)
     print(f"##OBS rows={n} from={date_from} to={date_to}", flush=True)

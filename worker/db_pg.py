@@ -1552,7 +1552,11 @@ _OZ_DM_COLS = {"orders", "clicks", "cart", "rating", "price", "revenue",
                "ad_views", "ad_clicks", "ad_orders", "ad_spend"}
 
 
-def upsert_ozon_daily(product_id, date, **fields):
+def upsert_ozon_daily(product_id, date, conn=None, **fields):
+    """Upsert одной строки tenant.ozon_daily_metrics. conn — уже открытое
+    соединение из get_connection(): вызывающий держит одну транзакцию на всю
+    партию (ozon_metrics: очистка окна + запись — атомарно); без conn — своё
+    соединение с автокоммитом на выходе, как раньше."""
     cols = [c for c in _OZ_DM_COLS if c in fields]
     if not cols:
         return
@@ -1562,12 +1566,13 @@ def upsert_ozon_daily(product_id, date, **fields):
     vals = [cid, product_id, date] + [fields[c] for c in cols] + [now]
     placeholders = ", ".join(["%s"] * len(all_cols))
     upd = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols + ["updated_at"])
+    sql = (f"INSERT INTO tenant.ozon_daily_metrics ({', '.join(all_cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT (cabinet_id, product_id, date) DO UPDATE SET {upd}")
+    if conn is not None:
+        conn.execute(sql, vals)
+        return
     with get_connection() as conn:
-        conn.execute(
-            f"INSERT INTO tenant.ozon_daily_metrics ({', '.join(all_cols)}) VALUES ({placeholders}) "
-            f"ON CONFLICT (cabinet_id, product_id, date) DO UPDATE SET {upd}",
-            vals,
-        )
+        conn.execute(sql, vals)
 
 
 # =====================================================================
