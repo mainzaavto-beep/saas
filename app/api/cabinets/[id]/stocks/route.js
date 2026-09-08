@@ -127,7 +127,9 @@ function aggTotals(items) {
 
 // ---------- OOS: считаем velocity/days_to_oos/status ----------
 function enrichOos(it) {
-  const qty = Number(it.quantity_full) || 0;
+  // Канон покрытия (с 2026-09-08): остаток «доступно к продаже» (quantity), не quantity_full —
+  // та же величина, что в рекомендациях к перемещению и в плане поставок (lib/stockCoverage.js).
+  const qty = Number(it.quantity ?? it.quantity_full) || 0;
   const velocity = Number(it.velocity) || 0;
   let daysToOos = null;
   let status;
