@@ -191,6 +191,9 @@ WB_COLLECTORS = [
     "wb_fbs_tasks",    # FBS-задания → связка rid↔поставка (время до покупателя)
     "wb_fbs_status",   # статусы заданий → pvz_at «доехало до ПВЗ» (часовой таймер saas-fbs-status)
     "wb_fbs_writeoff", # авто-списание FBS → stock_moves (после wb_fbs_status: читает его статусы; читает wb_sales из main)
+    "wb_metrics_30m",  # 30-минутные снимки воронки WB (таймер saas-metrics30m). ⚠️ Выпал из
+                       # списка при появлении фильтра по площадке (bae57f4, 14.07.2026) —
+                       # два месяца тик молча ничего не собирал. Регресс: orchestrator_selftest.py.
 ]
 OZON_COLLECTORS = [
     "ozon_catalog",
@@ -214,6 +217,7 @@ OZON_COLLECTORS = [
     "ozon_references", # справочник кластеров → shared.ozon_clusters (таймер saas-references)
     "ozon_seller_warehouses",
     "ozon_supply_orders",  # заказы на поставку FBO → tenant.ozon_supply_orders (тик main)
+    "ozon_metrics_30m",    # 30-минутные снимки воронки и рекламы Ozon (таймер saas-metrics30m)
 ]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).

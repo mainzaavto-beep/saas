@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { aggregateSnapshots, emptyGrids, M30_METRICS, metricsForMp } from "@/lib/timing30m.js";
 // =====================================================================
 //  «Заказы по времени» — WB + Ozon. Два режима гранулярности:
 //
@@ -8,15 +9,17 @@ import { withCabinet } from "@/lib/withCabinet.js";
 //    Источник: orders.order_dt (час из даты заказа) из wb_data.db + ozon_data.db.
 //    Только заказы — у остальных метрик нет часовой гранулярности в API.
 //
-//  granularity=m30 (НОВЫЙ): 30-минутная динамика Воронки WB (клики/корзины/заказы/
-//    продажи₽/избранное) по выбранным метрикам. Источник: таблица metrics_30m
-//    (кумулятивные снапшоты, собираются раз в 30 мин сборщиком wb_metrics_30m.py).
-//    Дельта (прирост за 30 мин) считается здесь из кумулятивов. Только WB (Ozon позже).
+//  granularity=m30: 30-минутная динамика воронки WB И Ozon по выбранной метрике.
+//    Источники — кумулятивные снапшоты раз в 30 мин: tenant.wb_metrics_30m
+//    (wb_metrics_30m.py), tenant.ozon_metrics_30m по товарам и tenant.ozon_ads_30m
+//    по кампаниям (ozon_metrics_30m.py). Дельта (прирост за слот) считается в
+//    lib/timing30m.js; каталог метрик по площадке — там же (M30_METRICS).
+//    «Все МП» складывает WB и Ozon по общим метрикам (заказы, заказы ₽, корзины).
 //
 //  Параметры:
 //    granularity = hour | m30 (по умолчанию hour — текущее поведение не ломаем)
-//    metric      = orders | clicks | cart | order_sum | favorites (только для m30)
-//    mp          = all | wb | ozon (m30 реагирует только на wb)
+//    metric      = ключ M30_METRICS (только для m30)
+//    mp          = all | wb | ozon
 //    period      = all | YYYY-MM   ; from/to = YYYY-MM-DD (диапазон)
 //    q           = поиск по артикулу МП / артикулу продавца / имени
 //    nm, brand, group — фильтры товара (как в /api/geography)
@@ -56,11 +59,12 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     // ── Режим m30: 30-минутная воронка WB (отдельная ветка, раньше return). ──
     if (granularity === "m30") {
-      const result = collectMetric30m({ from, to, q, nm, brand, group, metric });
+      const result = await collectMetric30m({ mp, from, to, q, nm, brand, group, metric });
       const WD = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"];
       return NextResponse.json({
         granularity: "m30",
         metric,
+        availableMetrics: metricsForMp(mp),
         period: result.range,
         months: result.months,
         selected: { mp, period, from, to, q, nm, brand, group, granularity, metric },
@@ -115,113 +119,105 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   }
 });
 
-// ── Режим m30: 30-минутная воронка WB из кумулятивных снапшотов metrics_30m. ─────
-// Дельта-логика: для каждого (nm, слот) дельта = max(0, snap - prev_snap_same_day).
-// prev_snap — предыдущий слот ТОГО ЖЕ nm и ТОГО ЖЕ дня. Первый слот дня = само значение
-// (счётчик только что сброшен в полночь). Корректировки WB (возврат уменьшает orderCount)
-// → delta = max(0, отрицательная) = 0 (корректно, не показываем отрицательный «отток»).
-const METRIC_COL = {
-  orders: "orders", clicks: "clicks", cart: "cart",
-  buyouts: "buyouts", favorites: "favorites",
-};
-async function collectMetric30m({ from, to, q, nm, brand, group, metric }) {
-  const db = new DatabaseSync("wb", { readOnly: true });
-  const col = METRIC_COL[metric] || "orders";
-
-  // Фильтр по товару: применяем к metrics_30m через JOIN articles (как collectCell).
-  const conds = ["1=1"];
-  const params = [];
-  if (from) { conds.push("m.date >= ?"); params.push(from); }
-  if (to)   { conds.push("m.date <= ?"); params.push(to); }
-  if (nm)    { conds.push("m.nm_id = ?"); params.push(Number(nm)); }
-  if (brand) { conds.push("a.brand = ?"); params.push(brand); }
-  if (group) { conds.push("a.subject = ?"); params.push(group); }
-  if (q) {
-    conds.push("(LOWER(CAST(m.nm_id AS TEXT)) LIKE ? OR LOWER(COALESCE(a.name,'')) LIKE ? OR LOWER(COALESCE(sa.name,'')) LIKE ?)");
-    // sa — артикул продавца; в metrics_30m его нет, берём из orders (любая строка с этим nm).
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
-  }
-  const where = conds.join(" AND ");
-
-  // JOIN: articles (имя/бренд/группа) + саб-запрос на supplier_article (поиск по артикулу продавца).
-  const rows = await db.prepare(
-    `SELECT m.nm_id, m.date, m.ts, m.${col} AS val
-     FROM wb_metrics_30m m
-     LEFT JOIN articles a ON a.nm_id = m.nm_id
-     LEFT JOIN (SELECT DISTINCT nm_id, supplier_article AS name FROM orders WHERE supplier_article IS NOT NULL AND supplier_article <> '') sa ON sa.nm_id = m.nm_id
-     WHERE ${where}
-     ORDER BY m.nm_id, m.ts`
-  ).all(...params);
-
-  // Группируем по nm_id → [{ts, val}], считаем дельты.
-  // byNm: Map<nm_id, [{ts, date, val}]> уже отсортирован по ts.
-  const byNm = new Map();
-  for (const r of rows) {
-    if (!byNm.has(r.nm_id)) byNm.set(r.nm_id, []);
-    byNm.get(r.nm_id).push({ ts: r.ts, date: r.date, val: r.val });
-  }
-
-  // Сетки: 7 будней × 48 слотов (00:00, 00:30, … 23:30). slot index = hour*2 + (min>=30?1:0).
-  const SLOT_COUNT = 48;
-  const heatmap = Array.from({ length: 7 }, () => Array(SLOT_COUNT).fill(0));
-  const byWeekday = Array(7).fill(0);
-  const byHour = Array(24).fill(0);
-  const bySlot = Array(SLOT_COUNT).fill(0);
-  let total = 0;
-  let deltaCount = 0;
-
-  // День недели из ts (локальное МСК — сборщик пишет локальное время).
-  const wd = (ts) => {
-    const d = new Date(ts.replace(" ", "T"));
-    let w = d.getDay();           // 0=Вс..6=Сб
-    return (w === 0 ? 6 : w - 1); // Пн=0..Вс=6
+// ── Режим m30: 30-минутная воронка WB + Ozon из кумулятивных снапшотов. ───────
+// Дельта-логика — lib/timing30m.js (aggregateSnapshots): дельта слота =
+// max(0, snap − предыдущий снимок того же ключа в тот же день); первый снимок дня
+// = само значение. Ключи разных источников не пересекаются ('wb:', 'oz:', 'ozad:'),
+// поэтому один накопитель grids честно складывает площадки в режиме «Все МП».
+async function collectMetric30m({ mp, from, to, q, nm, brand, group, metric }) {
+  const spec = M30_METRICS[metric] || M30_METRICS.orders;
+  const grids = emptyGrids();
+  const productFilter = !!(q || nm || brand || group);
+  const notes = [];
+  const range = { from: null, to: null };
+  const months = new Set();
+  const cover = (rng, ms) => {
+    if (rng?.a && (!range.from || rng.a < range.from)) range.from = rng.a;
+    if (rng?.b && (!range.to || rng.b > range.to)) range.to = rng.b;
+    for (const m of ms) if (m) months.add(m);
   };
-  const slotIdx = (ts) => {
-    const h = Number(ts.substr(11, 2));
-    const mi = Number(ts.substr(14, 2));
-    return h * 2 + (mi >= 30 ? 1 : 0);
-  };
+  const like = `%${q}%`;
 
-  for (const [, snaps] of byNm) {
-    let prev = null;     // предыдущий снимок (для дельты)
-    for (const s of snaps) {
-      let delta;
-      if (prev && prev.date === s.date) {
-        delta = Math.max(0, (s.val || 0) - (prev.val || 0));
-      } else {
-        // Первый снимок дня (или самый первый) — счётчик только сброшен, delta = val.
-        delta = Math.max(0, s.val || 0);
-      }
-      prev = s;
-      if (delta > 0 || s.val > 0) {
-        // Записываем дельту в сетки (даже 0 — для полноты тепловой карты, но total только >0).
-        const w = wd(s.ts);
-        const si = slotIdx(s.ts);
-        heatmap[w][si] += delta;
-        byWeekday[w] += delta;
-        byHour[Math.floor(si / 2)] += delta;
-        bySlot[si] += delta;
-        total += delta;
-        deltaCount += 1;
-      }
+  // ── WB: tenant.wb_metrics_30m по nm_id, фильтры товара через articles ──
+  if (mp !== "ozon" && spec.wb) {
+    const db = new DatabaseSync("wb", { readOnly: true });
+    const conds = ["1=1"];
+    const params = [];
+    if (from) { conds.push("m.date >= ?"); params.push(from); }
+    if (to)   { conds.push("m.date <= ?"); params.push(to); }
+    if (nm)    { conds.push("m.nm_id = ?"); params.push(Number(nm)); }
+    if (brand) { conds.push("a.brand = ?"); params.push(brand); }
+    if (group) { conds.push("a.subject = ?"); params.push(group); }
+    if (q) {
+      conds.push("(LOWER(CAST(m.nm_id AS TEXT)) LIKE ? OR LOWER(COALESCE(a.name,'')) LIKE ? OR LOWER(COALESCE(sa.name,'')) LIKE ?)");
+      params.push(like, like, like);   // sa — артикул продавца из orders (в metrics_30m его нет)
     }
+    const rows = await db.prepare(
+      `SELECT m.nm_id AS k, m.date, m.ts, m.${spec.wb} AS val
+       FROM wb_metrics_30m m
+       LEFT JOIN articles a ON a.nm_id = m.nm_id
+       LEFT JOIN (SELECT DISTINCT nm_id, supplier_article AS name FROM orders WHERE supplier_article IS NOT NULL AND supplier_article <> '') sa ON sa.nm_id = m.nm_id
+       WHERE ${conds.join(" AND ")}
+       ORDER BY m.nm_id, m.ts`
+    ).all(...params);
+    aggregateSnapshots(rows.map((r) => ({ key: `wb:${r.k}`, date: r.date, ts: r.ts, val: r.val })), grids);
+    cover(await db.prepare("SELECT MIN(ts) a, MAX(ts) b FROM wb_metrics_30m").get(),
+      (await db.prepare("SELECT DISTINCT substr(ts,1,7) m FROM wb_metrics_30m ORDER BY m").all()).map((r) => r.m));
   }
 
-  // Покрытие (для фасетов периода).
-  const rng = await db.prepare("SELECT MIN(ts) a, MAX(ts) b FROM wb_metrics_30m").get();
-  const months = (await db.prepare(
-    "SELECT DISTINCT substr(ts,1,7) m FROM wb_metrics_30m ORDER BY m"
-  ).all()).map((r) => r.m).filter(Boolean);
+  // ── Ozon: по товарам (tenant.ozon_metrics_30m + products) или по кампаниям (tenant.ozon_ads_30m) ──
+  if (mp !== "wb" && (spec.oz || spec.ozAds)) {
+    const db = new DatabaseSync("ozon", { readOnly: true });
+    if (spec.oz) {
+      const conds = ["1=1"];
+      const params = [];
+      if (from) { conds.push("m.date >= ?"); params.push(from); }
+      if (to)   { conds.push("m.date <= ?"); params.push(to); }
+      if (nm)    { conds.push("m.product_id = ?"); params.push(Number(nm)); }
+      if (brand) { conds.push("p.brand = ?"); params.push(brand); }
+      if (group) { conds.push("p.category = ?"); params.push(group); }
+      if (q) {
+        conds.push("(LOWER(CAST(m.product_id AS TEXT)) LIKE ? OR LOWER(COALESCE(p.name,'')) LIKE ? OR LOWER(COALESCE(p.offer_id,'')) LIKE ?)");
+        params.push(like, like, like);
+      }
+      const rows = await db.prepare(
+        `SELECT m.product_id AS k, m.date, m.ts, m.${spec.oz} AS val
+         FROM ozon_metrics_30m m
+         LEFT JOIN products p ON p.product_id = m.product_id
+         WHERE ${conds.join(" AND ")}
+         ORDER BY m.product_id, m.ts`
+      ).all(...params);
+      aggregateSnapshots(rows.map((r) => ({ key: `oz:${r.k}`, date: r.date, ts: r.ts, val: r.val })), grids);
+    } else if (productFilter) {
+      // Performance API внутри дня даёт только разрез по кампаниям — товарный
+      // фильтр к рекламе неприменим. Честно говорим, а не показываем «все кампании».
+      notes.push("Реклама Ozon в 30-минутке считается по кампаниям — фильтр по товару к ней неприменим. Снимите фильтр товара/бренда/группы.");
+    } else {
+      const conds = ["1=1"];
+      const params = [];
+      if (from) { conds.push("m.date >= ?"); params.push(from); }
+      if (to)   { conds.push("m.date <= ?"); params.push(to); }
+      const rows = await db.prepare(
+        `SELECT m.campaign_id AS k, m.date, m.ts, m.${spec.ozAds} AS val
+         FROM ozon_ads_30m m WHERE ${conds.join(" AND ")}
+         ORDER BY m.campaign_id, m.ts`
+      ).all(...params);
+      aggregateSnapshots(rows.map((r) => ({ key: `ozad:${r.k}`, date: r.date, ts: r.ts, val: r.val })), grids);
+    }
+    const covTable = spec.oz ? "ozon_metrics_30m" : "ozon_ads_30m";
+    cover(await db.prepare(`SELECT MIN(ts) a, MAX(ts) b FROM ${covTable}`).get(),
+      (await db.prepare(`SELECT DISTINCT substr(ts,1,7) m FROM ${covTable} ORDER BY m`).all()).map((r) => r.m));
+  }
 
-  const note = deltaCount === 0
-    ? "Нет 30-минутных данных за период. Сборщик wb_metrics_30m.py копит историю с момента старта задачи (раз в 30 мин)."
-    : null;
+  if (grids.deltaCount === 0 && notes.length === 0) {
+    notes.push("Нет 30-минутных данных за период. Сборщики wb_metrics_30m / ozon_metrics_30m копят историю с момента старта (раз в 30 мин).");
+  }
 
   return {
-    heatmap, byWeekday, byHour, bySlot, total,
-    range: { from: rng?.a || null, to: rng?.b || null },
-    months,
-    note,
+    heatmap: grids.heatmap, byWeekday: grids.byWeekday, byHour: grids.byHour,
+    bySlot: grids.bySlot, total: grids.total,
+    range, months: [...months].sort(),
+    note: notes.length ? notes.join(" ") : null,
   };
 }
 

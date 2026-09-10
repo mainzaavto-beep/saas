@@ -52,7 +52,7 @@ DAYS_TO="${3:-0}"
 # в этом списке — учтено в docs/metrics-contract.md (окно сбора/расписание).
 MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad,wb_supplies,wb_fbs_tasks,ozon_supply_orders,wb_fbs_writeoff,ozon_fbs_writeoff,wb_incomes"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks,wb_fbs_stocks,ozon_fbs_stocks"
-METRICS30M_COLLECTORS="wb_metrics_30m"
+METRICS30M_COLLECTORS="wb_metrics_30m,ozon_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю
 # (таймер saas-references, Mon 06:00). wb_references пишет в shared.* (без RLS).
 REFERENCES_COLLECTORS="wb_references,ozon_references,wb_seller_warehouses,ozon_seller_warehouses"

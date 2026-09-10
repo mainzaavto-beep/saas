@@ -3,13 +3,10 @@ import { C } from "@/lib/palette.js";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { metricsForMp, metricLabel } from "@/lib/timing30m.js";
 
 
 const num = (n) => Math.round(n).toLocaleString("ru-RU");
-const metricLabel = (m) => ({
-  orders: "Заказы", clicks: "Клики", cart: "Корзины",
-  buyouts: "Продажи (шт)", favorites: "Избранные",
-}[m] || m);
 const fmtFull = (iso) => {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
@@ -69,10 +66,15 @@ export default function TimingPage({ cabinetId }) {
   const [nm, setNm] = useState("");
   const [brand, setBrand] = useState("");
   const [group, setGroup] = useState("");
-  // Гранулярность: hour (заказы, как раньше) | m30 (30-минутная воронка WB)
+  // Гранулярность: hour (заказы, как раньше) | m30 (30-минутная воронка WB + Ozon)
   const [granularity, setGranularity] = useState("hour");
-  // Метрика для режима m30: что показываем
+  // Метрика для режима m30: что показываем. Набор зависит от площадки (lib/timing30m.js):
+  // при смене МП метрика, которой у площадки нет, сбрасывается на «Заказы».
   const [metric, setMetric] = useState("orders");
+  const metricOptions = useMemo(() => metricsForMp(mp), [mp]);
+  useEffect(() => {
+    if (!metricOptions.some((o) => o.v === metric)) setMetric("orders");
+  }, [metricOptions, metric]);
 
   // Пресет «неделя/месяц» — ставит from/to относительно сегодня.
   useEffect(() => {
@@ -142,7 +144,7 @@ export default function TimingPage({ cabinetId }) {
           <Seg>
             {[
               { v: "hour", l: "По часам (заказы)" },
-              { v: "m30", l: "По 30 минут (воронка WB)" },
+              { v: "m30", l: "По 30 минут (воронка)" },
             ].map((o) => (
               <SegBtn key={o.v} active={granularity === o.v} onClick={() => setGranularity(o.v)}>{o.l}</SegBtn>
             ))}
@@ -153,13 +155,7 @@ export default function TimingPage({ cabinetId }) {
         {granularity === "m30" && (
           <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 10, marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: C.faint, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600, marginRight: 4 }}>Метрика:</span>
-            {[
-              { v: "orders", l: "Заказы" },
-              { v: "clicks", l: "Клики" },
-              { v: "cart", l: "Корзины" },
-              { v: "buyouts", l: "Продажи (шт)" },
-              { v: "favorites", l: "Избранные" },
-            ].map((o) => (
+            {metricOptions.map((o) => (
               <Chip key={o.v} active={metric === o.v} onClick={() => setMetric(o.v)}>{o.l}</Chip>
             ))}
           </div>
@@ -298,7 +294,7 @@ export default function TimingPage({ cabinetId }) {
               </div>
               {granularity === "m30" && (
                 <div style={{ fontSize: 11, color: C.faint, marginTop: 8, textAlign: "center" }}>
-                  Числа в ячейках — прирост метрики за 30-минутный слот (дельта кумулятивного счётчика WB). Подписи часов — по целым часам (· = получасовой слот).
+                  Числа в ячейках — прирост метрики за 30-минутный слот (дельта кумулятивного счётчика площадки). Подписи часов — по целым часам (· = получасовой слот).
                 </div>
               )}
             </Card>
@@ -307,7 +303,7 @@ export default function TimingPage({ cabinetId }) {
 
         <div style={{ marginTop: 16, fontSize: 12, color: C.faint, textAlign: "center" }}>
           {granularity === "m30"
-            ? "30-минутная воронка WB (только активные товары). Сборщик wb_metrics_30m.py копит историю раз в 30 мин. Дельта = прирост за слот."
+            ? "30-минутная воронка: WB — активные товары (wb_metrics_30m), Ozon — товары из аналитики продавца и реклама по кампаниям (ozon_metrics_30m). Снимки раз в 30 мин, дельта = прирост за слот. «Все МП» складывает площадки по общим метрикам."
             : "Считаются все заказы WB+Ozon по времени их оформления (час из order_dt). Источник: боевые БД."}
         </div>
       </div>

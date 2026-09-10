@@ -287,6 +287,34 @@ def upsert_metric_30m(nm_id, date, ts, **fields):
         )
 
 
+# --- 30-минутные снимки Ozon (миграция 057; сборщик ozon_metrics_30m.py) ---
+_OZ_M30M_COLS = ["product_id", "date", "ts", "views", "views_search", "views_pdp",
+                 "cart", "orders", "order_sum"]
+_OZ_ADS30M_COLS = ["campaign_id", "date", "ts", "campaign_name", "views", "clicks",
+                   "spend", "orders", "orders_sum"]
+
+
+def upsert_ozon_metrics_30m_many(rows):
+    return _batch_upsert("ozon_metrics_30m", ["product_id", "ts"], _OZ_M30M_COLS, rows)
+
+
+def upsert_ozon_ads_30m_many(rows):
+    return _batch_upsert("ozon_ads_30m", ["campaign_id", "ts"], _OZ_ADS30M_COLS, rows)
+
+
+def cleanup_ozon_metrics_30m(days=60):
+    """Удалить 30-минутные снимки Ozon старше `days` дней (обе таблицы). Наивный
+    datetime.now() намеренно — см. cleanup_metrics_30m."""
+    cid = _cabinet_id()
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    removed = 0
+    with get_connection() as conn:
+        for t in ("ozon_metrics_30m", "ozon_ads_30m"):
+            cur = conn.execute(f"DELETE FROM tenant.{t} WHERE cabinet_id=%s AND date < %s", (cid, cutoff))
+            removed += cur.rowcount if hasattr(cur, "rowcount") else 0
+    return removed
+
+
 _AD_COLS = {"views", "clicks", "atbs", "orders", "spend"}
 
 
