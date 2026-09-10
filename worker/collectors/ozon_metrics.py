@@ -13,7 +13,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
-from ozon_client import OzonClient
+from ozon_client import OzonClient, map_metric_values
 
 
 def collect(since=None, to=None):
@@ -70,9 +70,13 @@ def collect(since=None, to=None):
         if pid is None:
             n_orphans += 1
             continue
-        mvals = row.get("metrics") or []
-        clicks = mvals[0] if len(mvals) > 0 else None
-        cart = mvals[4] if len(mvals) > 4 else None
+        # ⚠️ Грабля 2026-09-10: без Premium API МОЛЧА выкидывает недоступные
+        # метрики и отдаёт значения только по оставшимся (каб. 1008: из пяти
+        # запрошенных пришёл один revenue). Позиционный mvals[0] клал выручку
+        # в clicks. Разбор только через map_metric_values (селф-тест, сценарий 3).
+        mapped = map_metric_values(metrics, row.get("metrics")) or {}
+        clicks = mapped.get("hits_view")
+        cart = mapped.get("hits_tocart")
         pending.append((pid, d, clicks, orders_map.get((pid, d)), cart))
 
     # 2) Одна транзакция: очистка orders/revenue окна + запись новых строк.

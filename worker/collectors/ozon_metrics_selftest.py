@@ -106,5 +106,26 @@ check(kinds.count("upsert") == 2 and kinds.count("commit") == 1 and kinds[-1] ==
 check(any(e[0] == "clear" and e[1] == ("2026-09-06", "2026-09-08") for e in log),
       "сценарий 2: очистка ровно по окну сборщика")
 
+# --- сценарий 3: кабинет БЕЗ Premium — analytics/data молча выкидывает недоступные
+# метрики и отдаёт значения только по оставшимся (живая проба 2026-09-10, каб. 1008:
+# из [hits_view, delivered_units, revenue, returns, hits_tocart] пришёл один revenue).
+# Позиционный разбор клал выручку (7719 ₽) в колонку clicks (показы) — 04–10.09.2026
+# в tenant.ozon_daily_metrics у 1008 clicks = revenue день в день.
+class NoPremiumClient:
+    def iter_analytics(self, *a, **k):
+        yield {"dimensions": [{"id": "2026-09-07"}, {"id": "111"}], "metrics": [7719]}
+
+
+captured = []
+m.db_pg.upsert_ozon_daily = lambda pid, d, conn=None, **f: captured.append((pid, d, f))
+m.OzonClient = NoPremiumClient
+log.clear()
+m.collect("2026-09-06", "2026-09-08")
+check(len(captured) == 1, f"сценарий 3: одна строка записана (получено {len(captured)})")
+f3 = captured[0][2] if captured else {}
+check(f3.get("clicks") is None, f"сценарий 3: выручка НЕ уезжает в clicks (clicks={f3.get('clicks')!r})")
+check(f3.get("cart") is None, f"сценарий 3: cart без Premium = None (cart={f3.get('cart')!r})")
+check(f3.get("orders") == 3, f"сценарий 3: orders из ozon_orders сохраняются (orders={f3.get('orders')!r})")
+
 print("ALL PASS" if not failed else f"{failed} FAIL", flush=True)
 sys.exit(1 if failed else 0)

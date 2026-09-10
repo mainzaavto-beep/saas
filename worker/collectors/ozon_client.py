@@ -79,6 +79,32 @@ class OzonError(RuntimeError):
     """Ошибка Ozon API (с code/message из тела ответа)."""
 
 
+# Метрики /v1/analytics/data, доступные кабинету БЕЗ подписки Premium. Остальные
+# метрики API МОЛЧА выкидывает из ответа и отдаёт значения только по оставшимся
+# (живая проба 2026-09-10: кабинет 1008 на 6 запрошенных метрик получил [1, 7719]
+# = ordered_units, revenue). Позиционный разбор в таком ответе кладёт выручку в
+# колонку показов — разбирать ответы только через map_metric_values.
+FREE_ANALYTICS_METRICS = ("ordered_units", "revenue")
+
+
+def map_metric_values(requested, values):
+    """Сопоставить значения metrics из строки ответа /v1/analytics/data с
+    запрошенными именами. Полный ответ — позиционно; урезанный (без Premium) —
+    только бесплатные метрики в порядке запроса, остальные None; любая другая
+    форма → None (не угадываем). Чистая функция, селф-тест:
+    ozon_metrics_30m_selftest.py."""
+    values = list(values or [])
+    requested = list(requested)
+    if values and len(values) == len(requested):
+        return dict(zip(requested, values))
+    free = [k for k in requested if k in FREE_ANALYTICS_METRICS]
+    if values and free and len(values) == len(free):
+        out = {k: None for k in requested}
+        out.update(zip(free, values))
+        return out
+    return None
+
+
 class OzonClient:
     def __init__(self, client_id: str | None = None, api_key: str | None = None,
                  host: str = SELLER_HOST, analytics_host: str = ANALYTICS_HOST):
