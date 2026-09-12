@@ -187,6 +187,7 @@ function DetailInner({ cabinetId }) {
       )}
 
       <Detail data={data} platform={platform} />
+      {platform === "ozon" && <TrafficBlock traffic={data.traffic} />}
     </main>
   );
 }
@@ -1591,4 +1592,46 @@ function presetToDates(p) {
 }
 function Centered({ children }) {
   return <div style={{ minHeight: "80vh", display: "grid", placeItems: "center", color: C.muted, fontFamily: FONT, background: C.bg, padding: 20, textAlign: "center" }}>{children}</div>;
+}
+
+// Трафик по дням из кабинета продавца Ozon (ozon_sku_traffic_daily): показы всего /
+// в поиске и каталоге / карточка, корзина из поиска и из карточки, конверсии, ДРР
+// кабинета (справочно, канон панели не подменяет), позиция (канон — статистика поиска).
+function TrafficBlock({ traffic }) {
+  const days = traffic?.days || [];
+  const t = traffic?.totals;
+  if (!days.length) {
+    return <LocCard title="Трафик по дням (кабинет Ozon)" hint="нет данных" accent={C.accent}>
+      <EmptyHint text="Нет данных кабинета за период: у магазина не подключён профиль кабинета Ozon, либо дни ещё не собраны (лаг до суток)." />
+    </LocCard>;
+  }
+  const cols = [
+    ["total_views", "Показы всего"], ["search_views", "В поиске и каталоге"], ["pdp_views", "Просмотры карточки"],
+    ["hits_search_to_cart", "В корзину из поиска"], ["hits_pdp_to_cart", "В корзину из карточки"], ["total_hits_to_cart", "В корзину всего"],
+    ["conv_search_to_pdp", "Поиск→карточка, %"], ["conv_pdp_to_cart", "Карточка→корзина, %"], ["conv_cart_to_order", "Корзина→заказ, %"],
+    ["drr", "ДРР (кабинет), %"], ["days_in_trafarets", "Трафареты, дн"], ["position", "Позиция в поиске"],
+  ];
+  const tot = { ...t, conv_search_to_pdp: null, conv_pdp_to_cart: null, conv_cart_to_order: null, drr: t?.drr_avg, days_in_trafarets: null, position: t?.position_avg };
+  return (
+    <LocCard title="Трафик по дням (кабинет Ozon)" hint={`${days.length} дн. · ДРР кабинета — справочно, ДРР панели см. выше`} accent={C.accent}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 900 }}>
+          <thead><tr>
+            <th style={{ textAlign: "left", padding: "4px 8px", color: C.muted }}>Показатель</th>
+            <th style={{ padding: "4px 8px", color: C.ink }}>Итого</th>
+            {days.map((d) => <th key={d.date} style={{ padding: "4px 6px", color: C.muted, fontWeight: 500 }}>{d.date.slice(8, 10)}.{d.date.slice(5, 7)}</th>)}
+          </tr></thead>
+          <tbody>
+            {cols.map(([k, label]) => (
+              <tr key={k} style={{ borderTop: `1px solid ${C.line}` }}>
+                <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>{label}</td>
+                <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 600 }}>{tot[k] == null ? "—" : num(tot[k])}</td>
+                {days.map((d) => <td key={d.date} style={{ padding: "4px 6px", textAlign: "right", color: d[k] == null ? C.faint : C.ink }}>{d[k] == null ? "—" : num(d[k])}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </LocCard>
+  );
 }

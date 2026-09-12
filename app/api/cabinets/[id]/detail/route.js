@@ -721,6 +721,26 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
   // источник finPeriod.services (ozProfitProduct, канон задачи 3).
   totals.services = finPeriod.services;
 
+  // Трафик по дням из кабинета продавца (tenant.ozon_sku_traffic_daily, сборщик
+  // ozon_cabinet_traffic) + канон позиции из ozon_sku_search_daily. Пусто —
+  // если у магазина нет профиля кабинета: блок на странице покажет подсказку.
+  let traffic = { days: [], totals: null };
+  try {
+    const tRows = await db.prepare(
+      `SELECT t.date::text AS date, t.total_views, t.search_views, t.pdp_views, t.hits_search_to_cart, t.hits_pdp_to_cart,
+              t.total_hits_to_cart, t.conv_search_to_pdp, t.conv_pdp_to_cart, t.conv_cart_to_order, t.drr,
+              t.days_in_trafarets, t.search_position, s.position
+         FROM ozon_sku_traffic_daily t
+         LEFT JOIN ozon_sku_search_daily s ON s.sku = t.sku AND s.date = t.date
+        WHERE t.product_id = ? AND t.date >= ? AND t.date <= ? ORDER BY t.date`).all(nm, from, to);
+    const sum = (k) => tRows.reduce((a, r) => a + (r[k] ?? 0), 0);
+    const avg = (k) => { const v = tRows.filter((r) => r[k] != null); return v.length ? Math.round(v.reduce((a, r) => a + r[k], 0) / v.length * 10) / 10 : null; };
+    traffic = { days: tRows, totals: tRows.length ? {
+      total_views: sum("total_views"), search_views: sum("search_views"), pdp_views: sum("pdp_views"),
+      hits_search_to_cart: sum("hits_search_to_cart"), hits_pdp_to_cart: sum("hits_pdp_to_cart"), total_hits_to_cart: sum("total_hits_to_cart"),
+      drr_avg: avg("drr"), position_avg: avg("position") } : null };
+  } catch (e) { console.error("[detail] трафик кабинета Ozon:", e); }
+
   return {
     period: { from, to, days: dateList.length },
     product, totals, days,
@@ -740,5 +760,6 @@ async function collectOzon(nm, from, to, toEnd, shopName, taxMode) {
     // desc) + byDay для тултипов. Инвариант Σ period.sum = fin.services и
     // Σ byDay[d] = days[d].services проверен приёмочным скриптом задачи 1.
     servicesBreakdown,
+    traffic,
   };
 }
