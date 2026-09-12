@@ -30,6 +30,19 @@ src = open(os.path.join(ROOT, "worker/orchestrator.py"), encoding="utf-8").read(
 m = re.search(r'SAAS_PAUSE_EXEMPT",\s*"([^"]+)"', src)
 check("PAUSE_EXEMPT по умолчанию включает сборщики кабинета", m and COLLS <= set(m.group(1).split(",")), m and m.group(1))
 
+# _run_one: blocked_cabinet (истёкшие сессии кабинета, exit 5) обязан попасть в
+# результат на всех путях — инициализация "blocked = list(blocked_cabinet)" ДО
+# ветвления paused/auth_errors_seen/ok (ревью задачи 5, находка №1).
+run_one_fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_run_one"), None)
+has_blocked_init = run_one_fn is not None and any(
+    isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+    and n.targets[0].id == "blocked"
+    and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) and n.value.func.id == "list"
+    and len(n.value.args) == 1 and isinstance(n.value.args[0], ast.Name) and n.value.args[0].id == "blocked_cabinet"
+    for n in ast.walk(run_one_fn)
+)
+check("_run_one: blocked = list(blocked_cabinet) инициализирован до ветвления", has_blocked_init)
+
 # 2. run_saas_collect.sh: режим cabinet — исполняем блок case с фейком, смотрим переменные.
 sh = open(os.path.join(ROOT, "worker/run_saas_collect.sh"), encoding="utf-8").read()
 block = sh[sh.index("# Списки сборщиков по группам."):sh.index("# Диапазон дат")]

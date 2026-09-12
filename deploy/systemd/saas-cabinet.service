@@ -11,13 +11,16 @@ Group=root
 # Playwright под сохранённым профилем владельца (worker/cabinet_client.py, только
 # чтение). Xvfb :99 и снятие прокси выставляет run_saas_collect.sh в режиме cabinet.
 # Бюджет: ~1000 вызовов на кабинет за тик (3 дня) ≈ 10 мин; таймаут сборщика 25 мин.
+# TimeoutStartSec=60min (ревью задачи 5, находка №4): 2 сборщика кабинета × таймаут
+# 1500с (25 мин) каждый = 50 мин наихудший случай + ожидание flock до 600с (10 мин) —
+# 60 мин с запасом на границе.
 Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
 Environment=TZ=Europe/Moscow
 ExecStart=/opt/agents/saas/worker/run_saas_collect.sh cabinet
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=saas-cabinet
-TimeoutStartSec=40min
+TimeoutStartSec=60min
 
 [Install]
 WantedBy=multi-user.target

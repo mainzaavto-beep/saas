@@ -450,7 +450,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     cab = [c for c in shop_collectors if c in CABINET_COLLECTORS]
     if cab:
         shop_id_c = shop.get("shop_id")
-        if not shop.get("cabinet_profile_dir"):
+        if not (shop.get("cabinet_profile_dir") and shop.get("cabinet_company_id")):
             for c in cab:
                 _record_run(cid, c, "skipped", error="no_cabinet: у магазина не настроен профиль кабинета",
                             date_from=date_from, date_to=date_to)
@@ -509,7 +509,11 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         if shop_id and not paused:
             shop_auth.mark_failure(shop_id, "нет сохранённого токена WB")
         return [], [], [f"{mp}:no_token"]
-    if mp == "ozon" and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
+    # Кабинетные сборщики не ходят в Seller API — креды Ozon им не нужны, а
+    # mark_failure по их отсутствию задвигал бы auth_state ключей, к которым
+    # тик кабинета отношения не имеет (см. ревью задачи 5, находка №3).
+    needs_ozon_creds = any(c not in CABINET_COLLECTORS for c in shop_collectors)
+    if mp == "ozon" and needs_ozon_creds and not (env.get("OZON_CLIENT_ID") and env.get("OZON_API_KEY")):
         print(f"    shop #{shop_id} {mp}: нет OZON creds — пропуск", flush=True)
         _record_run(cid, "ozon:credentials", "no_token", error=f"shop #{shop_id}: нет OZON creds")
         if shop_id and not paused:
@@ -626,14 +630,19 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     # Состояние ключей: отказ авторизации хотя бы в одном сборщике — засчитываем
     # неудачу, любой успех — сбрасываем. Сетевые сбои и 429 состояние не трогают:
     # маркетплейсы падают регулярно, останавливать из-за этого сбор нельзя.
-    blocked = []
+    # blocked_cabinet (истёкшие сессии кабинета, exit 5) должен попасть в результат
+    # на ЛЮБОМ из трёх путей ниже — в т.ч. когда авторизация ключей ни при чём
+    # (paused=False, auth_errors_seen пуст) и без этой инициализации blocked
+    # оставался бы [] (ревью задачи 5, находка №1: сводка «blocked=нет», а
+    # drain_queue пометил бы job done, хотя кабинетный сборщик не выполнился).
+    blocked = list(blocked_cabinet)
     if shop_id and paused:
         # Магазин уже на паузе, а отработали только сборщики-исключения. Их итог
         # состояние не меняет (см. комментарий у проверки паузы), но отказ по
         # авторизации остаётся проблемой клиента, а не сбоем сборки.
         auth_failed = [c for c in auth_failed_collectors]
         failed = [f for f in failed if f not in auth_failed]
-        blocked = auth_failed + blocked_cabinet + [f"{mp}:auth_paused"]
+        blocked = auth_failed + blocked + [f"{mp}:auth_paused"]
     elif shop_id:
         auth_errors_seen = [e for e in auth_error_texts if is_auth_error(e)]
         if auth_errors_seen:
@@ -651,7 +660,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             # Отказ авторизации не считаем сбоем сборки (чинит его клиент), но и
             # успехом это не назовёшь — работа не выполнена, а «заблокирована».
             failed = [f for f in failed if f not in auth_failed_collectors]
-            blocked = list(auth_failed_collectors) + blocked_cabinet
+            blocked = list(auth_failed_collectors) + blocked
         elif ok:
             shop_auth.mark_ok(shop_id)
 
