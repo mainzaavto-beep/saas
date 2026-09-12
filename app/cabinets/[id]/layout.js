@@ -93,6 +93,14 @@ export default async function CabinetLayout({ children, params }) {
     [cabinetId]
   );
 
+  // Сессия кабинета продавца Ozon истекла (worker/cabinet_state.py): позиции по
+  // запросам и трафик из кабинета не обновляются, пока владелец не войдёт заново.
+  const expiredCabinets = await query(
+    `SELECT shop_name, cabinet_failed_at FROM auth.shops
+      WHERE cabinet_id = $1 AND is_active = true AND cabinet_state = 'expired'`,
+    [cabinetId]
+  );
+
   // Устаревшие данные при исправных ключах: auth_state='ok', но воркер тихо
   // перестал докатывать ключевые сборщики площадки (финансы/заказы) — клиент
   // смотрит на старые цифры и не знает об этом. Порог — SAAS_STALE_HOURS
@@ -186,6 +194,14 @@ export default async function CabinetLayout({ children, params }) {
       tone: "neg",
       text,
       link: { href: `/settings?cabinet=${cabinetId}&tab=settings`, label: "Обновить ключи" },
+    });
+  }
+  for (const s of expiredCabinets) {
+    const since = s.cabinet_failed_at ? ` с ${new Date(s.cabinet_failed_at).toLocaleDateString("ru-RU")}` : "";
+    banners.push({
+      tone: "warn",
+      text: `Ozon: сессия кабинета продавца истекла${since} — позиции по запросам и трафик не обновляются. Войдите в кабинет заново на вкладке «Сервер» панели panel.sysell.ru.`,
+      link: { href: "https://panel.sysell.ru", label: "Открыть панель" },
     });
   }
   // Ключи целы, но данные площадки не обновлялись дольше порога — тихий сбой

@@ -95,5 +95,38 @@ for (const r of rows) {
     console.error(`[notify-keys] ошибка обработки (кабинет ${r.cabinet_id}, магазин ${r.shop_id}): ${e.message}`);
   }
 }
+// Кабинет продавца Ozon: сессия истекла (auth.shops.cabinet_state, worker/cabinet_state.py).
+// Одно письмо на эпизод: бронь через cabinet_notified_at, как выше.
+let cabRows = [];
+try {
+  cabRows = await query(
+    `SELECT s.shop_id, s.shop_name, s.cabinet_failed_at, s.cabinet_last_error, c.cabinet_id, c.display_name, u.email
+       FROM auth.shops s JOIN auth.cabinets c ON c.cabinet_id = s.cabinet_id
+       JOIN auth.users u ON u.user_id = c.owner_user_id
+      WHERE s.is_active = true AND s.cabinet_state = 'expired' AND s.cabinet_notified_at IS NULL`);
+} catch (e) { console.error(`[notify-keys] кабинет Ozon: не удалось получить список: ${e.message}`); }
+for (const r of cabRows) {
+  try {
+    const claimed = await query(`UPDATE auth.shops SET cabinet_notified_at = now() WHERE shop_id = $1 AND cabinet_notified_at IS NULL RETURNING shop_id`, [r.shop_id]);
+    if (!claimed.length) continue;
+    const since = r.cabinet_failed_at ? new Date(r.cabinet_failed_at).toLocaleDateString('ru-RU') : '';
+    const res = await sendMail({
+      to: r.email,
+      subject: `SySell: Ozon — сессия кабинета продавца истекла`,
+      text: `Здравствуйте!\n\nПанель больше не может читать кабинет продавца Ozon по проекту «${r.display_name}»`
+        + `${r.shop_name ? ` (магазин «${r.shop_name}»)` : ''}${since ? ` с ${since}` : ''}: сессия браузера истекла.`
+        + ` Позиции по запросам и трафик по товарам не обновляются.\n\n`
+        + `Что сделать: открыть панель ${'https://panel.sysell.ru'}, вкладка «Сервер», кнопка «Открыть вход в кабинет Ozon», подтвердить код из СМС.`
+        + ` После входа сбор возобновится сам на ближайшем тике (06:00 / 20:00).\n\nПоследняя ошибка: ${String(r.cabinet_last_error || '—').slice(0, 300)}`,
+    });
+    if (res.ok) { sent++; console.log(`[notify-keys] кабинет Ozon: письмо отправлено, магазин ${r.shop_id}`); }
+    else {
+      try { await query(`UPDATE auth.shops SET cabinet_notified_at = NULL WHERE shop_id = $1`, [r.shop_id]); }
+      catch (e) { console.error(`[notify-keys] кабинет Ozon: БРОНЬ НЕ СНЯТА (магазин ${r.shop_id}): ${e.message}`); }
+      failed++; console.error(`[notify-keys] кабинет Ozon: не отправлено (магазин ${r.shop_id}): ${res.error}`);
+    }
+  } catch (e) { failed++; console.error(`[notify-keys] кабинет Ozon: ошибка (магазин ${r.shop_id}): ${e.message}`); }
+}
+
 console.log(`[notify-keys] paused/disabled без уведомления: ${rows.length}, отправлено ${sent}, ошибок ${failed}`);
 process.exit(failed ? 1 : 0);

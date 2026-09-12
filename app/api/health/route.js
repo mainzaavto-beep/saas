@@ -62,6 +62,14 @@ export async function GET() {
       ORDER BY s.auth_failed_at DESC NULLS LAST`
   );
 
+  // Кабинет продавца Ozon: сессия истекла (auth.shops.cabinet_state, worker/cabinet_state.py) —
+  // позиции по запросам и трафик из кабинета не обновляются.
+  const cabinetsExpired = await query(
+    `SELECT s.shop_id, s.cabinet_id, c.display_name, s.shop_name, s.cabinet_failed_at, s.cabinet_last_error
+       FROM auth.shops s JOIN auth.cabinets c ON c.cabinet_id = s.cabinet_id
+      WHERE s.is_active = true AND s.cabinet_state = 'expired'`
+  );
+
   return NextResponse.json({
     days,
     runs,
@@ -75,5 +83,6 @@ export async function GET() {
     })),
     payments_mismatch: paymentsMismatch,
     shops_auth: shopsAuth,
+    cabinets_expired: cabinetsExpired,
   });
 }

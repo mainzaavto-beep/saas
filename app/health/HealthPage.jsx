@@ -165,6 +165,22 @@ export default function HealthPage() {
           </div>
         </div>
       )}
+      {Array.isArray(data.cabinets_expired) && data.cabinets_expired.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px", color: C.neg }}>
+            Кабинет Ozon: сессия истекла ({data.cabinets_expired.length})
+          </h2>
+          <div style={{ fontSize: 13 }}>
+            {data.cabinets_expired.map((s) => (
+              <div key={s.shop_id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                {s.display_name} · {s.shop_name ? `«${s.shop_name}»` : ""} · с{" "}
+                {s.cabinet_failed_at ? new Date(s.cabinet_failed_at).toLocaleDateString("ru-RU") : "—"}
+                {s.cabinet_last_error ? ` · ${s.cabinet_last_error}` : ""}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
