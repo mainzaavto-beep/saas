@@ -115,12 +115,16 @@ def fetch_day(client, company_id, day, sku2pid):
         while page < PAGE_LIMIT:
             resp = client.get(P_DETAILS, {"sellerId": company_id, "sku": str(r["sku"]),
                                           "periodFrom": pf, "periodTo": pt, "pageNumber": str(page)})
-            got = parse_query_page(resp, day, r["sku"], r["product_id"])
-            if not got:
+            raw = resp.get("queries") or []
+            if not raw:
                 break
-            query_rows += got
+            query_rows += parse_query_page(resp, day, r["sku"], r["product_id"])
             page += 1
     return sku_rows, dedupe_queries(query_rows)
+
+
+def _obs(total, days):
+    print(f"##OBS rows={total} from={days[0]} to={days[-1]}", flush=True)
 
 
 def collect(date_from, date_to):
@@ -159,15 +163,21 @@ def collect(date_from, date_to):
             print(f"  профиль занят ({attempt}/{BUSY_RETRIES}): {e}", flush=True)
             if attempt == BUSY_RETRIES:
                 print("cabinet_busy: профиль занят, тик пропущен", file=sys.stderr, flush=True)
+                _obs(total_sku + total_q, days)
                 return 3
             cc.SLEEP(BUSY_WAIT)
         except cc.CabinetAuthError as e:
             print(f"CABINET_AUTH_EXPIRED: {e}", file=sys.stderr, flush=True)
+            _obs(total_sku + total_q, days)
             return 5
+        except cc.CabinetError as e:
+            print(f"cabinet_error: {e}", file=sys.stderr, flush=True)
+            _obs(total_sku + total_q, days)
+            return 1
 
     print(f"[ozon_cabinet_search] итого {total_sku} sku, {total_q} запросов"
           + (f", не готовы: {','.join(not_ready)}" if not_ready else ""), flush=True)
-    print(f"##OBS rows={total_sku + total_q} from={days[0]} to={days[-1]}", flush=True)
+    _obs(total_sku + total_q, days)
     return 3 if not_ready and len(not_ready) == len(days) else 0
 
 
