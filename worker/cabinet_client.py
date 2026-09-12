@@ -137,13 +137,20 @@ class CabinetClient:
                 text = f"{type(e).__name__}: {str(e)[:200]}"
             kind = "retry" if status is None else classify_response(status, text)
             if kind == "ok":
-                return json.loads(text)
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    # обрезанный/битый 200-ответ — не наша вина, но и не документ;
+                    # трактуем как сетевую ошибку (status=None) и идём по тому же плану ретраев
+                    kind = "retry"
+                    status = None
             if kind == "auth":
                 raise CabinetAuthError(f"{path}: HTTP {status} — сессия кабинета истекла: {text[:120]}")
             if kind == "retry":
                 delay = retry_delay(status, attempt)
                 if delay is not None:
-                    print(f"  [cabinet] {path}: HTTP {status}, повтор через {delay}с", flush=True)
+                    reason = f"HTTP {status}" if status is not None else "битый ответ/сеть"
+                    print(f"  [cabinet] {path}: {reason}, повтор через {delay}с", flush=True)
                     SLEEP(delay)
                     continue
             raise CabinetError(f"{path}: HTTP {status}: {text[:300]}")

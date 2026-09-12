@@ -21,12 +21,12 @@ class FakeResp:
     def ok(self): return 200 <= self.status < 300
 
 class FakeReq:
-    """Очередь ответов; пишет историю вызовов."""
+    """Очередь ответов; пишет историю вызовов (включая заголовки)."""
     def __init__(self, responses): self.responses, self.calls = list(responses), []
     def get(self, url, headers=None, params=None, timeout=None):
-        self.calls.append(("GET", url, params)); return self.responses.pop(0)
+        self.calls.append(("GET", url, params, headers)); return self.responses.pop(0)
     def post(self, url, headers=None, data=None, timeout=None):
-        self.calls.append(("POST", url, data)); return self.responses.pop(0)
+        self.calls.append(("POST", url, data, headers)); return self.responses.pop(0)
 
 # 1. План ретраев: сеть/5xx — 2,4,8,16; 429 — 5,10,20,40; 4xx — не повторять; 5-я попытка — стоп.
 check("5xx: 2→4→8→16", [cc.retry_delay(502, i) for i in range(1, 5)] == [2, 4, 8, 16])
@@ -62,6 +62,11 @@ c = cc.CabinetClient("1428518", "/nonexistent", request=req)
 out = c.post("/api/site/seller-analytics/charts/v3/table/by_sku", {"x": 1})
 check("json разобран", out == {"items": [1]}, out)
 check("URL собран", req.calls[0][1] == "https://seller.ozon.ru/api/site/seller-analytics/charts/v3/table/by_sku", req.calls)
+sent_headers = req.calls[0][3] or {}
+check("заголовок x-o3-company-id", sent_headers.get("x-o3-company-id") == "1428518", sent_headers)
+check("заголовок x-o3-app-name", sent_headers.get("x-o3-app-name") == "seller-ui", sent_headers)
+check("заголовок x-o3-language", sent_headers.get("x-o3-language") == "ru", sent_headers)
+check("заголовок content-type", sent_headers.get("content-type") == "application/json", sent_headers)
 
 # 5. 401 → CabinetAuthError без ретраев.
 req = FakeReq([FakeResp(401, "{}")])
@@ -86,6 +91,23 @@ try:
     c.get("/api/search-query-analytics/v1/get-dates", {}); check("400 → CabinetError", False)
 except cc.CabinetError as e:
     check("400 → CabinetError с телом", "validation error" in str(e), e)
+
+# 8. Битый JSON под 200 → ретрай по сетевому плану → затем валидный 200 → dict.
+req = FakeReq([FakeResp(200, '{"a":1'), FakeResp(200, '{"a":1}')])
+c = cc.CabinetClient("1428518", "/nonexistent", request=req)
+out = c.get("/api/search-query-analytics/v1/get-dates", {})
+check("битый JSON → ретрай → валидный JSON", out == {"a": 1}, out)
+check("две попытки при битом JSON", len(req.calls) == 2, req.calls)
+
+# 9. Битый JSON на всех попытках → CabinetError (не голый JSONDecodeError).
+req = FakeReq([FakeResp(200, '{"a":1') for _ in range(5)])
+c = cc.CabinetClient("1428518", "/nonexistent", request=req)
+try:
+    c.get("/api/search-query-analytics/v1/get-dates", {})
+    check("битый JSON на всех попытках → CabinetError", False)
+except cc.CabinetError as e:
+    check("битый JSON на всех попытках → CabinetError", "{\"a\":1" in str(e), e)
+check("5 попыток на битый JSON (1 + 4 ретрая)", len(req.calls) == 5, req.calls)
 
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)
