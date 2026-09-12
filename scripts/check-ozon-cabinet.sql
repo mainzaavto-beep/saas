@@ -1,7 +1,8 @@
--- Сторож данных кабинета Ozon (спека §7). Все строки должны быть ok = t.
+-- Сторож данных кабинета Ozon (спека §7).
+-- Проверки 1, 3, 4 — гейт (ok = t); проверка 2 — справочная: два эндпоинта кабинета
+-- считают позицию по-разному (решение 12.09.2026), канон — сводка.
 -- Запуск: psql -U saas_ro -h localhost -d saas -v cab=1 -f scripts/check-ozon-cabinet.sql
 \set ON_ERROR_STOP on
-WITH d AS (SELECT DISTINCT date FROM tenant.ozon_sku_search_daily WHERE cabinet_id = :cab)
 -- 1. SKU сводки ⊆ SKU запросов и наоборот (по дням)
 SELECT '1 sku сводки = sku запросов' AS chk,
        (SELECT count(*) FROM (
@@ -12,10 +13,14 @@ SELECT '1 sku сводки = sku запросов' AS chk,
           EXCEPT SELECT sku, date FROM tenant.ozon_sku_search_daily WHERE cabinet_id = :cab) x) AS only_queries,
        ((SELECT count(*) FROM (SELECT DISTINCT sku, date FROM tenant.ozon_search_queries_daily WHERE cabinet_id = :cab
           EXCEPT SELECT sku, date FROM tenant.ozon_sku_search_daily WHERE cabinet_id = :cab) x) = 0) AS ok;
--- 2. Позиция сводки ≈ позиция charts/v3 (|Δ| ≤ 5 у ≥ 90 % SKU дня)
-SELECT '2 позиция: сводка vs charts' AS chk, s.date,
+-- 2 (справочно, НЕ гейт) — позиция сводки vs charts/v3: разные методики двух
+-- эндпоинтов кабинета, порог «≥90% при |Δ|≤5» не проходит ни в один день и только
+-- шумит. ok намеренно NULL::boolean — форма строк остаётся единой со строками 1/3/4.
+SELECT '2 (справочно) позиция: сводка vs charts/v3' AS chk, s.date,
+       count(*) AS n,
        round(100.0 * count(*) FILTER (WHERE abs(s.position - t.search_position) <= 5) / count(*), 1) AS pct_close,
-       (100.0 * count(*) FILTER (WHERE abs(s.position - t.search_position) <= 5) / count(*)) >= 90 AS ok
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY abs(s.position - t.search_position)) AS median_abs_delta,
+       NULL::boolean AS ok
   FROM tenant.ozon_sku_search_daily s
   JOIN tenant.ozon_sku_traffic_daily t ON t.cabinet_id = s.cabinet_id AND t.sku = s.sku AND t.date = s.date
  WHERE s.cabinet_id = :cab AND s.position IS NOT NULL AND t.search_position IS NOT NULL
