@@ -16,7 +16,7 @@ export NO_PROXY=*
 
 MODE="${1:-all}"
 DAYS_FROM="${2:-}"
-DAYS_TO="${3:-0}"
+DAYS_TO_ARG="${3:-}"; DAYS_TO="${3:-0}"
 
 # Списки сборщиков по группам.
 # ⚠️ 2026-07-27: wb_jem ВРЕМЕННО убран из MAIN_COLLECTORS. Сборщик «Портрет
@@ -80,6 +80,12 @@ SKUAD_COLLECTORS="ozon_sku_ad"
 # Сам сборщик в MAIN_COLLECTORS не нужен: order_id заданий даёт лента
 # wb_fbs_tasks из main-тика, статусы — этот таймер.
 FBSSTATUS_COLLECTORS="wb_fbs_status,wb_fbs_writeoff"
+# 2026-09-12: сборщики кабинета продавца Ozon (позиции по запросам, трафик по SKU) —
+# Playwright под профилем владельца (worker/cabinet_client.py). Свой venv с
+# playwright (worker/.venv-cabinet), Xvfb :99, без прокси, flock на профиль
+# (один процесс на профиль; ozon-panel синкается в 07:00 — таймер saas-cabinet
+# идёт в 06:00 и 20:00). Окно 3 дня по вчера — лаг кабинета до суток.
+CABINET_COLLECTORS="ozon_cabinet_search,ozon_cabinet_traffic"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;
@@ -88,7 +94,11 @@ case "$MODE" in
   references) COLLECTORS="$REFERENCES_COLLECTORS"; DAYS_FROM="${DAYS_FROM:-0}" ;;
   skuad)      COLLECTORS="$SKUAD_COLLECTORS";      DAYS_FROM="${DAYS_FROM:-2}" ;;
   fbsstatus)  COLLECTORS="$FBSSTATUS_COLLECTORS";  DAYS_FROM="${DAYS_FROM:-0}" ;;
-  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references|skuad|fbsstatus)" >&2; exit 1 ;;
+  cabinet)    COLLECTORS="$CABINET_COLLECTORS";    DAYS_FROM="${DAYS_FROM:-3}"; DAYS_TO="${DAYS_TO_ARG:-1}"
+              PY=/opt/agents/saas/worker/.venv-cabinet/bin/python
+              export DISPLAY=:99; unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+              LOCK="flock -w 600 -E 75 /run/lock/saas-cabinet.lock" ;;
+  *) echo "Неизвестный режим: $MODE (ожидаются main|stocks|metrics30m|references|skuad|fbsstatus|cabinet)" >&2; exit 1 ;;
 esac
 
 # Диапазон дат: FROM = сегодня − DAYS_FROM, TO = сегодня − DAYS_TO.
@@ -103,11 +113,11 @@ set +a
 export SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas
 
 mkdir -p /opt/agentsDB/logs
-PY=/opt/agents/data-presenter-agent/.venv/bin/python
+PY="${PY:-/opt/agents/data-presenter-agent/.venv/bin/python}"
 
 echo "=== SaaS collect [$MODE] $(date) — период $FROM..$TO ===" >> /opt/agentsDB/logs/saas_worker.log
 cd /opt/agents/saas
-$PY -m worker.orchestrator --all --collectors "$COLLECTORS" --date-from "$FROM" --date-to "$TO" --run-kind "$MODE" >> /opt/agentsDB/logs/saas_worker.log 2>&1
+${LOCK:-} $PY -m worker.orchestrator --all --collectors "$COLLECTORS" --date-from "$FROM" --date-to "$TO" --run-kind "$MODE" >> /opt/agentsDB/logs/saas_worker.log 2>&1
 EXIT=$?
 echo "EXIT=$EXIT" >> /opt/agentsDB/logs/saas_worker.log
 exit $EXIT

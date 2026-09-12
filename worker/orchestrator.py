@@ -36,7 +36,7 @@ import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime, timezone
 
-from worker import shop_auth
+from worker import cabinet_state, shop_auth
 from worker.auth_errors import is_auth_error
 
 # Воркер подключается как postgres (читает api_creds — auth.* без RLS).
@@ -83,7 +83,8 @@ GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_accruals
 # прямой путь к расхождению цифр в отчётах, поэтому такие сборщики
 # отфильтровываются в _run_one принудительно, даже если их впишут в env.
 PAUSE_EXEMPT_COLLECTORS = {
-    c.strip() for c in os.environ.get("SAAS_PAUSE_EXEMPT", "ozon_efficiency").split(",") if c.strip()
+    c.strip() for c in os.environ.get(
+        "SAAS_PAUSE_EXEMPT", "ozon_efficiency,ozon_cabinet_search,ozon_cabinet_traffic").split(",") if c.strip()
 }
 
 # ── Контракт exit-кодов сборщиков ────────────────────────────────────
@@ -218,7 +219,14 @@ OZON_COLLECTORS = [
     "ozon_seller_warehouses",
     "ozon_supply_orders",  # заказы на поставку FBO → tenant.ozon_supply_orders (тик main)
     "ozon_metrics_30m",    # 30-минутные снимки воронки и рекламы Ozon (таймер saas-metrics30m)
+    "ozon_cabinet_search",   # кабинет продавца: позиции по запросам (миграция 058, таймер saas-cabinet)
+    "ozon_cabinet_traffic",  # кабинет продавца: трафик/ДРР по SKU (тот же таймер)
 ]
+
+# Сборщики, ходящие не в Seller API, а в кабинет продавца под профилем браузера
+# (worker/cabinet_client.py). Запускаются только у магазинов с cabinet_profile_dir;
+# отказ сессии — exit 5 → cabinet_state.expired (не auth_state ключей).
+CABINET_COLLECTORS = ["ozon_cabinet_search", "ozon_cabinet_traffic"]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).
 DEFAULT_COLLECTORS = WB_COLLECTORS
@@ -265,6 +273,9 @@ def _group_cabinets(rows):
             cabs[cid]["shops"].append({
                 "shop_id": r["shop_id"],
                 "mp_code": r["mp_code"],
+                "cabinet_company_id": r.get("cabinet_company_id"),
+                "cabinet_profile_dir": r.get("cabinet_profile_dir"),
+                "cabinet_state": r.get("cabinet_state"),
                 "api_creds": r.get("s_api_creds"),
                 "api_creds_enc": r.get("s_api_creds_enc"),
             })
@@ -300,6 +311,7 @@ def _read_cabinets(active_only=True):
             "SELECT c.cabinet_id, c.display_name, c.marketplaces, "
             "       c.api_creds AS c_api_creds, c.api_creds_enc AS c_api_creds_enc, "
             "       s.shop_id, s.mp_code, "
+            "       s.cabinet_company_id, s.cabinet_profile_dir, s.cabinet_state, "
             "       s.api_creds AS s_api_creds, s.api_creds_enc AS s_api_creds_enc "
             "FROM auth.cabinets c "
             "LEFT JOIN auth.shops s ON s.cabinet_id = c.cabinet_id AND s.is_active = true "
@@ -321,6 +333,7 @@ def _read_one_cabinet(cabinet_id):
                 "SELECT c.cabinet_id, c.display_name, c.marketplaces, "
                 "       c.api_creds AS c_api_creds, c.api_creds_enc AS c_api_creds_enc, "
                 "       s.shop_id, s.mp_code, "
+                "       s.cabinet_company_id, s.cabinet_profile_dir, s.cabinet_state, "
                 "       s.api_creds AS s_api_creds, s.api_creds_enc AS s_api_creds_enc "
                 "FROM auth.cabinets c "
                 "LEFT JOIN auth.shops s ON s.cabinet_id = c.cabinet_id AND s.is_active = true "
@@ -383,6 +396,12 @@ def _env_for_shop(shop):
         if mp_creds.get("perf_client_secret"):
             env["OZON_PERF_CLIENT_SECRET"] = mp_creds["perf_client_secret"]
 
+    if mp == "ozon" and shop.get("cabinet_profile_dir"):
+        env["OZON_CABINET_COMPANY_ID"] = str(shop.get("cabinet_company_id") or "")
+        env["OZON_CABINET_PROFILE_DIR"] = shop["cabinet_profile_dir"]
+    if os.environ.get("DISPLAY"):          # Xvfb для Chromium (режим cabinet), не секрет
+        env["DISPLAY"] = os.environ["DISPLAY"]
+
     # cabinet_id (RLS-изоляция по кабинету; несколько shops одного кабинета пишут
     # в один cabinet_id — это корректно, они видят друг друга внутри проекта).
     env["SAAS_DB_HOST"] = os.environ.get("SAAS_DB_HOST", "localhost")
@@ -426,6 +445,25 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     shop_collectors = _collectors_for_mp(mp, collectors)
     if not shop_collectors:
         return [], [], []
+
+    # Сборщики кабинета продавца — только у магазинов с профилем и живой сессией.
+    cab = [c for c in shop_collectors if c in CABINET_COLLECTORS]
+    if cab:
+        shop_id_c = shop.get("shop_id")
+        if not shop.get("cabinet_profile_dir"):
+            for c in cab:
+                _record_run(cid, c, "skipped", error="no_cabinet: у магазина не настроен профиль кабинета",
+                            date_from=date_from, date_to=date_to)
+            shop_collectors = [c for c in shop_collectors if c not in CABINET_COLLECTORS]
+        else:
+            cstate = cabinet_state.load_state(shop_id_c) if shop_id_c else {}
+            if cabinet_state.should_skip(cstate):
+                for c in cab:
+                    _record_run(cid, c, "skipped", error=f"cabinet_expired: {cstate.get('cabinet_last_error') or 'сессия истекла'}",
+                                date_from=date_from, date_to=date_to)
+                shop_collectors = [c for c in shop_collectors if c not in CABINET_COLLECTORS]
+        if not shop_collectors:
+            return [], [], [f"{mp}:cabinet"]
 
     # Магазин со сломанными ключами не должен тратить окно прогона: пока он в
     # паузе, сборщики не запускаем. Раз в сутки shop_auth.should_skip пропустит
@@ -487,6 +525,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
     auth_error_texts = []      # тексты ошибок, похожих на отказ авторизации
     auth_failed_collectors = []  # какие сборщики упали именно по авторизации
+    blocked_cabinet = []       # сборщики кабинета с истёкшей сессией (exit 5)
     run_ids = {}  # coll -> id строки collector_runs (для переклассификации в blocked ниже)
 
     for coll in shop_collectors:
@@ -530,6 +569,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 _record_run(cid, coll, "ok",
                             date_from=date_from, date_to=date_to, started_at=started,
                             rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
+                if coll in CABINET_COLLECTORS and shop.get("shop_id"):
+                    cabinet_state.mark_ok(shop["shop_id"])
             elif r.returncode == 3:
                 # Контракт exit-кодов: 3 = partial (часть окон пропущена, напр. 429).
                 err = (r.stderr or r.stdout or "").strip().splitlines()
@@ -539,6 +580,16 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 _record_run(cid, coll, "partial", error=(err[-1] if err else None),
                             date_from=date_from, date_to=date_to, started_at=started,
                             rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
+            elif r.returncode == 5 and coll in CABINET_COLLECTORS:
+                err = (r.stderr or "").strip().splitlines()
+                marker = next((l for l in reversed(err) if l.startswith("CABINET_AUTH_EXPIRED")), err[-1] if err else "сессия истекла")
+                print(f"{label} CABINET EXPIRED: {marker}", flush=True)
+                statuses[coll] = "skipped"
+                _record_run(cid, coll, "skipped", error=f"cabinet_expired: {marker[:300]}",
+                            date_from=date_from, date_to=date_to, started_at=started)
+                if shop.get("shop_id"):
+                    cabinet_state.mark_expired(shop["shop_id"], marker)
+                blocked_cabinet.append(coll)
             else:
                 err = (r.stderr or r.stdout or "").strip().splitlines()
                 print(f"{label} FAIL (exit {r.returncode}): {err[-1] if err else ''}", flush=True)
@@ -582,7 +633,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
         # авторизации остаётся проблемой клиента, а не сбоем сборки.
         auth_failed = [c for c in auth_failed_collectors]
         failed = [f for f in failed if f not in auth_failed]
-        blocked = auth_failed + [f"{mp}:auth_paused"]
+        blocked = auth_failed + blocked_cabinet + [f"{mp}:auth_paused"]
     elif shop_id:
         auth_errors_seen = [e for e in auth_error_texts if is_auth_error(e)]
         if auth_errors_seen:
@@ -600,7 +651,7 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
             # Отказ авторизации не считаем сбоем сборки (чинит его клиент), но и
             # успехом это не назовёшь — работа не выполнена, а «заблокирована».
             failed = [f for f in failed if f not in auth_failed_collectors]
-            blocked = list(auth_failed_collectors)
+            blocked = list(auth_failed_collectors) + blocked_cabinet
         elif ok:
             shop_auth.mark_ok(shop_id)
 

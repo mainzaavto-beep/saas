@@ -1,0 +1,23 @@
+[Unit]
+Description=SAAS Cabinet — позиции по запросам и трафик Ozon из кабинета продавца (06:00, 20:00)
+After=network.target postgresql.service
+Requires=postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Playwright под сохранённым профилем владельца (worker/cabinet_client.py, только
+# чтение). Xvfb :99 и снятие прокси выставляет run_saas_collect.sh в режиме cabinet.
+# Бюджет: ~1000 вызовов на кабинет за тик (3 дня) ≈ 10 мин; таймаут сборщика 25 мин.
+Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
+Environment=TZ=Europe/Moscow
+ExecStart=/opt/agents/saas/worker/run_saas_collect.sh cabinet
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-cabinet
+TimeoutStartSec=40min
+
+[Install]
+WantedBy=multi-user.target

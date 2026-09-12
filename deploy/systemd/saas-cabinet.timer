@@ -1,0 +1,10 @@
+[Unit]
+Description=SAAS Cabinet — тики кабинета Ozon 06:00 и 20:00 MSK (мимо утреннего синка ozon-panel)
+
+[Timer]
+OnCalendar=*-*-* 06,20:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
