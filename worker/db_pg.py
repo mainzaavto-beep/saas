@@ -315,6 +315,60 @@ def cleanup_ozon_metrics_30m(days=60):
     return removed
 
 
+# ── Кабинет Ozon: позиции по запросам и трафик (миграция 058, план 2026-09-12) ──
+_OZ_SKU_SEARCH_COLS = ["sku", "date", "product_id", "name", "article", "category", "position",
+                       "search_users", "view_users", "ctr", "gmv", "showcases_visibility"]
+_OZ_QUERY_COLS = ["sku", "date", "query", "product_id", "position", "search_users", "view_users",
+                  "ctr", "click_users", "orders", "gmv", "query_index"]
+_OZ_TRAFFIC_COLS = ["sku", "date", "product_id", "total_views", "search_views", "pdp_views",
+                    "hits_search_to_cart", "hits_pdp_to_cart", "total_hits_to_cart",
+                    "conv_search_to_pdp", "conv_pdp_to_cart", "conv_cart_to_order", "conv_views_to_order",
+                    "ordered_units", "delivered_units", "cancelled_units", "returned_units",
+                    "revenue", "avg_price", "price_index", "drr", "days_in_trafarets", "days_in_promo",
+                    "search_position", "last_stock", "last_stock_fbo", "last_stock_fbs", "stockout_days"]
+
+
+def ozon_sku2pid():
+    """fbo_sku → product_id текущего кабинета (как в ozon_metrics_30m)."""
+    out = {}
+    for r in query("SELECT fbo_sku, product_id FROM tenant.ozon_products WHERE fbo_sku IS NOT NULL"):
+        out[int(r["fbo_sku"])] = int(r["product_id"])
+    return out
+
+
+def _replace_day(conn, table, cols, day, skus, rows):
+    """Внутри транзакции: удалить строки дня по перечисленным sku, вставить новые."""
+    cid = _cabinet_id()
+    if skus:
+        conn.execute(f"DELETE FROM tenant.{table} WHERE cabinet_id=%s AND date=%s AND sku = ANY(%s)",
+                     (cid, day, list(skus)))
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    all_cols = ["cabinet_id"] + cols + ["updated_at"]
+    sql = (f"INSERT INTO tenant.{table} ({', '.join(all_cols)}) VALUES ({', '.join(['%s'] * len(all_cols))}) "
+           f"ON CONFLICT DO NOTHING")
+    with conn.cursor() as cur:
+        cur.executemany(sql, [[cid] + [r.get(c) for c in cols] + [now] for r in rows])
+    return len(rows)
+
+
+def replace_ozon_search_day(day, sku_rows, query_rows):
+    """Один день кабинетной статистики поиска — одной транзакцией. Чужие SKU дня
+    (не пришедшие в sku_rows) не трогаются. Возвращает (n_sku, n_queries)."""
+    skus = {r["sku"] for r in sku_rows}
+    with get_connection() as conn:
+        n1 = _replace_day(conn, "ozon_sku_search_daily", _OZ_SKU_SEARCH_COLS, day, skus, sku_rows)
+        n2 = _replace_day(conn, "ozon_search_queries_daily", _OZ_QUERY_COLS, day, skus, query_rows)
+    return n1, n2
+
+
+def replace_ozon_traffic_day(day, rows):
+    skus = {r["sku"] for r in rows}
+    with get_connection() as conn:
+        return _replace_day(conn, "ozon_sku_traffic_daily", _OZ_TRAFFIC_COLS, day, skus, rows)
+
+
 _AD_COLS = {"views", "clicks", "atbs", "orders", "spend"}
 
 
