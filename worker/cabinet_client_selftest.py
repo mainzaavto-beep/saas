@@ -83,6 +83,11 @@ req = FakeReq([FakeResp(503, ""), FakeResp(200, '{"ok":true}')])
 c = cc.CabinetClient("1428518", "/nonexistent", request=req)
 check("503→200 после ретрая", c.get("/api/search-query-analytics/v1/get-dates", {})["ok"] is True)
 check("две попытки", len(req.calls) == 2)
+get_headers = req.calls[-1][3] or {}
+check("GET заголовок x-o3-company-id", get_headers.get("x-o3-company-id") == "1428518", get_headers)
+check("GET заголовок x-o3-app-name", get_headers.get("x-o3-app-name") == "seller-ui", get_headers)
+check("GET заголовок x-o3-language", get_headers.get("x-o3-language") == "ru", get_headers)
+check("GET заголовок content-type", get_headers.get("content-type") == "application/json", get_headers)
 
 # 7. 400 → CabinetError с телом.
 req = FakeReq([FakeResp(400, '{"code":3,"message":"validation error"}')])
