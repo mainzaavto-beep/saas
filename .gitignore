@@ -25,3 +25,6 @@ __pycache__/
 .zcode/
 saas-secrets
 .claude/
+
+# venv сборщиков кабинета Ozon (playwright), задача 2 плана 2026-09-12
+worker/.venv-cabinet/
