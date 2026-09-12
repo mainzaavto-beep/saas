@@ -28,6 +28,7 @@ const MENU = [
       { href: "/orders", label: "Заказы" },
       { href: "/geo", label: "География" },
       { href: "/timing", label: "Заказы по времени" },
+      { href: "/search", label: "Поиск и запросы" },
       { href: "/abc", label: "ABC анализ" },
       { href: "/stocks", label: "Склады и индексы" },
     ],
