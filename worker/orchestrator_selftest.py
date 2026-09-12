@@ -32,5 +32,15 @@ check("ozon_metrics_30m проходит фильтр Ozon",
 check("WB-фильтр не пропускает Ozon-сборщик",
       "ozon_metrics_30m" not in o._collectors_for_mp("wb", pool))
 
+# Ревью задачи 6, находка №6 / спека §4.5: _collectors_for_marketplaces питает
+# --all (главный тик, системный python3) и drain_queue (backfill onboarding до
+# 75 дней) — сборщики кабинета (Playwright, .venv-cabinet) там ходить не должны,
+# иначе онбординг/бэкфилл погнал бы их под чужим интерпретатором без профиля.
+cab_result = o._collectors_for_marketplaces(["ozon"])
+check("_collectors_for_marketplaces: без сборщиков кабинета",
+      not (set(o.CABINET_COLLECTORS) & set(cab_result)), cab_result)
+check("_collectors_for_marketplaces: остальные Ozon-сборщики на месте",
+      "ozon_catalog" in cab_result and "ozon_orders" in cab_result, cab_result)
+
 print("ALL PASS" if failed == 0 else f"FAILED: {failed}")
 sys.exit(1 if failed else 0)

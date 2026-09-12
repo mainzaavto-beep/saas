@@ -2692,11 +2692,23 @@ weightedPosition = Σ(position × search_users) / Σ(search_users)
 по всем строкам окна сразу), и для позиции каждого SKU
 (`aggregateSkus().items[].position` — по строкам одного SKU).
 
-**CTR** — одна формула везде, что по SKU (`aggregateSkus`), что по
-запросу (`buildQueryMatrix`):
+**CTR** (исправлено ревью 2026-09-12, находка №1 — старая формула считала
+Σview/Σsearch, что не совпадает с CTR кабинета, `queryCtr`, — верно и
+подтверждено вживую: корреляция 1.000): формула кабинета — `click_users /
+view_users`, но так как источники разные (`buildQueryMatrix` строит матрицу
+запрос×день с `click_users`, а строки `aggregateSkus` — это дневная сводка
+по SKU без `click_users`), считается по-разному:
 
 ```
-ctr = search_users > 0 ? round2(Σ view_users / Σ search_users × 100) : null
+// buildQueryMatrix — запрос×день: клики известны построчно.
+ctr = Σ view_users > 0 ? round2(Σ click_users / Σ view_users × 100) : null
+
+// aggregateSkus — сводка по SKU: click_users в строках нет, только
+// хранимый ctr (это и есть queryCtr кабинета за день). Берём его среднее,
+// взвешенное view_users; нулевой суммарный вес — простое среднее известных
+// значений; ни одного известного — null. См. weightedCtr в lib/ozonSearch.js.
+ctr = weightedCtr(rows) = Σ(ctr_i × view_users_i) / Σ view_users_i
+    (если Σ view_users = 0 → mean(ctr_i для известных); если известных нет → null)
 ```
 
 **Дельта позиции к прошлому окну** — `positionDelta = positionPrev −
@@ -2710,7 +2722,11 @@ position`, а не `position − positionPrev`. Позиция — «чем ме
 **`positionTone`** — раскраска ячейки матрицы запрос×день по абсолютной
 позиции: `≤10` → `top`, `≤30` → `good`, `≤100` → `mid`, `>100` → `low`,
 `null` (запроса не было в этот день у этого SKU) → `none` (пусто в
-ячейке — не 0 и не «низкая позиция», отсутствие данных).
+ячейке — не 0 и не «низкая позиция», отсутствие данных). `position = 0` от
+кабинета (исправлено ревью 2026-09-12, находка №2) значит «товар не
+ранжирован по этому запросу», а не место 0 — трактуется как то же
+отсутствие данных (`none`), а не как `top`; так же `position = 0`
+пропускается в `weightedPosition` и не засчитывается в `kpiFromQueries`.
 
 **`kpiFromQueries`** — считается по ПОСЛЕДНЕМУ дню окна с данными (не по
 всему периоду): число запросов с позицией ≤10 и ≤50 среди запросов с

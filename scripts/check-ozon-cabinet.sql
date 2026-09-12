@@ -3,7 +3,13 @@
 -- считают позицию по-разному (решение 12.09.2026), канон — сводка.
 -- Запуск: psql -U saas_ro -h localhost -d saas -v cab=1 -f scripts/check-ozon-cabinet.sql
 \set ON_ERROR_STOP on
--- 1. SKU сводки ⊆ SKU запросов и наоборот (по дням)
+-- 1. SKU сводки ⊆ SKU запросов и наоборот (по дням). Гейт — только
+-- only_queries (запрос есть, а в сводке SKU нет: это дыра в ozon_cabinet_search,
+-- наш баг). only_summary (SKU есть в сводке, а строк запросов нет) намеренно
+-- НЕ гейт: сводка (charts/v3/table/by_sku) валиднее для SKU без спроса по
+-- запросам вовсе — у товара может не быть ни одного запроса за день, но он всё
+-- равно попадает в сводку кабинета (нулевой/маленький охват), это не расхождение
+-- данных, а свойство методики Ozon (ревью задачи 6, докстрока).
 SELECT '1 sku сводки = sku запросов' AS chk,
        (SELECT count(*) FROM (
           SELECT sku, date FROM tenant.ozon_sku_search_daily WHERE cabinet_id = :cab

@@ -130,8 +130,9 @@ daysInTrafarets, daysInPromo, lastStock, lastStockFbo, lastStockFbs, stockoutDay
   `cabinet_last_error TEXT`, `cabinet_failed_at TIMESTAMPTZ`, `cabinet_notified_at
   TIMESTAMPTZ`.
 
-Секретов здесь нет: профиль — файлы на диске сервера, доступные только root. В git
-пути не попадают — заполняются SQL-ом руками владельца (как тарифы `billing.plans`).
+Путь не секрет (профиль — файлы на диске сервера, доступные только root); в код и
+миграции не зашивается, в БД ставится руками владельца SQL-ом (как тарифы
+`billing.plans`).
 
 Оркестратор: сборщики кабинета (`CABINET_COLLECTORS = {"ozon_cabinet_search",
 "ozon_cabinet_traffic"}`) запускаются только для магазинов с `mp_code='ozon'` и

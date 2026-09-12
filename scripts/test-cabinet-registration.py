@@ -64,6 +64,34 @@ tmr = open(os.path.join(ROOT, "deploy/systemd/saas-cabinet.timer"), encoding="ut
 check("service зовёт режим cabinet", "run_saas_collect.sh cabinet" in svc)
 check("service: OnFailure", "OnFailure=saas-failure@%n.service" in svc)
 check("timer: 06:00 и 20:00, не 07:00", "06,20:00:00" in tmr and "07:" not in tmr, tmr)
+# Ревью задачи 6, находка №4: Persistent убран — догон пропущенного тика не
+# должен попасть на 07:00 ozon-panel (общий профиль Chromium).
+check("timer: без Persistent=true (находка №4)", "Persistent=true" not in tmr, tmr)
+# Ревью задачи 6, находка №5: flock -E 75 — не сбой, следующий тик доберёт.
+check("service: SuccessExitStatus=75 (находка №5)", "SuccessExitStatus=75" in svc, svc)
+
+# 4. Ревью задачи 6, находка №3: exit 3 (partial) у сборщика кабинета — busy/
+# day_not_ready, не сбой сборки; ветка обязана уйти в blocked_cabinet, не failed.
+i3 = src.index("elif r.returncode == 3:")
+i_next = src.index("elif r.returncode == 5", i3)
+branch3 = src[i3:i_next]
+check("returncode==3: ветка проверяет CABINET_COLLECTORS", "CABINET_COLLECTORS" in branch3, branch3)
+check("returncode==3: кабинетные уходят в blocked_cabinet, не failed",
+      "blocked_cabinet.append(coll)" in branch3, branch3)
+
+# 5. Ревью задачи 6, находка №6 / спека §4.5: _collectors_for_marketplaces
+# (питает --all и drain_queue/onboarding) не должна отдавать сборщики кабинета —
+# те идут только явным --collectors режима cabinet и ручными прогонами.
+cfm_fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+               and n.name == "_collectors_for_marketplaces"), None)
+cfm_src = ast.get_source_segment(src, cfm_fn) if cfm_fn else ""
+check("_collectors_for_marketplaces: функция найдена", cfm_fn is not None)
+check("_collectors_for_marketplaces: фильтрует CABINET_COLLECTORS из Ozon-веток",
+      "CABINET_COLLECTORS" in cfm_src and "not in CABINET_COLLECTORS" in cfm_src, cfm_src)
+# Чуть более строгая проверка: без фильтра функция просто делала бы
+# "out += OZON_COLLECTORS" — такой необрезанной строки быть не должно.
+check("_collectors_for_marketplaces: OZON_COLLECTORS не добавляется целиком без фильтра",
+      "out += OZON_COLLECTORS\n" not in cfm_src and "out += OZON_COLLECTORS " not in cfm_src, cfm_src)
 
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)

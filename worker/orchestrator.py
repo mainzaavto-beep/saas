@@ -236,12 +236,18 @@ DRAIN_PAUSE_SEC = 8
 
 
 def _collectors_for_marketplaces(mps):
-    """Выбрать сборщики по подключённым МП кабинета."""
+    """Выбрать сборщики по подключённым МП кабинета.
+    Ревью задачи 6, находка №6 / спека §4.5: CABINET_COLLECTORS сюда НЕ входят —
+    они идут под .venv-cabinet (Playwright, профиль браузера), а этот список
+    питает --all (главный тик, системный python3) и drain_queue (backfill
+    onboarding вплоть до 75 дней). Попади они сюда, эти пути погнали бы их под
+    чужим интерпретатором без профиля. Кабинетные сборщики запускаются только
+    явным `--collectors` режима cabinet (run_saas_collect.sh) и ручными прогонами."""
     out = []
     if "wb" in mps:
         out += WB_COLLECTORS
     if "ozon" in mps:
-        out += OZON_COLLECTORS
+        out += [c for c in OZON_COLLECTORS if c not in CABINET_COLLECTORS]
     return out
 
 
@@ -529,7 +535,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
     statuses = {}  # coll -> 'ok'|'partial'|'failed'|'timeout'|'skipped' (для guard'а)
     auth_error_texts = []      # тексты ошибок, похожих на отказ авторизации
     auth_failed_collectors = []  # какие сборщики упали именно по авторизации
-    blocked_cabinet = []       # сборщики кабинета с истёкшей сессией (exit 5)
+    blocked_cabinet = []       # сборщики кабинета: истёкшая сессия (exit 5) или
+                               # busy/day_not_ready (exit 3, §4.3) — не сбой сборки
     run_ids = {}  # coll -> id строки collector_runs (для переклассификации в blocked ниже)
 
     for coll in shop_collectors:
@@ -579,11 +586,20 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 # Контракт exit-кодов: 3 = partial (часть окон пропущена, напр. 429).
                 err = (r.stderr or r.stdout or "").strip().splitlines()
                 print(f"{label} PARTIAL: {err[-1] if err else ''}", flush=True)
-                failed.append(coll)
                 statuses[coll] = "partial"
                 _record_run(cid, coll, "partial", error=(err[-1] if err else None),
                             date_from=date_from, date_to=date_to, started_at=started,
                             rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
+                if coll in CABINET_COLLECTORS:
+                    # Ревью задачи 6, находка №3 / спека §4.3: partial у кабинета —
+                    # это busy/day_not_ready (профиль занят, отчёт кабинета ещё не
+                    # готов), а не сбой сборки. Прогон остаётся жёлтым (blocked),
+                    # не красным (failed); следующий тик доберёт (окно 3 дня, §4.5).
+                    # Статус в журнале остаётся "partial" (не "skipped" как у exit 5) —
+                    # это ближе к истине: часть окна могла успеть собраться.
+                    blocked_cabinet.append(coll)
+                else:
+                    failed.append(coll)
             elif r.returncode == 5 and coll in CABINET_COLLECTORS:
                 err = (r.stderr or "").strip().splitlines()
                 marker = next((l for l in reversed(err) if l.startswith("CABINET_AUTH_EXPIRED")), err[-1] if err else "сессия истекла")

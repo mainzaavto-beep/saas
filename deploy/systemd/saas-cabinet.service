@@ -16,6 +16,11 @@ Group=root
 # 60 мин с запасом на границе.
 Environment=SAAS_COLLECTOR_TIMEOUT_SEC=1500
 Environment=TZ=Europe/Moscow
+# Ревью задачи 6, находка №5: 75 = flock -E 75 не дождался замка на профиль
+# (кто-то другой уже держит /run/lock/saas-cabinet.lock — ручной вход владельца,
+# сдвиг синка ozon-panel). Это не сбой сервиса — следующий тик доберёт (окно
+# 3 дня, §4.5); без этого systemd считал бы exit 75 провалом и будил OnFailure.
+SuccessExitStatus=75
 ExecStart=/opt/agents/saas/worker/run_saas_collect.sh cabinet
 StandardOutput=journal
 StandardError=journal
