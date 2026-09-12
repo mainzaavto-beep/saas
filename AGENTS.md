@@ -139,6 +139,7 @@ analytics/data в память и только потом одной транз�
 | `saas-stocks` | 08:00 | снимок остатков WB (`stocks-report/wb-warehouses`, с 2026-07-18 — старый `supplier/stocks` отключён WB, см. gotcha #11) + Ozon |
 | `saas-metrics30m` | каждые 30 мин | 30-мин снапшоты воронки WB |
 | `saas-backfill` | 07:00, 10:30, 14:00, 19:00 | прогон очереди onboarding-jobs (75 дней) |
+| `saas-cabinet` | 06:00, 20:00 | кабинет Ozon: позиции по запросам + трафик по SKU (Playwright, профиль владельца, только чтение) |
 | `saas-backup` | 03:00 | дамп PG |
 
 Логи: `/opt/agentsDB/logs/saas_worker.log`. Веб: `saas.service` (`next start -p 3200`).
@@ -277,6 +278,19 @@ analytics/data в память и только потом одной транз�
   `/warehouses` (`SignalsStrip.jsx`) читают один и тот же сигнал `low_coverage`; виджет
   главной больше не считает по-своему (раньше — WB-only, по дням с продажами). Подробности —
   «Склады 2.0 — этап 4 «Витрина»» ниже.
+- **Кабинет Ozon: позиции по запросам и трафик (с 2026-09-12)**: канон средней позиции
+  SKU — `tenant.ozon_sku_search_daily.position` (эндпоинт «сводка»,
+  `search-query-analytics/v2/get-seller-items-search-query-analytics`); одноимённое поле в
+  `ozon_sku_traffic_daily.search_position` (`charts/v3/table/by_sku`) — тот же показатель, но
+  другой эндпоинт кабинета считает его иначе (медиана |Δ| ≈ 10) и хранится только как
+  справочное, сторож `scripts/check-ozon-cabinet.sql` держит эту проверку СПРАВОЧНОЙ, не
+  гейтом. Заказы/GMV из статистики поиска кабинета — «по запросу» (заказы покупателей,
+  увидевших товар по конкретному запросу), НЕ равны заказам панели (`ozon_orders`,
+  `lib/ozonMetrics.js`) и подписаны отдельно на странице «Поиск и запросы». ДРР по SKU из
+  кабинета (`ozon_sku_traffic_daily.drr`) — справочная величина, канон ДРР панели (§15.3) не
+  подменяет; решение о канонизации — владельца, после недели наблюдений (первая сверка
+  `scripts/check-ozon-cabinet-drr.sql` 12.09.2026). Подробности — подраздел ниже и
+  `docs/metrics-contract.md` §17.
 
 ### ⚠️ Себестоимость — ЕДИНЫЙ источник `tenant.cost_overrides` (с 2026-07-14)
 
@@ -645,6 +659,109 @@ POST actions: `add` (ручная позиция), `link_sku`/`unlink_sku`, `upd
   консистентность витрины это не ломает (`auth.cabinets` — не tenant-таблица), но на пике
   удваивает потребление пула (`max: 10`). Чинить вместе с `/supply-plan`, чтобы не расщеплять
   источник настроек.
+
+### 🆕 Кабинет Ozon: позиции по запросам и трафик (с 2026-09-12)
+
+Спека `docs/superpowers/specs/2026-09-12-ozon-cabinet-search-traffic-design.md`. Официальный
+Seller API не отдаёт позиции товара по поисковым запросам и разложение трафика по SKU — оба
+набора берутся из внутреннего API кабинета продавца (`seller.ozon.ru`) под живой сессией
+владельца в браузере, а не токеном.
+
+- **Таблицы** (миграция 058): `tenant.ozon_search_queries_daily` (SKU × день × запрос:
+  позиция, спрос, клики, заказы, GMV), `tenant.ozon_sku_search_daily` (SKU × день: средняя
+  позиция — КАНОН, спрос, CTR, GMV), `tenant.ozon_sku_traffic_daily` (SKU × день: воронка
+  показов/корзины/заказов, конверсии, ДРР, дни в Трафаретах, `search_position` — позиция из
+  другого эндпоинта, справочно). `auth.shops`: `cabinet_company_id`, `cabinet_profile_dir`,
+  `cabinet_state` (`none`/`ok`/`expired`), `cabinet_last_error`, `cabinet_failed_at`,
+  `cabinet_last_attempt_at`, `cabinet_notified_at`. `jobs.collector_runs.run_kind` — добавлен
+  `'cabinet'`.
+- **Клиент** `worker/cabinet_client.py` (Playwright 1.62.0, свой venv `worker/.venv-cabinet` —
+  браузер общий с ozon-panel, `playwright install` в этом venv не запускать, чтобы не менять
+  браузер под чужим профилем) — `launch_persistent_context` под сохранённым профилем
+  владельца, `headless=False` + `DISPLAY=:99` (иначе Ozon режет сессию), процесс без
+  `HTTP_PROXY`/`HTTPS_PROXY` (Chromium падает на прокси с авторизацией). Только чтение: ходит
+  исключительно по константе `ALLOWED_PATHS` (5 путей) — любой другой путь отклоняется до
+  похода в сеть. `CabinetAuthError` (401/403 либо форма входа вместо JSON под HTTP 200) →
+  сборщик выходит кодом 5 с маркером `CABINET_AUTH_EXPIRED:` последней строкой в stderr;
+  `CabinetBusyError` (профиль занят другим процессом, `SingletonLock`) → до 5 повторов по 60 с,
+  затем код 3; битый/обрезанный JSON под 200 трактуется как сетевая ошибка и тоже уходит в
+  ретрай (не наша вина, но и не документ). Селф-тест: `worker/cabinet_client_selftest.py`.
+- **Сборщики** `worker/collectors/ozon_cabinet_search.py` (сводка по SKU + запросы,
+  `search-query-analytics/v2`) и `ozon_cabinet_traffic.py` (`charts/v3/table/by_sku`) →
+  селф-тест `worker/collectors/ozon_cabinet_selftest.py`. Пишут одной транзакцией ПОСЛЕ всех
+  сетевых вызовов дня (правило `ozon_metrics`, выше по документу) — чужие SKU дня не трогаются,
+  идемпотентно. Exit: 0 ok · 3 partial (день не готов / профиль занят) · 5 сессия истекла ·
+  1 прочая ошибка кабинета.
+- **Окно дня различается по сборщикам.** `ozon_cabinet_search`: правая граница
+  ИСКЛЮЧАЮЩАЯ (`periodFrom=d`, `periodTo=d+1`) — один и тот же день в обеих границах
+  кабинет отдаёт как `NO_DATA` (проверено 12.09). `ozon_cabinet_traffic`: окно ВКЛЮЧАЮЩЕЕ
+  (`date_from=date_to=день`). Страницы: запросы по SKU — по 10 (`pageNumber` с нуля, конец —
+  пустой список `queries`), трафик — по 30 SKU (`offset`, конец — пустой сырой `items`, не
+  отфильтрованный результат парсера).
+- **⚠️ Обязательное поле `sort` — найдено при внедрении 12.09, в спеке §3.3 его не было.**
+  Тело запроса `charts/v3/table/by_sku` БЕЗ `sort` кабинет отклоняет (`sort is required`);
+  списком `[{...}]` — тоже отклоняет (`proto: syntax error … unexpected token [`). Рабочий
+  вариант — ОДИН объект: `"sort": {"key": "ordered_units", "order": "DESC"}`. Не путать с
+  Seller API `/v1/analytics/data` (`worker/collectors/ozon_client.py`), где `sort` — список.
+- **Один процесс на профиль — три рубежа.** (1) Панель ozon-panel синкается через тот же
+  профиль в 07:00 — таймер `saas-cabinet` идёт в 06:00 и 20:00, мимо; (2) режим `cabinet`
+  берёт `flock -w 600 -E 75 /run/lock/saas-cabinet.lock` (ждёт до 10 мин, иначе код 75); (3)
+  `CabinetBusyError` внутри сборщика — 5 повторов по 60 с, затем партиал. Клиент/агент
+  НИКОГДА не логинится сам — код подтверждения из СМС видит только владелец.
+- **`cabinet_state`** (`worker/cabinet_state.py`, зеркало `worker/shop_auth.py` для
+  «сломанных ключей», но проще — одно состояние без счётчиков попыток). `expired` →
+  оркестратор пропускает сборщики кабинета (`skipped`/`cabinet_expired` в
+  `jobs.collector_runs`, прогон остаётся зелёным), раз в `SAAS_CABINET_RETRY_HOURS` (20)
+  пробует снова — владелец мог войти заново; успех возвращает `ok`. Магазин без
+  `cabinet_profile_dir`/`cabinet_company_id` — `skipped`/`no_cabinet` (как `no_token`).
+  Владелец видит: баннер в шапке кабинета рядом с баннером сломанных ключей
+  (`app/cabinets/[id]/layout.js`), письмо через существующий таймер `saas-notify-keys`
+  (`scripts/notify-broken-keys.mjs`, одно письмо на эпизод через `cabinet_notified_at`) и
+  строку на `/health` (`app/api/health/route.js` → `cabinets_expired`,
+  `app/health/HealthPage.jsx`).
+- **Режим `cabinet`** в `worker/run_saas_collect.sh` — позиционные аргументы
+  `cabinet <DAYS_FROM> <DAYS_TO>`, дефолт 3..1 (лаг кабинета до суток + запас на пропущенный
+  тик): интерпретатор `worker/.venv-cabinet/bin/python` (только этот режим; остальные
+  режимы — прежний интерпретатор воркера `/opt/agents/data-presenter-agent/.venv/bin/python`),
+  `DISPLAY=:99`, снятие
+  `HTTP_PROXY`/`HTTPS_PROXY`, `flock` на профиль. Таймер `saas-cabinet`
+  (`deploy/systemd/saas-cabinet.{service,timer}`) — 06:00/20:00 MSK,
+  `TimeoutStartSec=60min` (2 сборщика × `SAAS_COLLECTOR_TIMEOUT_SEC=1500` = 50 мин
+  наихудший случай + до 10 мин ожидания `flock`, с запасом). Регистрация сборщика =
+  оркестратор (`OZON_COLLECTORS`, `CABINET_COLLECTORS`, `PAUSE_EXEMPT_COLLECTORS` — сборщики
+  кабинета не проходят гейт по API-ключам Ozon, у них своя авторизация) И
+  `run_saas_collect.sh` (урок памяти проекта: регистрация в одном месте — недостаточно) —
+  гард `scripts/test-cabinet-registration.py` проверяет обе точки, часть проверок —
+  исполнением вырезанного блока shell-скрипта с фейками, а не текстом (методика
+  `testing-discipline`).
+- **Сторож** `scripts/check-ozon-cabinet.sql` (`-v cab=1`): проверки 1 (SKU сводки = SKU
+  запросов и наоборот), 3 (Σ спроса по запросам SKU ≥ 0,8 × спрос сводки), 4 (нет дыр в
+  собранном диапазоне дней) — гейт; **проверка 2** (позиция сводки
+  `ozon_sku_search_daily.position` vs `search_position` из `charts/v3`) — **СПРАВОЧНАЯ, не
+  гейт**: два эндпоинта кабинета считают позицию по-разному, порог «≥90% при |Δ|≤5» не
+  проходит ни в один день и только шумит, медиана |Δ| ≈ 10 (решение 12.09.2026). Отдельно
+  `scripts/check-ozon-cabinet-drr.sql` сверяет ДРР кабинета (`ozon_sku_traffic_daily.drr`) с
+  ДРР панели по SKU (`tenant.ozon_daily_sku_ad` ÷ `tenant.ozon_orders`) — первая сверка
+  12.09.2026: медиана |Δ| 0,28 п.п. на 459 строках, выбросы до 18 п.п. на днях с малым числом
+  заказов (малый знаменатель — большой относительный разброс); решение о канонизации —
+  владельца, после недели наблюдений.
+- **Витрина**: `lib/ozonSearch.js` (чистые функции, БД не трогает; селф-тест
+  `scripts/check-ozon-search-selftest.mjs`) — `weightedPosition` (средняя позиция, взвешенная
+  спросом `search_users`), `aggregateSkus`, `buildQueryMatrix`, `kpiFromQueries`,
+  `positionTone` (≤10/≤30/≤100/>100). Страница «Поиск и запросы»
+  (`/cabinets/[id]/search`, пункт меню в группе «Сводка по товарам», после «Заказы по
+  времени») и API `/api/cabinets/[id]/search` (`lib/db.js` — маппинг трёх таблиц выше) —
+  только Ozon, для WB позиций нет. Заказы/GMV на странице — «по запросу» (статистика поиска
+  кабинета), НЕ заказы панели — подписаны явно, `lib/ozonMetrics.js` не меняется. Блок
+  «Трафик по дням (кабинет Ozon)» на «Детальной сводке» товара Ozon — ключ ответа `traffic` в
+  `app/api/cabinets/[id]/detail/route.js`, читает `ozon_sku_traffic_daily` по `product_id`;
+  ДРР кабинета там — справочно, см. проверку выше. Подробности формул — `docs/metrics-
+  contract.md` §17.
+- **Бэкфилл**: кабинет #1 покрыт 04.08–10.09 (38 дней без дыр, `minStatisticsTime` кабинета —
+  самый ранний доступный день). Лаг кабинета — вчерашний день появляется в течение суток.
+- **Профиль — не копировать, не выгружать.** Второй кабинет с профилем (#1008) —
+  архитектурно готово (те же колонки `auth.shops`), ждёт входа владельца ЭТОГО кабинета на
+  сервере (бэклог).
 
 ## Правила работы с кодом
 

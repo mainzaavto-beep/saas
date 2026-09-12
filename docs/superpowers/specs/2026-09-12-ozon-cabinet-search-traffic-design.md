@@ -78,12 +78,15 @@ Ozon, бустинг и разбивка цены из кабинета, XLS-о�
 
 ### 3.3 Трафик по SKU — `POST /api/site/seller-analytics/charts/v3/table/by_sku`
 
-Тело (как шлёт кабинет на «Продажи моих товаров»):
+Тело (как шлёт кабинет на «Продажи моих товаров»; поле `sort` обязательно и только
+одним объектом — найдено при внедрении 12.09: без него кабинет отвечает 400
+«sort is required», список вместо объекта тоже отклоняется):
 
 ```json
 {"current_period":{"date_from":"2026-09-10","date_to":"2026-09-10"},
  "filters":{"desc_type_ids":[],"category_3_ids":[],"category_2_ids":[]},
  "limit":"30","offset":"0",
+ "sort":{"key":"ordered_units","order":"DESC"},
  "metrics":["revenue","search_position","total_views","search_views","pdp_views",
             "hits_search_to_cart","hits_pdp_to_cart","total_hits_to_cart",
             "conv_search_views_to_pdp","conv_pdp_views_to_cart","conv_hits_to_cart_to_order",
@@ -378,7 +381,9 @@ contract.md` §15.3): формулы у Ozon свои, сверка — в §7, 
 - **Сторож данных** `scripts/check-ozon-cabinet.sql`: (1) за каждый собранный день
   SKU в `ozon_sku_search_daily` ⊆ SKU в `ozon_search_queries_daily` и наоборот;
   (2) `|ozon_sku_search_daily.position − ozon_sku_traffic_daily.search_position| ≤ 5`
-  для 90 % SKU дня (два источника одной величины); (3) сумма `search_users` по
+  для 90 % SKU дня (два источника одной величины) — **при внедрении 12.09 переведена в
+  справочную, не гейт**: два эндпоинта кабинета считают позицию по-разному, медиана |Δ| ≈ 10,
+  порог не проходит ни в один день; (3) сумма `search_users` по
   запросам SKU ≥ `search_users` сводки × 0,8 (запросы покрывают сводку); (4) нет дней
   без строк внутри собранного диапазона. Прогоняется после бэкфилла и в чек-листе.
 - **Сверка ДРР:** неделя наблюдений `drr` кабинета против ДРР панели по SKU
