@@ -9,6 +9,7 @@ check('взвешенная позиция', weightedPosition([{ position: 10, s
 check('взвешенная: нулевой спрос → среднее', weightedPosition([{ position: 10, search_users: 0 }, { position: 20, search_users: 0 }]) === 15);
 check('взвешенная: пусто → null', weightedPosition([]) === null);
 check('взвешенная: null позиции пропускаются', weightedPosition([{ position: null, search_users: 5 }, { position: 8, search_users: 5 }]) === 8);
+check('взвешенная: строки приводятся', weightedPosition([{ position: "10", search_users: 0 }, { position: "20", search_users: 0 }]) === 15);
 
 // aggregateSkus
 const rows = [
@@ -45,11 +46,16 @@ check('матрица: суммы и best/last', m.rows[0].search_users === 2350
 check('матрица: ctr = Σview/Σsearch·100 (2 знака)', m.rows[0].ctr === 1.91, m.rows[0]);
 check('фильтр minDemand', buildQueryMatrix(q, dates, { minDemand: 100 }).rows.length === 2);
 check('фильтр onlyOrders', buildQueryMatrix(q, dates, { onlyOrders: true }).rows.length === 1);
+const qExtra = [...q, { query: 'карта памяти', date: '2026-09-11', position: 50, search_users: 100, view_users: 5, ctr: 1, click_users: 1, orders: 0, gmv: 0 }];
+const mExtra = buildQueryMatrix(qExtra, dates, {});
+check('матрица: byDay только из dates, не из данных', Object.keys(mExtra.rows[0].byDay).length === 2 && Object.keys(mExtra.rows[0].byDay).join('|') === dates.join('|'), mExtra.rows[0].byDay);
 
 // kpiFromQueries — по последней дате
 const k = kpiFromQueries(q);
 check('kpi: top10 = 1 (редкий), top50 = 1', k.queriesTop10 === 1 && k.queriesTop50 === 1, k);
 check('kpi: orders за период = 1', k.orders === 1, k);
+const kEmpty = kpiFromQueries([]);
+check('kpi: пусто → queriesTop10/50/orders = 0', kEmpty.queriesTop10 === 0 && kEmpty.queriesTop50 === 0 && kEmpty.orders === 0, kEmpty);
 
 // positionTone
 check('tone', [positionTone(5), positionTone(25), positionTone(80), positionTone(300), positionTone(null)].join() === 'top,good,mid,low,none');
