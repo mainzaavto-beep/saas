@@ -112,5 +112,76 @@ _out = _buf.getvalue()
 check("collect: голый CabinetError → exit 1", _rc == 1, _rc)
 check("collect: ##OBS rows=0 напечатан на пути ошибки", "##OBS rows=0" in _out, _out)
 
+# ══════════════════════════ трафик (charts/v3/table/by_sku) ══════════════════════════
+import ozon_cabinet_traffic as t  # noqa: E402
+BYSKU = {"items": [{
+    "productInfo": {"sku": "4988596186", "name": "TechStore 64 ГБ", "article": "карта 64", "sources": ["fbs", "fbo"]},
+    "metrics": {"revenue": 368827, "searchPosition": 23, "totalViews": 182368, "searchViews": 32275,
+                "convSearchViewsToCart": 0.17, "hitsSearchToCart": 56, "convSearchViewsToPdp": 10.37,
+                "pdpViews": 3346, "convPdpViewsToCart": 12.67, "hitsPdpToCart": 424, "totalHitsToCart": 480,
+                "convHitsToCartToOrder": 47.17, "convViewsToOrder": 0.11, "orderedUnits": 200,
+                "deliveredUnits": 299, "cancelledUnits": 21, "returnedUnits": 8, "avgPrice": 1844,
+                "priceIndex": "super", "daysInPromo": 7, "drr": 10, "daysInTrafarets": 7,
+                "lastStock": 739, "lastStockFbo": 700, "lastStockFbs": 39, "stockoutDays": 12}},
+    {"productInfo": {"sku": "9999", "name": "Без Premium-метрик"}, "metrics": {"orderedUnits": 3}},
+]}
+tr = t.parse_traffic_page(BYSKU, "2026-09-10", SKU2PID)
+check("трафик: 2 строки", len(tr) == 2, tr)
+a = tr[0]
+check("трафик: ключи", (a["sku"], a["date"], a["product_id"]) == (4988596186, "2026-09-10", 1001), a)
+check("трафик: показы/корзины", (a["total_views"], a["search_views"], a["pdp_views"], a["hits_search_to_cart"], a["hits_pdp_to_cart"], a["total_hits_to_cart"]) == (182368, 32275, 3346, 56, 424, 480), a)
+check("трафик: конверсии", (a["conv_search_to_pdp"], a["conv_pdp_to_cart"], a["conv_cart_to_order"], a["conv_views_to_order"]) == (10.37, 12.67, 47.17, 0.11), a)
+check("трафик: drr/трафареты/позиция", (a["drr"], a["days_in_trafarets"], a["days_in_promo"], a["search_position"], a["price_index"]) == (10.0, 7, 7, 23, "super"), a)
+check("трафик: остатки", (a["last_stock"], a["last_stock_fbo"], a["last_stock_fbs"], a["stockout_days"]) == (739, 700, 39, 12), a)
+b = tr[1]
+check("трафик: отсутствующие метрики → NULL, не 0", b["total_views"] is None and b["drr"] is None and b["ordered_units"] == 3, b)
+check("трафик: 22 метрики в запросе, ≤ лимита 30 SKU", len(t.METRICS) == 22 and t.PAGE == 30, t.METRICS)
+
+# ── fetch_day: конец пагинации по СЫРОМУ items, не по отфильтрованному ──
+# страница 1 — один item без sku (после parse_traffic_page даёт []), но это НЕ
+# конец: страница 2 несёт нормальный item, страница 3 — пустая (настоящий конец).
+class _FakeClientPagingTraffic:
+    def __init__(self):
+        self.calls = 0
+
+    def post(self, path, payload):
+        self.calls += 1
+        if self.calls == 1:
+            return {"items": [{"productInfo": {"name": "без sku"}, "metrics": {}}]}
+        if self.calls == 2:
+            return {"items": [{"productInfo": {"sku": "4988596186", "name": "x"}, "metrics": {"orderedUnits": 1}}]}
+        return {"items": []}
+
+
+_tr_rows = t.fetch_day(_FakeClientPagingTraffic(), "2026-09-10", SKU2PID)
+check("трафик: пагинация не останавливается на странице с item без sku",
+      len(_tr_rows) == 1 and _tr_rows[0]["sku"] == 4988596186, _tr_rows)
+
+# ── collect(): голый CabinetError → код 1, ##OBS напечатан до возврата ──
+class _FakeCtxErrorTraffic:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, path, payload):
+        raise t.cc.CabinetError("сбой без под-класса")
+
+
+_orig_from_env_t, _orig_sku2pid_t, _orig_init_t = t.cc.from_env, t.db_pg.ozon_sku2pid, t.db_pg.init
+t.cc.from_env = lambda: _FakeCtxErrorTraffic()
+t.db_pg.ozon_sku2pid = lambda: {}
+t.db_pg.init = lambda: None
+_buf_t = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf_t):
+        _rc_t = t.collect("2026-09-10", "2026-09-10")
+finally:
+    t.cc.from_env, t.db_pg.ozon_sku2pid, t.db_pg.init = _orig_from_env_t, _orig_sku2pid_t, _orig_init_t
+_out_t = _buf_t.getvalue()
+check("трафик collect: голый CabinetError → exit 1", _rc_t == 1, _rc_t)
+check("трафик collect: ##OBS rows=0 напечатан на пути ошибки", "##OBS rows=0" in _out_t, _out_t)
+
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)
