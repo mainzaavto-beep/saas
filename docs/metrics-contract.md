@@ -1510,7 +1510,20 @@ commission/logistics/acquiring/ads/tax — идентичны на уровне 
 где `vat`/`usn`/`acquiring` считаются от `priceBuy` (цены с СПП), а
 `commission`/`ads` — от `priceCabinet` (без СПП). `lib/unit.js:162`.
 
-**Формула Ozon.** `profit = revNet − commission − logisticsFbo − ads − usn − cost`. `lib/unit.js:280`.
+**Формула Ozon (с 2026-09-17, спека 2026-09-17-ozon-unit-model-design.md).**
+`profit = priceSell − vat − usn − commission − acquiring − logistics − ads − cost`, где
+`priceSell = priceOzon × (1 − discount)` — цена продавца (`products.price` =
+`marketing_seller_price`), база НДС/комиссии/эквайринга/рекламы/маржи;
+`commission = priceSell × commissionRate`, `acquiring = priceSell × acquiringRate`
+(ставки — факт из `ozon_order_costs` за 30 дней по вчера, доли от
+`cost_value_retail`; fallback — каталог / среднее по кабинету);
+`logistics = F + R × (1 − b) / b` — F прямая логистика на проданную штуку, R логистика невыкупа
+(строка `is_return=1`: цена 0, парной продажи нет), b = продано/(продано+невыкупы),
+все из начислений за то же окно; F на b не делится — логистика неудачных попыток целиком в R;
+`margin = profit / priceSell` (как у WB — `profit / priceCabinet`). Соинвест
+`boost` — справочный (§11.7), из прибыли не вычитается. `lib/unit.js`, `calcOzon`.
+Тождество: при фактических F/R/b `logistics = Σлогистики окна / продано` —
+сторож `scripts/check-unit-ozon.mjs`.
 
 **Отличие от 11.1/11.3.** Это не измерение факта, а модель «типового» юнита:
 логистика WB считается по формуле тарифа `(50+20·(L−1))/выкуп × 1.6`, а не
@@ -1842,13 +1855,31 @@ cabinetId/platform в ключе — глобально на страницу), 
 Ozon — `profitWithDefect` И `marginWithDefect`) — не расхождение, а буквальное
 следование брифу задачи (`marginWithDefect` для WB не запрашивался).
 
-**ЯВНО: «с % выкупа» на Ozon — no-op, это осознанно, не баг.** У Ozon нет
-поля/колонки `buyout`, и `calcOzon` его вообще не принимает как вход —
-логистика Ozon (`logisticsFbo`) идёт по прямому тарифу площадки, без деления
-на % выкупа (в отличие от WB, где `logistics = (logRaw / buyout) ×
-warehouseCoef`, `lib/unit.js`). Галочка «с % выкупа» на вкладке Ozon
-включается/выключается, но не меняет ни одной цифры — потому что входа,
-который она нейтрализует, у Ozon-модели не существует по конструкции.
+**«С % выкупа» на Ozon работает с 2026-09-17.** `buyout` — вход `calcOzon`
+(§11.4) и ключ whitelist `ALLOWED_KEYS.ozon` (`max = 1`). OFF → `buyout = 1`
+→ `logistics = F` (логистика невыкупов не участвует, колонка «Невыкуп ₽»
+прячется вместе с «% выкупа»). До 17.09 галочка на Ozon была no-op по
+конструкции — модель не принимала `buyout`.
+
+### 11.7 Соинвест Ozon из кабинета продавца (`tenant.ozon_prices`, `source='cabinet'`, миграция 059, 2026-09-17)
+
+**Источник.** Сборщик `ozon_cabinet_prices` (таймер `saas-cabinet`, 06:00/20:00)
+снимает через кабинетный клиент три цены на день: `marketing_seller_price`
+(продавца, с его акциями), `marketing_price` (для всех покупателей, с
+соинвестом Ozon), `marketing_oa_price` (с Ozon Картой). Seller API цены витрины
+не отдаёт (спека 2026-08-02, постскриптум) — старые строки `source='seller_api'`
+с пустым `marketing_price` соинвест не дают.
+
+**Определение.** `boost = 1 − marketing_price / marketing_seller_price` по
+последнему дню `source='cabinet'`, только если обе цены > 0 и
+`marketing_price ≤ marketing_seller_price`; иначе `null` («—», не 0 % — правило
+о финансах). Скидка Ozon Карты в соинвест НЕ входит (решение владельца
+17.09.2026); `marketing_oa_price` хранится справочно.
+
+**Карта доверия.** Снимок на момент тика (не история дня); лаг — до 14 часов;
+истёкшая сессия кабинета → строк нет → `null` у всех; чужие кабинеты без
+профиля — всегда `null`. Из прибыли не вычитается: продавец получает
+`marketing_seller_price` (сверено с начислениями на «карте 64», спека §8).
 
 ---
 
