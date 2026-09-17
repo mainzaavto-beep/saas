@@ -323,10 +323,16 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
   const cabinetR = totReturns > 0 ? totRet / totReturns : 0;
   const cabinetAcq = totRetail > 0 ? totAcq / totRetail : 0.015;
 
-  // Соинвест из снимков кабинета (миграция 059: source='cabinet'). До миграции /
-  // без снимков — null у всех.
+  // Соинвест из снимков кабинета (миграция 059: source='cabinet'). Колонки source
+  // до миграции нет; упавший SELECT переводит ОБЩУЮ транзакцию запроса в aborted
+  // (withTenant без SAVEPOINT) и молча роняет loadWhatif() дальше по хендлеру —
+  // поэтому сначала безопасная проверка наличия колонки, и только потом запрос.
   const boostByPid = {};
-  try {
+  const hasSource = (await db.prepare(
+    `SELECT 1 AS ok FROM information_schema.columns
+     WHERE table_schema = 'tenant' AND table_name = 'ozon_prices' AND column_name = 'source'`
+  ).all()).length > 0;
+  if (hasSource) {
     for (const r of await db.prepare(
       `SELECT product_id, marketing_seller_price AS sp, marketing_price AS mp
        FROM ozon_prices
@@ -335,7 +341,7 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
     ).all()) {
       if (r.sp > 0 && r.mp > 0 && r.mp <= r.sp) boostByPid[r.product_id] = 1 - r.mp / r.sp;
     }
-  } catch {}
+  }
 
   // Факт-входы одного товара поверх каталожных; null там, где факта нет.
   function factInputs(pid) {
@@ -347,7 +353,7 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
       logisticsFbo: f.log_fwd / f.sold,
       returnLogistics: f.returns > 0 ? f.log_ret / f.returns : cabinetR,
       buyout: f.sold / (f.sold + f.returns),
-      priceFact: f.retail_sum / f.sold,
+      priceFact: f.retail_sum > 0 ? f.retail_sum / f.sold : null,
     };
   }
 
