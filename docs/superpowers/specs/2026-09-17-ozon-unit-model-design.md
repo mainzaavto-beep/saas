@@ -15,7 +15,7 @@ WB-модель `calcWB` (`lib/unit.js`) в июне 2026 перебрана с 
 | Цена | средняя всех заказов за всю историю | отстаёт от текущей на 10–20 % («карта 64»: 1 482 vs 1 800 ₽) |
 | Соинвест | `ozon_action_products.current_boost` | таблица пуста, сборщика нет → всегда 0 % |
 | % выкупа | считается, но `calcOzon` не принимает | галочка «с % выкупа» на Ozon — no-op |
-| Возвраты | нет | 346 возвратных шт, 72 тыс ₽ обратной логистики за 30 дн мимо модели |
+| Невыкупы | нет | 346 невыкупленных шт (строки `is_return=1`: цена 0, только логистика, парной продажи нет), 72 тыс ₽ за 30 дн мимо модели |
 | Комиссия | каталожная ставка × выручка без НДС | Ozon берёт от цены с НДС; факт по начислениям отличается от каталога |
 | Эквайринг | «внутри комиссии» | в начислениях отдельная строка (~0,8 %) |
 | База маржи | выручка без НДС | у WB — цена кабинета; строки площадок несопоставимы |
@@ -25,8 +25,8 @@ WB-модель `calcWB` (`lib/unit.js`) в июне 2026 перебрана с 
 1. **База цены** — цена продавца из каталога: `tenant.ozon_products.price`
    (= `marketing_seller_price`, обновляется ежедневно). Рядом справочно —
    средняя фактическая цена проданного за 30 дней из начислений.
-2. **Выкуп и возвраты** — как у WB плюс факт возвратов: логистика на проданную
-   штуку через % выкупа, обратная логистика из начислений.
+2. **Выкуп и невыкупы** — как у WB плюс факт невыкупов: логистика на проданную
+   штуку через % выкупа, логистика невыкупов из начислений.
 3. **Комиссия и эквайринг** — факт из начислений за 30 дней по товару, база —
    цена продажи с НДС; эквайринг отдельной колонкой; fallback — каталог.
 4. **Соинвест** — собирать из кабинета продавца нашим клиентом; соинвест =
@@ -44,12 +44,12 @@ WB-модель `calcWB` (`lib/unit.js`) в июне 2026 перебрана с 
 |---|---|---|---|
 | `priceOzon` | цена продавца со скидкой (аналог `priceCabinet` WB) | `products.price` | да |
 | `discount` | скидка прикидки (дефолт 0) | — | да |
-| `boost` | соинвест Ozon | `ozon_daily_prices`, последний день | нет |
+| `boost` | соинвест Ozon | `ozon_prices` (`source='cabinet'`), последний день | нет |
 | `commissionRate` | комиссия | факт 30 дн / каталог | да |
 | `acquiringRate` | эквайринг | факт 30 дн / среднее по кабинету | нет |
 | `buyout` | % выкупа `b` | факт 30 дн | да (новое) |
-| `logisticsFbo` | прямая логистика на попытку `F` | факт 30 дн / каталожный тариф | да |
-| `returnLogistics` | обратная логистика на возврат `R` | факт 30 дн / среднее по кабинету | нет |
+| `logisticsFbo` | прямая логистика на проданную штуку `F` | факт 30 дн / каталожный тариф | да |
+| `returnLogistics` | логистика невыкупа на одну невыкупленную штуку `R` | факт 30 дн / среднее по кабинету | нет |
 | `adsRate` | ДРР | 0.10 | да |
 | `cost`, `purchase`, `defectRate`, `usnRate`, `vatRate` | как сейчас | как сейчас | как сейчас |
 
@@ -64,7 +64,7 @@ usn        = revNet × usnRate
 commission = priceSell × commissionRate          // база с НДС — так считает Ozon
 acquiring  = priceSell × acquiringRate
 bSafe      = buyout > 0 ? buyout : 1
-logistics  = (F + (1 − bSafe) × R) / bSafe        // на проданную штуку
+logistics  = F + R × (1 − bSafe) / bSafe         // на проданную штуку: прямая + доля невыкупов
 ads        = priceSell × adsRate
 profit     = priceSell − vat − usn − commission − acquiring − logistics − ads − cost
 margin     = profit / priceSell
@@ -75,8 +75,13 @@ marginWithDefect = profitWithDefect / priceSell
 ```
 
 **Тождество (проверка модели).** При фактических `F = Σлог(продано)/продано`,
-`R = Σлог(возвраты)/возвраты`, `b = продано/(продано+возвраты)`:
-`logistics = Σлогистики всех строк окна / продано` — ровно факт из начислений.
+`R = Σлог(невыкупы)/невыкупы`, `b = продано/(продано+невыкупы)`:
+`logistics = F + R·невыкупы/продано = Σлогистики всех строк окна / продано` —
+ровно факт из начислений. Почему F не делится на b (в отличие от WB): строки
+`is_return=1` в `ozon_order_costs` — невыкупы после отгрузки (проверено
+17.09.2026 на кабинете 1: у всех 346 строк за 30 дн `cost_value_retail = 0`,
+парной строки продажи нет), их логистика целиком лежит в R, а в F входят
+только успешные доставки.
 При галочке «с % выкупа» OFF подаётся `b = 1` → `logistics = F`.
 
 Функция остаётся синхронной (урок 26.08). Выходные ключи: все входы +
@@ -94,8 +99,8 @@ profitWithDefect, marginWithDefect, adsRate, boost`.
 
 | Величина | Формула по окну |
 |---|---|
-| `sold` | `COUNT(*) FILTER (is_return = 0)` |
-| `returns` | `COUNT(*) FILTER (is_return = 1)` |
+| `sold` | `SUM(qty) FILTER (is_return = 0)` |
+| `returns` | `SUM(qty) FILTER (is_return = 1)` — невыкупы |
 | `F` | `SUM(logistics) FILTER (is_return = 0) / sold` |
 | `R` | `SUM(logistics) FILTER (is_return = 1) / returns` |
 | `b` | `sold / (sold + returns)` |
@@ -107,13 +112,13 @@ profitWithDefect, marginWithDefect, adsRate, boost`.
 входят (осознанно). Знаки: `logistics`, `commission`, `acquiring` берём по
 модулю — в таблице они хранятся в конвенции площадки.
 
-Fallback (товар без продаж в окне или без возвратов):
+Fallback (товар без продаж в окне или без невыкупов):
 
 - `commissionRate` → `products.commission_pct / 100`; `F` → `products.logistics_fbo_tariff`;
   `b` → 1; строка `estimated: true` (как сейчас).
-- `R` без возвратов у товара → среднее `R` по кабинету за окно; нет и его → 0.
+- `R` без невыкупов у товара → среднее `R` по кабинету за окно; нет и его → 0.
 - `acquiringRate` без продаж → среднее по кабинету за окно; нет → 0.015.
-- `boost` без строки в `ozon_daily_prices` → `null` (UI показывает «—», не 0 %).
+- `boost` без строки в `ozon_prices` (`source='cabinet'`) → `null` (UI показывает «—», не 0 %).
 
 Товары без продаж вообще (draft-ветка) — та же логика через fallback.
 Ручные override `tenant.unit_inputs` по-прежнему старше факта.
@@ -124,17 +129,22 @@ Fallback (товар без продаж в окне или без возвра�
 
 ## 4. Соинвест: сборщик `ozon_cabinet_prices`
 
-**Таблица** `tenant.ozon_daily_prices` (миграция 059, RLS по образцу 058,
-политика `panel_local_ro_cab1` как у соседних tenant-таблиц):
+**Таблица** — уже есть: `tenant.ozon_prices` (миграция 030, спека
+2026-08-02-ozon-coinvest-design.md; RLS и `panel_local_ro_cab1` заведены).
+Её Seller-API-сборщик `ozon_prices` в расписание не попал (93 строки за
+02.08.2026), а `marketing_price` через Seller API мёртв (постскриптум той
+спеки). Миграция 059 только расширяет таблицу:
 
 ```
-cabinet_id bigint, day date, product_id bigint,
-seller_price numeric,     -- marketing_seller_price: цена продавца с его акциями
-marketing_price numeric,  -- цена для всех покупателей с соинвестом Ozon
-oa_price numeric,         -- цена с Ozon Картой (хранится, в юнитке не показывается)
-updated_at timestamptz default now(),
-PRIMARY KEY (cabinet_id, day, product_id)
+ALTER TABLE tenant.ozon_prices ADD COLUMN marketing_oa_price DOUBLE PRECISION; -- цена с Ozon Картой
+ALTER TABLE tenant.ozon_prices ADD COLUMN source TEXT NOT NULL DEFAULT 'seller_api'; -- 'cabinet' у нового сборщика
 ```
+
+Колонки: `marketing_seller_price` — цена продавца с его акциями;
+`marketing_price` — цена для всех покупателей с соинвестом Ozon;
+`marketing_oa_price` — цена с Ozon Картой (хранится, в юнитке не показывается).
+PK `(cabinet_id, product_id, date)`. Сборщик `ozon_prices` остаётся вне
+расписания (день-коллизия с кабинетными строками нам не нужна).
 
 **Источник** — кабинет продавца под нашим профилем (`worker/cabinet_client.py`),
 два новых пути в `ALLOWED_PATHS` (только чтение):
@@ -156,9 +166,11 @@ PRIMARY KEY (cabinet_id, day, product_id)
 маркер `CABINET_AUTH_EXPIRED` — как у соседей. `SAAS_PROBE=1` — печать
 первых 5 товаров без записи.
 
-**Соинвест в юнитке:** `boost = 1 − marketing_price / seller_price` по
-последнему дню кабинета, только если обе цены > 0 и `marketing_price ≤
-seller_price`; иначе `null`.
+**Соинвест в юнитке:** `boost = 1 − marketing_price / marketing_seller_price`
+по последнему дню строк `source = 'cabinet'`, только если обе цены > 0 и
+`marketing_price ≤ marketing_seller_price`; иначе `null`. РНП-роут
+(`rnp-summary`) сейчас отдаёт соинвест как `null` по той же таблице — после
+появления кабинетных строк его можно переключить отдельной задачей (вне рамок).
 
 **Живая проба до сборщика** (после входа владельца в кабинет — сессия истекла
 17.09 08:00 по обоим агентам): 5 товаров, три цены, сверка с тем, что владелец
@@ -179,7 +191,7 @@ seller_price`; иначе `null`.
 
 - `WHATIF_INPUTS.ozon` += `buyout` (`%`, max 100, asFraction). Серверный
   `ALLOWED_KEYS.ozon` += `buyout: {max: 1}`.
-- `HIDDEN_WHEN_BUYOUT_OFF` += `returnLogistics` (при `b = 1` возврат не участвует);
+- `HIDDEN_WHEN_BUYOUT_OFF` += `returnLogistics` (при `b = 1` невыкуп не участвует);
   галочка «с % выкупа» на Ozon подаёт `buyout = 1`, как у WB — абзац контракта
   «no-op» снимается.
 - `boost = null` → «—». `estimated` — как сейчас.
