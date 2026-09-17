@@ -97,7 +97,11 @@ class CabinetClient:
         except Exception as e:  # noqa: BLE001 — тип ошибки Playwright не стабилен
             self._pw.stop()
             msg = str(e)
-            if "SingletonLock" in msg or "already running" in msg or "Failed to launch" in msg:
+            # «Opening in existing browser session … profile is already in use» — так
+            # Playwright сообщает о профиле, занятом cabinet_login/панелью (живьём
+            # 17.09.2026); это тоже «занят», а не поломка — exit 3 и повтор, не failed.
+            if any(s in msg for s in ("SingletonLock", "already running", "Failed to launch",
+                                      "already in use", "existing browser session")):
                 raise CabinetBusyError(f"профиль занят другим процессом: {msg[:200]}") from e
             raise CabinetError(f"не удалось запустить Chromium: {msg[:200]}") from e
         self._req = self._ctx.request
