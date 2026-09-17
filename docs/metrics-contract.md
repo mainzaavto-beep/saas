@@ -1849,9 +1849,9 @@ cabinetId/platform в ключе — глобально на страницу), 
 семантику брака, что и `calcWB`: `defectLoss = purchase × defectRate`,
 `profitWithDefect = profit − defectLoss`. **У WB `marginWithDefect` НЕ
 выводится вовсе** (нет ни в `calcWB`, ни в `COLUMNS_WB`) — у WB есть только
-`profitWithDefect`. `marginWithDefect = profitWithDefect / revNet` — только
-у Ozon (`COLUMNS_OZON`), база — `revNet` (та же, что у обычной `margin` этой
-площадки, §11.4). Разные объёмы зеркала (WB — только `profitWithDefect`,
+`profitWithDefect`. `marginWithDefect = profitWithDefect / priceSell` — только
+у Ozon (`COLUMNS_OZON`), база — `priceSell` (цена со скидкой; та же, что у
+обычной `margin` этой площадки, §11.4). Разные объёмы зеркала (WB — только `profitWithDefect`,
 Ozon — `profitWithDefect` И `marginWithDefect`) — не расхождение, а буквальное
 следование брифу задачи (`marginWithDefect` для WB не запрашивался).
 
@@ -1880,6 +1880,13 @@ Ozon — `profitWithDefect` И `marginWithDefect`) — не расхождени
 истёкшая сессия кабинета → строк нет → `null` у всех; чужие кабинеты без
 профиля — всегда `null`. Из прибыли не вычитается: продавец получает
 `marketing_seller_price` (сверено с начислениями на «карте 64», спека §8).
+
+**Старый источник соинвеста не убран.** `/detail`
+(`app/api/cabinets/[id]/detail/route.js:453`) и `lib/ozonMetrics.js:19`
+по-прежнему считают буст по-старому — из `ozon_action_products`
+(`current_boost` последней даты). Итог: два «соинвест»-источника сосуществуют
+(кабинетный `boost` из этого раздела — только в `unit/all`), пока их не
+переключат на один — это вне рамок задачи 2026-09-17.
 
 ---
 

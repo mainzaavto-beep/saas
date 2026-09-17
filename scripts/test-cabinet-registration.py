@@ -12,7 +12,7 @@ def check(name, cond, detail=""):
     if not cond:
         failed += 1
 
-COLLS = {"ozon_cabinet_search", "ozon_cabinet_traffic"}
+COLLS = {"ozon_cabinet_search", "ozon_cabinet_traffic", "ozon_cabinet_prices"}
 
 # 1. Оркестратор: списки через AST (без импорта — импорт тянет psycopg/env).
 tree = ast.parse(open(os.path.join(ROOT, "worker/orchestrator.py"), encoding="utf-8").read())
@@ -23,7 +23,7 @@ for node in ast.walk(tree):
             lists[node.targets[0].id] = ast.literal_eval(node.value)
         except Exception:
             pass
-check("OZON_COLLECTORS содержит оба сборщика", COLLS <= set(lists.get("OZON_COLLECTORS", [])), lists.get("OZON_COLLECTORS"))
+check("OZON_COLLECTORS содержит все сборщики кабинета", COLLS <= set(lists.get("OZON_COLLECTORS", [])), lists.get("OZON_COLLECTORS"))
 check("ozon_catalog раньше сборщиков кабинета", lists["OZON_COLLECTORS"].index("ozon_catalog") < min(lists["OZON_COLLECTORS"].index(c) for c in COLLS))
 check("CABINET_COLLECTORS объявлен", set(lists.get("CABINET_COLLECTORS", [])) == COLLS, lists.get("CABINET_COLLECTORS"))
 src = open(os.path.join(ROOT, "worker/orchestrator.py"), encoding="utf-8").read()
@@ -51,7 +51,7 @@ with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
     f.write(script)
 out = subprocess.run(["bash", f.name], capture_output=True, text=True, env={**os.environ, "HTTP_PROXY": "http://user:pw@proxy:3128"}).stdout
 vals = dict(line.split("=", 1) for line in out.strip().splitlines() if "=" in line)
-check("cabinet: оба сборщика", set(vals.get("COLLECTORS", "").split(",")) == COLLS, vals)
+check("cabinet: все сборщики кабинета", set(vals.get("COLLECTORS", "").split(",")) == COLLS, vals)
 check("cabinet: окно 3 дня по вчера", (vals.get("DAYS_FROM"), vals.get("DAYS_TO")) == ("3", "1"), vals)
 check("cabinet: интерпретатор .venv-cabinet", vals.get("PY", "").endswith("worker/.venv-cabinet/bin/python"), vals)
 check("cabinet: DISPLAY=:99", vals.get("DISPLAY") == ":99", vals)

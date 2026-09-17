@@ -680,14 +680,15 @@ Seller API не отдаёт позиции товара по поисковым
   браузер под чужим профилем) — `launch_persistent_context` под сохранённым профилем
   владельца, `headless=False` + `DISPLAY=:99` (иначе Ozon режет сессию), процесс без
   `HTTP_PROXY`/`HTTPS_PROXY` (Chromium падает на прокси с авторизацией). Только чтение: ходит
-  исключительно по константе `ALLOWED_PATHS` (5 путей) — любой другой путь отклоняется до
+  исключительно по константе `ALLOWED_PATHS` (6 путей) — любой другой путь отклоняется до
   похода в сеть. `CabinetAuthError` (401/403 либо форма входа вместо JSON под HTTP 200) →
   сборщик выходит кодом 5 с маркером `CABINET_AUTH_EXPIRED:` последней строкой в stderr;
   `CabinetBusyError` (профиль занят другим процессом, `SingletonLock`) → до 5 повторов по 60 с,
   затем код 3; битый/обрезанный JSON под 200 трактуется как сетевая ошибка и тоже уходит в
   ретрай (не наша вина, но и не документ). Селф-тест: `worker/cabinet_client_selftest.py`.
 - **Сборщики** `worker/collectors/ozon_cabinet_search.py` (сводка по SKU + запросы,
-  `search-query-analytics/v2`) и `ozon_cabinet_traffic.py` (`charts/v3/table/by_sku`) →
+  `search-query-analytics/v2`), `ozon_cabinet_traffic.py` (`charts/v3/table/by_sku`) и
+  `ozon_cabinet_prices.py` (три цены/соинвест, `get-common-prices`) →
   селф-тест `worker/collectors/ozon_cabinet_selftest.py`. Пишут одной транзакцией ПОСЛЕ всех
   сетевых вызовов дня (правило `ozon_metrics`, выше по документу) — чужие SKU дня не трогаются,
   идемпотентно. Exit: 0 ok · 3 partial (день не готов / профиль занят) · 5 сессия истекла ·
