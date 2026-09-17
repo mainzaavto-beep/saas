@@ -378,9 +378,9 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
     if (p.im_url) r.im_url = p.im_url;
     r.draft = !input.priceOzon;
     r.status = stat[`ozon|0|${pid}`] || "active";
-    r.sold30 = fact ? facts[pid].sold : 0;
-    // «⚙ оценка» — факта за окно нет (комиссия/логистика каталожные, эквайринг/невыкуп — по кабинету).
-    if (!fact && manual[String(pid)]?.logisticsFbo == null) r.estimated = true;
+    // «⚙ оценка» — факта за окно нет ИЛИ есть продажи без выручки (retail_sum=0,
+    // commissionRate=null): комиссия/логистика каталожные, эквайринг/невыкуп — по кабинету.
+    if ((!fact || fact.commissionRate == null) && manual[String(pid)]?.logisticsFbo == null) r.estimated = true;
     result.push(r);
   }
   return includeInactive ? result : result.filter((r) => r.status === "active");
