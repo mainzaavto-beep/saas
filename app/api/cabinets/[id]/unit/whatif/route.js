@@ -41,6 +41,7 @@ const ALLOWED_KEYS = {
     priceOzon: { max: 1000000 },
     discount: { max: 1 },
     commissionRate: { max: 1 },
+    buyout: { max: 1 }, // % выкупа — вход модели с 17.09.2026 (спека 2026-09-17-ozon-unit-model): галочка «с % выкупа» на Ozon больше не no-op
     logisticsFbo: { max: 100000 },
     adsRate: { max: 1 },
     cost: { max: 1000000 },

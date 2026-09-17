@@ -31,7 +31,8 @@ const COMPACT = {
   // (2026-08-27, режимы юнитки) — зеркало WB-COMPACT (там defectRate/
   // profitWithDefect уже в списке); галочка «с браком» их фильтрует, но им
   // нужно СНАЧАЛА быть в базовом списке, иначе фильтрации нечего показывать.
-  ozon: ["name", "priceSell", "boost", "priceBuyer", "vat", "revNet", "commission", "logisticsFbo", "ads", "usn", "cost", "profit", "margin", "defectRate", "profitWithDefect", "marginWithDefect"],
+  // 17.09.2026 — buyout стал входом Ozon-модели (спека 2026-09-17-ozon-unit-model).
+  ozon: ["name", "priceOzon", "priceFact", "priceSell", "boost", "priceBuyer", "commissionRate", "commission", "acquiring", "buyout", "logisticsFbo", "returnLogistics", "logistics", "ads", "usn", "cost", "profit", "margin", "defectRate", "profitWithDefect", "marginWithDefect"],
 };
 
 const WHATIF_INPUTS = {
@@ -49,6 +50,7 @@ const WHATIF_INPUTS = {
     { key: "priceOzon", label: "Цена на Ozon", unit: "₽", max: 1000000 },
     { key: "discount", label: "Скидка", unit: "%", max: 100, asFraction: true },
     { key: "commissionRate", label: "Комиссия", unit: "%", max: 100, asFraction: true },
+    { key: "buyout", label: "% выкупа", unit: "%", max: 100, asFraction: true },
     { key: "logisticsFbo", label: "Логистика FBO", unit: "₽", max: 100000 },
     { key: "adsRate", label: "ДРР", unit: "%", max: 100, asFraction: true },
     { key: "cost", label: "Себест.", unit: "₽", max: 1000000 },
@@ -61,7 +63,7 @@ const WHATIF_INPUTS = {
 // прикидки (OFF → нейтральный вход buyout=1 / defectRate=0 — см. ProductRow).
 // Состояние — localStorage, глобально на страницу (без cabinetId/platform в
 // ключе — решение брифа задачи 2, «ключ не нужен»).
-const HIDDEN_WHEN_BUYOUT_OFF = new Set(["buyout"]);
+const HIDDEN_WHEN_BUYOUT_OFF = new Set(["buyout", "returnLogistics"]); // Ozon: при b = 1 невыкуп в модели не участвует
 const HIDDEN_WHEN_DEFECT_OFF = new Set(["defectRate", "profitWithDefect", "marginWithDefect"]);
 const LS_BUYOUT_KEY = "unit.buyoutOn";
 const LS_DEFECT_KEY = "unit.defectOn";
@@ -530,7 +532,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, buyo
                       {it.estimated && (
                         <span title={platform === "wb"
                             ? "Активный товар без продаж: выкуп 90% и комиссия — оценка по категории."
-                            : "Логистика — каталожный тариф Ozon: нет проданных штук за последние 30 дней (факт из начислений недоступен)."}
+                            : "Нет проданных штук за последние 30 дней: комиссия — каталожная ставка, логистика — каталожный тариф, эквайринг и невыкуп — средние по кабинету."}
                           style={{ fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "rgba(255,180,0,0.14)", color: "#c98a00", whiteSpace: "nowrap", border: "1px solid rgba(255,180,0,0.3)" }}>⚙ оценка</span>
                       )}
                       {applying && <span style={{ fontSize: 10, color: C.pos }}>⏳</span>}
