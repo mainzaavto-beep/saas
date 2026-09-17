@@ -94,15 +94,13 @@ function autoWb(s) {
   return { priceWb: avgPrice, buyout, commissionRate };
 }
 
-function autoOzon(s, p, cost) {
-  const ordersAll = s.orders_all || 0;
-  const delivered = s.delivered || 0;
-  const avgPrice = s.avg_price != null && Number.isFinite(s.avg_price) ? s.avg_price : 0;
+// Авто-входы Ozon: цена продавца из каталога (products.price = marketing_seller_price,
+// решение владельца 17.09.2026), каталожные ставки — только как fallback (факт
+// из начислений подмешивается в computeOzon поверх).
+function autoOzon(p, cost) {
   const productPrice = p?.price != null && Number.isFinite(p.price) && p.price > 0 ? p.price : 0;
-  const priceOzon = avgPrice > 0 ? avgPrice : productPrice;
-  const buyout = ordersAll > 0 ? delivered / ordersAll : 0;
-  const commissionRate = p.commission_pct != null && Number.isFinite(p.commission_pct) ? p.commission_pct / 100 : null;
-  return { priceOzon, buyout, commissionRate, logisticsFbo: p.logistics_fbo_tariff ?? null, cost: cost ?? null };
+  const commissionRate = p?.commission_pct != null && Number.isFinite(p.commission_pct) ? p.commission_pct / 100 : null;
+  return { priceOzon: productPrice, commissionRate, logisticsFbo: p?.logistics_fbo_tariff ?? null, cost: cost ?? null };
 }
 
 // Загрузка ручных overrides из tenant.unit_inputs (RLS по cabinet).
@@ -275,6 +273,13 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
 }
 
 // ---------- Ozon ----------
+// Модель уровня WB (спека docs/superpowers/specs/2026-09-17-ozon-unit-model-design.md §3):
+// факты за 30 дней ПО ВЧЕРА из начислений (order_costs) одним batch-SQL —
+// комиссия/эквайринг (доли от цены), прямая логистика F на проданную штуку,
+// логистика невыкупа R на одну невыкупленную (is_return=1: цена 0, парной
+// продажи нет), % выкупа b = продано/(продано+невыкупы), справочная
+// средняя цена проданного. Соинвест — из снимков кабинета tenant.ozon_prices
+// (source='cabinet'), последний день; нет снимка → null («—», не 0%).
 async function computeOzon(rates = {}, { includeInactive = false } = {}) {
   const db = new DatabaseSync("ozon", { readOnly: true });
   const products = {};
@@ -284,15 +289,6 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
      FROM products`
   ).all()) products[r.product_id] = r;
 
-  const orderRows = await db.prepare(
-    `SELECT product_id,
-       COUNT(*) AS orders_all,
-       SUM(CASE WHEN status IN ('delivered') THEN 1 ELSE 0 END) AS delivered,
-       AVG(CASE WHEN status != 'cancelled' THEN price END) AS avg_price
-     FROM orders WHERE product_id IS NOT NULL GROUP BY product_id`
-  ).all();
-
-  // Себестоимость — единый источник: tenant.cost_overrides (с 2026-07-14).
   const cogs = {};
   for (const r of await db.prepare(
     `SELECT DISTINCT ON (product_id) product_id, cost FROM tenant.cost_overrides
@@ -300,93 +296,85 @@ async function computeOzon(rates = {}, { includeInactive = false } = {}) {
      ORDER BY product_id, effective_from DESC`
   ).all()) cogs[r.product_id] = r.cost > 0 ? r.cost : null;
   const manual = await loadManual("ozon");
-  // Статус SKU — см. computeWB.
   const stat = await statusMap();
 
-  // ⚠️ ФИКС 2026-08-26 (находка владельца): logistics_fbo_tariff из products —
-  // КАТАЛОЖНЫЙ тариф Ozon (упирается в 25₽ у ~115/145 товаров), а фактическая
-  // логистика на штуку из начислений (order_costs) в 2-7 раз выше (67-171₽) —
-  // прибыль/шт систематически завышалась. Факт = логистика проданных (is_return=0)
-  // штук за окно 30 дней ПО ВЧЕРА (defaultPeriod, решение владельца 2026-08-25),
-  // ОДНИМ batch-SQL по всем товарам (GROUP BY product_id — не N+1). Товары без
-  // продаж/начислений в окне остаются на каталожном тарифе (fallback) и
-  // помечаются estimated:true (тот же механизм, что «оценка» у WB без продаж).
-  const { from: logFrom, to: logTo } = defaultPeriod(30);
-  const logisticsFact = {};
+  // Факты окна. ABS(SUM(...)) — суммы в конвенции площадки, модель ждёт положительные ₽.
+  const { from: winFrom, to: winTo } = defaultPeriod(30);
+  const facts = {};
+  let totRet = 0, totReturns = 0, totAcq = 0, totRetail = 0;
   for (const r of await db.prepare(
     `SELECT product_id,
-        COUNT(*) FILTER (WHERE is_return = 0) AS cnt,
-        SUM(logistics) FILTER (WHERE is_return = 0) AS logistics_sum
+        COALESCE(SUM(qty) FILTER (WHERE is_return = 0), 0)            AS sold,
+        COALESCE(SUM(qty) FILTER (WHERE is_return = 1), 0)            AS returns,
+        ABS(COALESCE(SUM(logistics) FILTER (WHERE is_return = 0), 0)) AS log_fwd,
+        ABS(COALESCE(SUM(logistics) FILTER (WHERE is_return = 1), 0)) AS log_ret,
+        ABS(COALESCE(SUM(commission) FILTER (WHERE is_return = 0), 0)) AS comm_sum,
+        ABS(COALESCE(SUM(acquiring) FILTER (WHERE is_return = 0), 0))  AS acq_sum,
+        COALESCE(SUM(cost_value_retail) FILTER (WHERE is_return = 0), 0) AS retail_sum
       FROM order_costs
       WHERE product_id IS NOT NULL
         AND substr(COALESCE(sale_dt, return_dt), 1, 10) >= ?
         AND substr(COALESCE(sale_dt, return_dt), 1, 10) <= ?
       GROUP BY product_id`
-  ).all(logFrom, logTo)) {
-    if (r.cnt > 0 && r.logistics_sum != null) logisticsFact[r.product_id] = r.logistics_sum / r.cnt;
+  ).all(winFrom, winTo)) {
+    facts[r.product_id] = r;
+    totRet += r.log_ret; totReturns += r.returns; totAcq += r.acq_sum; totRetail += r.retail_sum;
   }
+  const cabinetR = totReturns > 0 ? totRet / totReturns : 0;
+  const cabinetAcq = totRetail > 0 ? totAcq / totRetail : 0.015;
 
-  // Бустинг Ozon — MAX(current_boost) на последнюю дату.
+  // Соинвест из снимков кабинета (миграция 059: source='cabinet'). До миграции /
+  // без снимков — null у всех.
   const boostByPid = {};
   try {
     for (const r of await db.prepare(
-      `SELECT product_id, MAX(current_boost) AS boost
-       FROM ozon_action_products
-       WHERE date = (SELECT MAX(date) FROM ozon_action_products)
-         AND current_boost IS NOT NULL AND current_boost > 0
-       GROUP BY product_id`
-    ).all()) boostByPid[r.product_id] = r.boost;
+      `SELECT product_id, marketing_seller_price AS sp, marketing_price AS mp
+       FROM ozon_prices
+       WHERE source = 'cabinet'
+         AND date = (SELECT MAX(date) FROM ozon_prices WHERE source = 'cabinet')`
+    ).all()) {
+      if (r.sp > 0 && r.mp > 0 && r.mp <= r.sp) boostByPid[r.product_id] = 1 - r.mp / r.sp;
+    }
   } catch {}
 
-  const result = [];
-  const usedIds = new Set();
-  for (const s of orderRows) {
-    const pid = s.product_id;
-    const p = products[pid] || {};
-    const name = p.name || p.offer_id || String(pid);
-    const factLog = logisticsFact[pid];
-    const input = {
-      ...autoOzon(s, p, cogs[pid]),
-      ...(factLog != null ? { logisticsFbo: factLog } : {}), // факт перекрывает каталожный тариф из autoOzon
-      boost: boostByPid[pid] ?? 0,
-      ...manual[String(pid)], // ручной override (unit_inputs) — старше факта, если задан (задача 4 приёмки)
-      sku: String(pid), name, ...rates,
+  // Факт-входы одного товара поверх каталожных; null там, где факта нет.
+  function factInputs(pid) {
+    const f = facts[pid];
+    if (!f || !(f.sold > 0)) return null;
+    return {
+      commissionRate: f.retail_sum > 0 ? f.comm_sum / f.retail_sum : null,
+      acquiringRate: f.retail_sum > 0 ? f.acq_sum / f.retail_sum : null,
+      logisticsFbo: f.log_fwd / f.sold,
+      returnLogistics: f.returns > 0 ? f.log_ret / f.returns : cabinetR,
+      buyout: f.sold / (f.sold + f.returns),
+      priceFact: f.retail_sum / f.sold,
     };
-    const r = await calcOzon(input);
-    r.platform = "ozon";
-    r.article = p.offer_id || String(pid);
-    r.category = p.category || null;
-    if (p.im_url) r.im_url = p.im_url;
-    r.draft = !input.priceOzon;
-    r.status = stat[`ozon|0|${pid}`] || "active";
-    // Логистика — оценка (каталожный тариф), если в order_costs нет проданных штук
-    // за окно 30 дней (нет факта начислений). Не задеваем, если manual уже задал logisticsFbo.
-    if (factLog == null && manual[String(pid)]?.logisticsFbo == null) r.estimated = true;
-    result.push(r);
-    usedIds.add(String(pid));
   }
-  // Товары без продаж (draft).
+
+  const result = [];
   for (const [pidKey, p] of Object.entries(products)) {
-    if (usedIds.has(String(pidKey))) continue;
     const pid = Number(pidKey);
-    const productPrice = p.price != null && Number.isFinite(p.price) && p.price > 0 ? p.price : null;
+    const fact = factInputs(pid);
     const input = {
-      priceOzon: productPrice,
-      commissionRate: p.commission_pct != null ? p.commission_pct / 100 : null,
-      logisticsFbo: p.logistics_fbo_tariff ?? null,
-      boost: boostByPid[pid] ?? 0,
-      cost: cogs[pid] ?? null,
-      sku: String(pid), name: p.name || p.offer_id || String(pid),
-      ...rates,
+      ...autoOzon(p, cogs[pid]),
+      acquiringRate: cabinetAcq,
+      returnLogistics: cabinetR,
+      buyout: 1,
+      ...(fact ? Object.fromEntries(Object.entries(fact).filter(([, v]) => v != null)) : {}),
+      boost: boostByPid[pid] ?? null,
+      ...manual[String(pid)], // ручной override (unit_inputs) — старше факта
+      sku: String(pid), name: p.name || p.offer_id || String(pid), ...rates,
     };
-    const r = await calcOzon(input);
+    const r = calcOzon(input);
     r.platform = "ozon";
     r.article = p.offer_id || String(pid);
     r.category = p.category || null;
     if (p.im_url) r.im_url = p.im_url;
     r.draft = !input.priceOzon;
     r.status = stat[`ozon|0|${pid}`] || "active";
-    r.estimated = true; // нет продаж вообще — логистика (и остальное) каталожная оценка
+    r.sold30 = fact ? facts[pid].sold : 0;
+    // «⚙ оценка» — факта за окно нет (комиссия/логистика каталожные, эквайринг/невыкуп — по кабинету).
+    if (!fact && manual[String(pid)]?.logisticsFbo == null) r.estimated = true;
     result.push(r);
   }
   return includeInactive ? result : result.filter((r) => r.status === "active");
