@@ -34,6 +34,7 @@ ALLOWED_PATHS = (
     "/api/search-query-analytics/v2/get-seller-items-search-query-analytics",      # сводка по SKU
     "/api/search-query-analytics/v2/get-search-query-analytics-details",           # запросы по SKU
     "/api/site/seller-analytics/charts/v3/table/by_sku",                           # трафик по SKU
+    "/api/pricing-bff-service/v3/get-common-prices",                               # три цены (соинвест), ozon_cabinet_prices
 )
 
 SLEEP = time.sleep  # подменяется в селф-тесте
