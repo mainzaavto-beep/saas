@@ -85,7 +85,7 @@ FBSSTATUS_COLLECTORS="wb_fbs_status,wb_fbs_writeoff"
 # playwright (worker/.venv-cabinet), Xvfb :99, без прокси, flock на профиль
 # (один процесс на профиль; ozon-panel синкается в 07:00 — таймер saas-cabinet
 # идёт в 06:00 и 20:00). Окно 3 дня по вчера — лаг кабинета до суток.
-CABINET_COLLECTORS="ozon_cabinet_search,ozon_cabinet_traffic"
+CABINET_COLLECTORS="ozon_cabinet_search,ozon_cabinet_traffic,ozon_cabinet_prices"
 
 case "$MODE" in
   main)       COLLECTORS="$MAIN_COLLECTORS";       DAYS_FROM="${DAYS_FROM:-2}" ;;

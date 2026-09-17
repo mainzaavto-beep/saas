@@ -183,5 +183,27 @@ _out_t = _buf_t.getvalue()
 check("трафик collect: голый CabinetError → exit 1", _rc_t == 1, _rc_t)
 check("трафик collect: ##OBS rows=0 напечатан на пути ошибки", "##OBS rows=0" in _out_t, _out_t)
 
+# ── цены кабинета (get-common-prices) → ozon_cabinet_prices ──
+import ozon_cabinet_prices as cp  # noqa: E402
+LIST_RESP = {"products": [
+    {"item_id": "5393596117", "part_item": {"offer_id": "карта 64"}},
+    {"item_id": "4192317618", "part_item": {"offer_id": "Серый квадрат 90*210"}},
+    {"item_id": "999", "part_item": {}},                     # без offer_id — пропуск
+], "cursor": "abc"}
+check("list-by-filter: item_id → offer_id", cp.parse_list_page(LIST_RESP) == {"5393596117": "карта 64", "4192317618": "Серый квадрат 90*210"}, cp.parse_list_page(LIST_RESP))
+
+PRICES_RESP = {"items": [
+    {"item_id": "5393596117", "marketing_seller_price": "1800", "marketing_price": "1260", "marketing_oa_price": "887"},
+    {"item_id": "4192317618", "marketing_seller_price": "2550", "marketing_price": None, "marketing_oa_price": "1366"},
+    {"item_id": "777", "marketing_seller_price": "10"},        # нет в каталоге — пропуск
+    {"item_id": "4192317618", "marketing_seller_price": "0"},  # нули → строка без цен не пишется
+]}
+ID2PID = {"5393596117": 5393596117, "4192317618": 4192317618}
+rows = cp.parse_common_prices(PRICES_RESP, ID2PID, "2026-09-17")
+check("common-prices: три цены", rows[0] == {"product_id": 5393596117, "date": "2026-09-17",
+      "marketing_seller_price": 1800.0, "marketing_price": 1260.0, "marketing_oa_price": 887.0}, rows[0])
+check("common-prices: marketing_price None сохраняется как None", rows[1]["marketing_price"] is None and rows[1]["marketing_oa_price"] == 1366.0, rows[1])
+check("common-prices: чужой item и нулевые цены пропущены", len(rows) == 2, rows)
+
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)

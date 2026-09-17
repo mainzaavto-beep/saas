@@ -84,7 +84,7 @@ GUARD_DEPS = {"wb_order_costs": "wb_finance", "ozon_order_costs": "ozon_accruals
 # отфильтровываются в _run_one принудительно, даже если их впишут в env.
 PAUSE_EXEMPT_COLLECTORS = {
     c.strip() for c in os.environ.get(
-        "SAAS_PAUSE_EXEMPT", "ozon_efficiency,ozon_cabinet_search,ozon_cabinet_traffic").split(",") if c.strip()
+        "SAAS_PAUSE_EXEMPT", "ozon_efficiency,ozon_cabinet_search,ozon_cabinet_traffic,ozon_cabinet_prices").split(",") if c.strip()
 }
 
 # ── Контракт exit-кодов сборщиков ────────────────────────────────────
@@ -221,12 +221,13 @@ OZON_COLLECTORS = [
     "ozon_metrics_30m",    # 30-минутные снимки воронки и рекламы Ozon (таймер saas-metrics30m)
     "ozon_cabinet_search",   # кабинет продавца: позиции по запросам (миграция 058, таймер saas-cabinet)
     "ozon_cabinet_traffic",  # кабинет продавца: трафик/ДРР по SKU (тот же таймер)
+    "ozon_cabinet_prices",   # кабинет продавца: три цены → соинвест (миграция 059, тот же таймер)
 ]
 
 # Сборщики, ходящие не в Seller API, а в кабинет продавца под профилем браузера
 # (worker/cabinet_client.py). Запускаются только у магазинов с cabinet_profile_dir;
 # отказ сессии — exit 5 → cabinet_state.expired (не auth_state ключей).
-CABINET_COLLECTORS = ["ozon_cabinet_search", "ozon_cabinet_traffic"]
+CABINET_COLLECTORS = ["ozon_cabinet_search", "ozon_cabinet_traffic", "ozon_cabinet_prices"]
 
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).
 DEFAULT_COLLECTORS = WB_COLLECTORS
