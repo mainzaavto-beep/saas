@@ -7,9 +7,9 @@ SaaS-сборщик ТРЁХ ЦЕН Ozon из кабинета продавца 
 Соинвест % = 1 − marketing_price / marketing_seller_price (считает роут unit/all).
 Seller API этих цен не отдаёт (постскриптум спеки 2026-08-02) — только кабинет.
 Два вызова: список товаров в продаже (list-by-filter, курсор, по 200) → item_id ↔
-offer_id; цены батчами по 100 (get-common-prices). item_id кабинета = product_id
-Seller API (проверено пробой 17.09.2026 — см. спеку §8); связка через
-offer_id ↔ tenant.ozon_products как страховка.
+offer_id; цены батчами по 100 (get-common-prices). item_id кабинета предположительно =
+product_id Seller API (гипотеза, проба ожидает входа владельца в кабинет — спека §8);
+страховка — связка через offer_id ↔ tenant.ozon_products.
 Снимок на СЕГОДНЯ (argv-даты принимаются для совместимости с таймером и игнорируются);
 второй тик дня перезаписывает. Идемпотентно.
 Exit: 0 ok · 3 профиль занят · 5 сессия кабинета истекла (маркер CABINET_AUTH_EXPIRED)
@@ -66,6 +66,10 @@ def parse_common_prices(resp, id2pid, day):
 
 
 def fetch_id2offer(client, company_id):
+    """Конец пагинации — по СЫРОМУ списку products, не по отфильтрованному
+    parse_list_page: страница может целиком состоять из товаров без offer_id
+    (page → {}), это ещё не конец (см. ozon_cabinet_search.fetch_day,
+    ozon_cabinet_traffic.fetch_day — тот же приём)."""
     id2offer, cursor = {}, ""
     for _ in range(100):  # предохранитель: 100 × 200 = 20 000 товаров
         resp = client.post(P_LIST, {
@@ -75,10 +79,10 @@ def fetch_id2offer(client, company_id):
             "return_total_items": True, "visibility": "IN_SALE",
             "sort_by": "SORT_BY_CREATED_AT", "sort_dir": "SORT_DIRECTION_DESC",
             "limit": LIST_PAGE, "cursor": cursor})
-        page = parse_list_page(resp)
-        id2offer.update(page)
+        raw = resp.get("products") or []
+        id2offer.update(parse_list_page(resp))
         new_cursor = resp.get("cursor") or ""
-        if not page or not new_cursor or new_cursor == cursor:
+        if not raw or not new_cursor or new_cursor == cursor:
             break
         cursor = new_cursor
     return id2offer
@@ -126,8 +130,9 @@ def collect(date_from=None, date_to=None):
                       + (f", не связано {missing}" if missing else ""), flush=True)
                 rows = fetch_prices(client, company_id, list(id2pid), id2pid, day)
                 if probe:
+                    pid2offer = {pid: id2offer[iid] for iid, pid in id2pid.items()}
                     for r in rows[:5]:
-                        print(f"  PROBE {id2offer.get(str(r['product_id']), r['product_id'])}: {r}", flush=True)
+                        print(f"  PROBE {pid2offer.get(r['product_id'], r['product_id'])}: {r}", flush=True)
                     _obs(0, day)
                     return 0
                 if id2pid and not rows:
@@ -153,7 +158,8 @@ def collect(date_from=None, date_to=None):
             print(f"cabinet_error: {e}", file=sys.stderr, flush=True)
             _obs(0, day)
             return 1
-    return 3
+    return 1  # недостижимо: цикл всегда возвращает изнутри — либо успех/ошибка,
+              # либо exit 3 на последней попытке CabinetBusyError (attempt == BUSY_RETRIES)
 
 
 if __name__ == "__main__":

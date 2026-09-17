@@ -205,5 +205,27 @@ check("common-prices: три цены", rows[0] == {"product_id": 5393596117, "d
 check("common-prices: marketing_price None сохраняется как None", rows[1]["marketing_price"] is None and rows[1]["marketing_oa_price"] == 1366.0, rows[1])
 check("common-prices: чужой item и нулевые цены пропущены", len(rows) == 2, rows)
 
+# ── fetch_id2offer: конец пагинации по СЫРОМУ списку products, не по отфильтрованному ──
+# страница 1 — два товара без offer_id (после parse_list_page даёт {}), но это НЕ
+# конец: страница 2 несёт товар с offer_id, страница 3 — пустая (настоящий конец).
+class _FakeClientPagingPrices:
+    def __init__(self):
+        self.calls = 0
+
+    def post(self, path, payload):
+        self.calls += 1
+        if self.calls == 1:
+            return {"products": [{"item_id": "1", "part_item": {}}, {"item_id": "2", "part_item": {}}], "cursor": "c1"}
+        if self.calls == 2:
+            return {"products": [{"item_id": "3", "part_item": {"offer_id": "офер 3"}}], "cursor": "c2"}
+        return {"products": [], "cursor": "c2"}
+
+
+_fake_paging = _FakeClientPagingPrices()
+_id2offer = cp.fetch_id2offer(_fake_paging, "1428518")
+check("fetch_id2offer: не останавливается на странице без offer_id",
+      _id2offer == {"3": "офер 3"}, _id2offer)
+check("fetch_id2offer: 3 запроса (не остановился после страницы 1)", _fake_paging.calls == 3, _fake_paging.calls)
+
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)
