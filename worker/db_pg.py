@@ -636,6 +636,19 @@ def upsert_ozon_prices_many(rows):
     return _batch_upsert("ozon_prices", ["product_id", "date"], _OZON_PRICES_COLS, rows)
 
 
+_OZON_CABINET_PRICES_COLS = ["product_id", "date", "marketing_seller_price",
+                             "marketing_price", "marketing_oa_price", "source"]
+
+
+def upsert_ozon_cabinet_prices_many(rows):
+    """Три цены из кабинета продавца → tenant.ozon_prices, source='cabinet'
+    (миграция 059, спека 2026-09-17-ozon-unit-model §4). Обновляет ТОЛЬКО свои
+    колонки — price/old_price/min_price Seller-API-снимка не трогает.
+    PK (cabinet_id, product_id, date): второй тик дня перезаписывает."""
+    return _batch_upsert("ozon_prices", ["product_id", "date"], _OZON_CABINET_PRICES_COLS,
+                         [{**r, "source": "cabinet"} for r in rows])
+
+
 def update_site_prices_many(rows):
     """Реальная цена сайта (card.wb.ru, миграция 029) — ОТДЕЛЬНЫЙ UPDATE,
     не upsert: сбой публичного API не должен затирать вчерашние price_site
