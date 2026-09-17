@@ -227,5 +227,93 @@ check("fetch_id2offer: не останавливается на странице
       _id2offer == {"3": "офер 3"}, _id2offer)
 check("fetch_id2offer: 3 запроса (не остановился после страницы 1)", _fake_paging.calls == 3, _fake_paging.calls)
 
+# ── collect(): три гейта ошибок (ревью 2026-09-17, находка F4) ──
+_orig_from_env_p, _orig_query_p, _orig_init_p, _orig_upsert_p = cp.cc.from_env, cp.db_pg.query, cp.db_pg.init, cp.db_pg.upsert_ozon_cabinet_prices_many
+cp.db_pg.init = lambda: None
+_upsert_calls = []
+cp.db_pg.upsert_ozon_cabinet_prices_many = lambda rows: (_upsert_calls.append(rows), len(rows))[1]
+
+
+class _FakeCtxEmpty:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, path, payload):
+        return {"products": [], "cursor": ""} if path == cp.P_LIST else {"items": []}
+
+
+# (a) кабинет не отдал ни одного товара в продаже → cabinet_empty, exit 3
+cp.cc.from_env = lambda: _FakeCtxEmpty()
+cp.db_pg.query = lambda *a, **kw: []
+_buf_p1 = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf_p1):
+        _rc_p1 = cp.collect()
+finally:
+    cp.cc.from_env, cp.db_pg.query = _orig_from_env_p, _orig_query_p
+_out_p1 = _buf_p1.getvalue()
+check("цены collect: пустой список товаров → exit 3 (cabinet_empty)", _rc_p1 == 3, _rc_p1)
+check("цены collect: ##OBS rows=0 при cabinet_empty", "##OBS rows=0" in _out_p1, _out_p1)
+
+
+class _FakeCtxNoMap:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, path, payload):
+        return {"products": [{"item_id": "555", "part_item": {"offer_id": "офер-Х"}}], "cursor": ""} if path == cp.P_LIST else {"items": []}
+
+
+# (b) товары есть, но ни один item_id/offer_id не связан с каталогом → id_mapping_failed, exit 1
+cp.cc.from_env = lambda: _FakeCtxNoMap()
+cp.db_pg.query = lambda *a, **kw: [{"product_id": 999, "offer_id": "другой-офер"}]
+_buf_p2 = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf_p2):
+        _rc_p2 = cp.collect()
+finally:
+    cp.cc.from_env, cp.db_pg.query = _orig_from_env_p, _orig_query_p
+_out_p2 = _buf_p2.getvalue()
+check("цены collect: товары есть, связки нет → exit 1 (id_mapping_failed)", _rc_p2 == 1, _rc_p2)
+check("цены collect: ##OBS rows=0 при id_mapping_failed", "##OBS rows=0" in _out_p2, _out_p2)
+
+
+class _FakeCtxOk:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, path, payload):
+        if path == cp.P_LIST:
+            return {"products": [{"item_id": "555", "part_item": {"offer_id": "офер-Х"}}], "cursor": ""}
+        if path == cp.P_PRICES:
+            return {"items": [{"item_id": "555", "marketing_seller_price": "1000",
+                                "marketing_price": "800", "marketing_oa_price": "700"}]}
+        return {}
+
+
+# (c) нормальный путь: один связанный товар, цены пришли → exit 0, upsert с одной строкой
+cp.cc.from_env = lambda: _FakeCtxOk()
+cp.db_pg.query = lambda *a, **kw: [{"product_id": 501, "offer_id": "офер-Х"}]
+_upsert_calls.clear()
+_buf_p3 = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf_p3):
+        _rc_p3 = cp.collect()
+finally:
+    cp.cc.from_env, cp.db_pg.query, cp.db_pg.init, cp.db_pg.upsert_ozon_cabinet_prices_many = _orig_from_env_p, _orig_query_p, _orig_init_p, _orig_upsert_p
+_out_p3 = _buf_p3.getvalue()
+check("цены collect: норм. путь → exit 0", _rc_p3 == 0, _rc_p3)
+check("цены collect: upsert вызван с одной строкой (product_id из связки offer_id)",
+      len(_upsert_calls) == 1 and len(_upsert_calls[0]) == 1 and _upsert_calls[0][0]["product_id"] == 501, _upsert_calls)
+
 print("FAILED" if failed else "ALL PASS", failed)
 sys.exit(1 if failed else 0)

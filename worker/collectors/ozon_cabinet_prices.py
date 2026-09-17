@@ -97,16 +97,18 @@ def fetch_prices(client, company_id, item_ids, id2pid, day):
 
 
 def _id2pid(id2offer):
-    """item_id → product_id: прямое совпадение с каталогом, иначе через offer_id."""
+    """item_id → product_id: сначала offer_id (проверяемая связка), прямое
+    совпадение item_id == product_id — только запасной вариант (гипотеза
+    спеки §4, не подтверждена)."""
     offer2pid = {r["offer_id"]: int(r["product_id"]) for r in db_pg.query(
         "SELECT product_id, offer_id FROM tenant.ozon_products WHERE offer_id IS NOT NULL")}
     pids = set(offer2pid.values())
     out = {}
     for iid, offer in id2offer.items():
-        if iid.isdigit() and int(iid) in pids:
-            out[iid] = int(iid)
-        elif offer in offer2pid:
+        if offer in offer2pid:
             out[iid] = offer2pid[offer]
+        elif iid.isdigit() and int(iid) in pids:
+            out[iid] = int(iid)
     return out
 
 
@@ -124,7 +126,17 @@ def collect(date_from=None, date_to=None):
         try:
             with cc.from_env() as client:
                 id2offer = fetch_id2offer(client, company_id)
+                if not id2offer:
+                    print("  кабинет не отдал ни одного товара в продаже — cabinet_empty", flush=True)
+                    _obs(0, day)
+                    return 3
                 id2pid = _id2pid(id2offer)
+                if not id2pid:
+                    print("id_mapping_failed: ни один item_id кабинета не связан с "
+                          "tenant.ozon_products (гипотеза спеки §4 не подтвердилась)",
+                          file=sys.stderr, flush=True)
+                    _obs(0, day)
+                    return 1
                 missing = len(id2offer) - len(id2pid)
                 print(f"  в продаже {len(id2offer)}, в каталоге {len(id2pid)}"
                       + (f", не связано {missing}" if missing else ""), flush=True)
