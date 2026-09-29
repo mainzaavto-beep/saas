@@ -194,7 +194,7 @@ try {
       SELECT
         SUM(retail_amount) FILTER (WHERE supplier_oper_name = 'Продажа') AS sales,
         ABS(SUM(retail_amount) FILTER (WHERE supplier_oper_name = 'Возврат')) AS returns,
-        SUM(delivery_rub) FILTER (WHERE supplier_oper_name = 'Логистика') AS logistics,
+        SUM(delivery_rub) FILTER (WHERE supplier_oper_name IN ('Логистика', 'Доставка')) AS logistics,
         SUM(storage_fee) FILTER (WHERE supplier_oper_name = 'Хранение') AS storage,
         SUM(penalty) FILTER (WHERE supplier_oper_name = 'Штраф') AS penalty,
         SUM(deduction) FILTER (WHERE supplier_oper_name = 'Удержание') AS deduction,

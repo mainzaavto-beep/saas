@@ -70,7 +70,9 @@ def _aggregate_sql(start, end):
                  THEN ABS(COALESCE(f.ppvz_sales_commission,0)) ELSE 0 END) AS commission,
         SUM(CASE WHEN f.supplier_oper_name IN ('Продажа','Возврат')
                  THEN COALESCE(f.acquiring_fee,0) ELSE 0 END) AS acquiring,
-        SUM(CASE WHEN f.supplier_oper_name = 'Логистика'
+        -- С 01.09.2026 WB называет операцию «Доставка» (раньше «Логистика»);
+        -- без второго имени логистика сентября считалась нулём (найдено 29.09).
+        SUM(CASE WHEN f.supplier_oper_name IN ('Логистика', 'Доставка')
                  THEN COALESCE(f.delivery_rub,0) ELSE 0 END) AS logistics,
         SUM(CASE WHEN f.supplier_oper_name = 'Компенсация скидки по программе лояльности'
                        OR f.bonus_type_name LIKE '%%ояльност%%'

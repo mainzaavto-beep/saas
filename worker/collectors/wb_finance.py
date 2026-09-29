@@ -1,5 +1,6 @@
 """
-SaaS-сборщик ФИНАНСОВОГО ОТЧЁТА WB (reportDetailByPeriod) → tenant.wb_finance_report.
+SaaS-сборщик ФИНАНСОВОГО ОТЧЁТА WB (sales-reports/detailed, до 24.09.2026 — v5
+reportDetailByPeriod) → tenant.wb_finance_report.
 
 Дневная гранулярность (period=daily, заявка №28): отчёт доступен на следующий день
 без недельного лага. Требует ПЕРСОНАЛЬНЫЙ токен клиента (базовый → 204).
@@ -17,30 +18,79 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db_pg
 
 WB_TOKEN = os.getenv("WB_TOKEN")
-REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
+# С 24.09.2026 WB отключил GET statistics-api /api/v5/supplier/reportDetailByPeriod
+# (404 «This method is deprecated», release-notes?id=498). Замена — POST
+# finance-api /api/finance/v1/sales-reports/detailed: тот же отчёт реализации,
+# но поля в camelCase, денежные суммы строками, курсор rrdId в теле запроса,
+# лимит WB — 1 запрос в минуту (X-Ratelimit-Limit: 1). Проба 29.09.2026.
+REPORT_URL = "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed"
 PAGE_LIMIT = 100000
+RATE_PAUSE = 61  # сек между запросами: лимит WB 1/мин
+
+# Новое имя поля → колонка tenant.wb_finance_report (имена колонок — от старого v5,
+# на них завязаны wb_order_costs, wb_cabinet_costs и lib/wbMetrics.js).
+FIELD_MAP = {
+    "rrdId": "rrd_id", "reportId": "realizationreport_id",
+    "dateFrom": "date_from", "dateTo": "date_to", "rrDate": "rr_dt",
+    "nmId": "nm_id", "vendorCode": "sa_name", "subjectName": "subject_name",
+    "sellerOperName": "supplier_oper_name", "docTypeName": "doc_type_name",
+    "bonusTypeName": "bonus_type_name", "quantity": "quantity",
+    "retailPrice": "retail_price", "retailAmount": "retail_amount",
+    "retailPriceWithDisc": "retail_price_withdisc_rub", "forPay": "ppvz_for_pay",
+    "deliveryService": "delivery_rub", "paidStorage": "storage_fee",
+    "penalty": "penalty", "additionalPayment": "additional_payment",
+    "deduction": "deduction", "paidAcceptance": "acceptance",
+    "acquiringFee": "acquiring_fee", "ppvzSalesCommission": "ppvz_sales_commission",
+    "vw": "ppvz_vw", "returnAmount": "return_amount", "salePercent": "sale_percent",
+    "commissionPercent": "commission_percent", "srid": "srid",
+    "orderDt": "order_dt", "saleDt": "sale_dt",
+}
+# Денежные поля новый метод отдаёт строками ("1646.47") — приводим к числу.
+MONEY_COLS = {"retail_price", "retail_amount", "retail_price_withdisc_rub", "ppvz_for_pay",
+              "delivery_rub", "storage_fee", "penalty", "additional_payment", "deduction",
+              "acceptance", "acquiring_fee", "ppvz_sales_commission", "ppvz_vw"}
 
 # Окна, пропущенные из-за 429 после 5 попыток. >0 → exit 3 (partial) —
 # контракт exit-кодов оркестратора (orchestrator.py, _run_one).
 _SKIPPED_429 = 0
 
 
+def _num(v):
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def map_row(r):
+    """Строка нового отчёта → dict с колонками tenant.wb_finance_report."""
+    out = {}
+    for src, col in FIELD_MAP.items():
+        v = r.get(src)
+        out[col] = _num(v) if col in MONEY_COLS else v
+    return out
+
+
 def fetch_realization(date_from, date_to, daily=True):
-    """Выгрузка строк отчёта за период. cursor-пагинация по rrdid. period=daily."""
+    """Выгрузка строк отчёта за период: POST, курсор rrdId, period=daily."""
     if not WB_TOKEN:
         raise RuntimeError("WB_TOKEN не выставлен воркером")
-    headers = {"Authorization": WB_TOKEN}
+    headers = {"Authorization": WB_TOKEN, "Content-Type": "application/json"}
     all_rows = []
     rrdid = 0
     page = 0
     while True:
         page += 1
-        params = {"dateFrom": date_from, "dateTo": date_to, "rrdid": rrdid, "limit": PAGE_LIMIT}
+        body = {"dateFrom": date_from, "dateTo": date_to, "limit": PAGE_LIMIT}
+        if rrdid:
+            body["rrdId"] = rrdid
         if daily:
-            params["period"] = "daily"
+            body["period"] = "daily"
         for attempt in range(5):
             try:
-                r = requests.get(REPORT_URL, headers=headers, params=params, timeout=90)
+                r = requests.post(REPORT_URL, headers=headers, json=body, timeout=120)
             except requests.RequestException as e:
                 if attempt == 4:
                     raise
@@ -48,39 +98,42 @@ def fetch_realization(date_from, date_to, daily=True):
                 time.sleep(10)
                 continue
             if r.status_code == 429:
-                # WB rate-limit: Retry-After часто НЕ передаёт (None). Прогрессивный
-                # backoff 30→60→90→120→150с — ждать всё дольше, не зацикливаться на 60.
-                wait = int(r.headers.get("Retry-After") or (30 * (attempt + 1)))
+                wait = int(r.headers.get("X-Ratelimit-Retry") or r.headers.get("Retry-After")
+                           or RATE_PAUSE)
+                wait = max(wait, RATE_PAUSE)
                 print(f"    429 (попытка {attempt+1}/5), жду {wait}с...", flush=True)
                 time.sleep(wait)
                 continue
             # 204/пусто = отчёт ещё не сформирован (напр. за сегодня). Не падаем.
             if r.status_code == 204 or not r.text or not r.text.strip():
                 return []
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # Тело WB объясняет причину (deprecated, неверный токен…) — без него
+                # в журнале прогонов остаётся голое «404 Not Found» (урок 24–29.09.2026).
+                raise RuntimeError(f"WB {r.status_code} {REPORT_URL}: {r.text[:400]}")
             break
         else:
-            # Все 5 попыток исчерпаны на 429 — пропускаем окно (не валит весь backfill),
-            # но помечаем прогон как partial (exit 3), чтобы оркестратор знал о дыре.
             global _SKIPPED_429
             _SKIPPED_429 += 1
             print(f"    429 после 5 попыток — пропускаю окно", flush=True)
             return []
-        rows = r.json()
+        rows = r.json() or []
         if not rows:
             break
-        all_rows.extend(rows)
+        all_rows.extend(map_row(x) for x in rows)
         print(f"  страница {page}: +{len(rows)} (всего {len(all_rows)})", flush=True)
-        rrdid = rows[-1]["rrd_id"]
-        if len(rows) < PAGE_LIMIT:
+        last = rows[-1]["rrdId"]
+        if len(rows) < PAGE_LIMIT or last <= rrdid:
+            # last <= rrdid — WB не сдвинул курсор: выходим, а не крутим одну страницу.
             break
-        time.sleep(1)
+        rrdid = last
+        time.sleep(RATE_PAUSE)
     return all_rows
 
 
 def fetch_by_days(date_from, date_to):
     """Тянет дневные отчёты, но НЕ по одному дню, а 7-дневными окнами (компромисс
-    скорости и надёжности). reportDetailByPeriod отдаёт период任意 длины с period=daily,
+    скорости и надёжности). Отчёт отдаёт период любой длины с period=daily,
     поэтому 7-дневное окно = ОДИН запрос с дневными строками внутри (realizationreport_id
     на каждый день). Это в ~7 раз быстрее по-дневного цикла и меньше подвержено 429.
     Последнее окно может быть короче 7 дней."""
@@ -98,10 +151,9 @@ def fetch_by_days(date_from, date_to):
             print(f"  окно {cur}..{win_end}: 0 (отчёт ещё не сформирован)", flush=True)
         all_rows.extend(rows)
         cur = win_end + timedelta(days=1)
-        # Пауза между окнами: WB rate-limit ~1 запрос/мин на аккаунт (429 без Retry-After
-        # после большого ответа). 35с держит нас под лимитом, ~10 окон = ~6 мин на full backfill.
+        # Пауза между окнами: лимит нового метода WB — 1 запрос/мин (X-Ratelimit-Limit: 1).
         if cur <= end:
-            time.sleep(35)
+            time.sleep(RATE_PAUSE)
     return all_rows
 
 

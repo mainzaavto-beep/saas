@@ -54,7 +54,9 @@ WITH classified AS (
       WHEN supplier_oper_name = 'Удержание'
            AND COALESCE(deduction, 0) < 0                                THEN 'payout_other'
       WHEN supplier_oper_name = 'Удержание'                              THEN 'deduction_other'
-      WHEN supplier_oper_name LIKE 'Возмещение издержек по перевозке%%'  THEN 'transport_compensation'
+      -- С 01.09.2026 WB зовёт её «…по перемещению и операционной обработке товара»
+      -- (раньше «…по перевозке/по складским операциям с товаром») — ловим оба имени.
+      WHEN supplier_oper_name LIKE 'Возмещение издержек по пере%%'        THEN 'transport_compensation'
       WHEN supplier_oper_name LIKE 'Возмещение за выдачу%%'              THEN 'pvz_compensation'
     END AS cost_type,
     CASE
@@ -68,7 +70,7 @@ WITH classified AS (
     AND substr(rr_dt,1,10) BETWEEN %s AND %s
     AND (
          supplier_oper_name IN ('Хранение','Штраф','Удержание')
-      OR supplier_oper_name LIKE 'Возмещение издержек по перевозке%%'
+      OR supplier_oper_name LIKE 'Возмещение издержек по пере%%'
       OR supplier_oper_name LIKE 'Возмещение за выдачу%%'
     )
 )
