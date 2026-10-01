@@ -104,8 +104,9 @@ claude -p --model sonnet --output-format json --json-schema <schema> \
   --allowedTools Read Grep Glob WebFetch WebSearch \
     "Bash(psql -h localhost -U saas_ro:*)" "Bash(journalctl:*)" \
     "Bash(git log:*)" "Bash(git show:*)" "Bash(git diff:*)" \
-    "Bash(grep:*)" "Bash(tail:*)" "Bash(ls:*)" \
-  --disallowedTools Edit Write NotebookEdit Agent
+    "Bash(grep:*)" "Bash(tail:*)" "Bash(head:*)" "Bash(wc:*)" "Bash(ls:*)" \
+  --disallowedTools Edit Write NotebookEdit Agent \
+    "Read(/root/.pgpass*)" "Read(/opt/agents/saas/.env.local)" "Read(/etc/saas-worker.env)" "Read(/etc/collectors.env)"
 ```
 - `--setting-sources user` отключает проектный `bypassPermissions` (`.claude/settings*`).
   В `-p` неразрешённый инструмент отклоняется без вопроса.
