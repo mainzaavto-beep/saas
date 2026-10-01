@@ -1,0 +1,21 @@
+[Unit]
+Description=SAAS — авторазбор падений сборщиков (claude -p, только диагноз)
+After=network.target postgresql.service
+OnFailure=saas-failure@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/agents/saas
+# POSTGRES_PASSWORD для записи jobs.failure_triage; SAAS_TRIAGE_ENABLED=0 — выключатель.
+EnvironmentFile=/etc/saas-worker.env
+# HOME — там авторизация claude; TZ — время в промпте и письме.
+Environment=HOME=/root TZ=Europe/Moscow SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas
+# Один тик за раз; занято — тихий выход (разбор до 20 мин длиннее шага таймера).
+ExecStart=/usr/bin/flock -n -E 0 /run/lock/saas-triage.lock /opt/agents/data-presenter-agent/.venv/bin/python -m worker.failure_triage
+# 20 мин разбор + контекст + письма, с запасом.
+TimeoutStartSec=30min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saas-triage

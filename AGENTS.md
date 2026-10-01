@@ -23,6 +23,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Схему БД / миграции | `db/migrations/0NN_*.sql` (пронумерованы, идемпотентны) |
 | Журнал прогонов сборщиков | jobs.collector_runs (пишет orchestrator; ok/partial/failed/timeout/no_token/skipped; ретеншн 90 дн) |
 | Здоровье данных | /health (доступ: SAAS_OPS_USER_IDS в .env.local) + OnFailure=saas-failure@%n во всех юнитах |
+| Авторазбор падений сборщиков | jobs.failure_triage + worker/failure_triage.py (таймер saas-triage, claude -p только чтение) |
 | systemd-юниты | deploy/systemd/ (источник истины) + deploy/install-systemd.sh |
 | Слой расчёта метрик WB | `lib/wbMetrics.js` (единый источник правды по заказам/выручке/прибыли) |
 | Слой расчёта метрик Ozon | `lib/ozonMetrics.js` |
@@ -131,6 +132,17 @@ analytics/data в память и только потом одной транз�
 `SAAS_AUTH_RETRY_HOURS` (24). Таймаут одного сборщика —
 `SAAS_COLLECTOR_TIMEOUT_SEC` (900, было 3600).
 
+**Авторазбор падений (с 2026-10-01).** Таймер `saas-triage` (15 мин) открывает эпизод в
+`jobs.failure_triage` после 2 падений подряд (`failed`/`timeout`) у пары «сборщик × кабинет»
+и молчит до `ok`; эхо `unit:*` (упал сборщик того же юнита) не учитывается, `manual` — тоже.
+Разбор — `claude -p --model sonnet` с инструментами только на чтение (БД под `saas_ro`, без
+`Edit`/`Write`), ≤3 в сутки, таймаут 20 мин; итог — письмо пользователям `SAAS_OPS_USER_IDS`
+и блок «Разборы падений» на `/health`. Только диагноз — чинит человек. Выключатель
+`SAAS_TRIAGE_ENABLED=0` в `/etc/saas-worker.env`. Решения тика — чистое ядро
+`worker/triage_core.py` (селф-тест `worker/triage_core_selftest.py`), промпт —
+`worker/triage_prompt.md`, письмо — `lib/triageMail.js`. Спека
+`docs/superpowers/specs/2026-09-30-failure-triage-design.md`.
+
 ## Боевое расписание (systemd, `/etc/systemd/system/`)
 
 | Таймер | Когда | Что делает |
@@ -141,6 +153,7 @@ analytics/data в память и только потом одной транз�
 | `saas-backfill` | 07:00, 10:30, 14:00, 19:00 | прогон очереди onboarding-jobs (75 дней) |
 | `saas-cabinet` | 06:00, 20:00 | кабинет Ozon: позиции по запросам + трафик по SKU (Playwright, профиль владельца, только чтение) |
 | `saas-backup` | 03:00 | дамп PG |
+| `saas-triage` | каждые 15 мин | авторазбор падений: 2 failed подряд → `claude -p` (Sonnet, только чтение) → письмо + `/health` (≤3 разбора/сутки) |
 
 Логи: `/opt/agentsDB/logs/saas_worker.log`. Веб: `saas.service` (`next start -p 3200`).
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=SAAS — авторазбор падений каждые 15 минут
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
