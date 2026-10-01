@@ -6,6 +6,11 @@
 // адресату не должен держать эпизод непрочитанным для остальных) — сбой по ВСЕМ
 // адресатам считается неудачей эпизода, повтор на следующем тике.
 // Получатели — SAAS_OPS_USER_IDS (те же, кому открыт /health).
+// closed без report_json (ревью task-9 раунд 1, 01.10.2026) — НЕ отправляем: это эпизод,
+// который был в процессе повтора (queued, finished_at от неудачной попытки claude) и
+// закрылся сам по возврату сборщика в ok ДО того, как разбор успел дать отчёт; без условия
+// report_json IS NOT NULL formatTriageMail получала бы report_json=null и рисовала тему
+// «[разбор не удался]», хотя на деле ничего разбирать было уже не нужно — ложная тревога.
 import { readFileSync } from 'node:fs';
 
 for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8').split('\n')) {
@@ -27,7 +32,8 @@ const eps = await query(
      FROM jobs.failure_triage t
      LEFT JOIN jobs.collector_runs r ON r.id = t.last_failed_run_id
     WHERE t.notified_at IS NULL
-      AND (t.status IN ('done','error') OR (t.status = 'closed' AND t.finished_at IS NOT NULL))
+      AND (t.status IN ('done','error')
+           OR (t.status = 'closed' AND t.finished_at IS NOT NULL AND t.report_json IS NOT NULL))
     ORDER BY t.id`
 );
 if (!eps.length) {

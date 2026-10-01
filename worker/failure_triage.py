@@ -92,9 +92,17 @@ def apply_plan(conn, plan):
     for ep_id, run_id in plan["bump"]:
         conn.execute("UPDATE jobs.failure_triage SET last_failed_run_id = %s WHERE id = %s", (run_id, ep_id))
     if plan["stale"]:
-        conn.execute("UPDATE jobs.failure_triage SET status = 'error', finished_at = now(), "
-                     "raw_output = 'разбор прерван: running дольше 30 мин' "
-                     "WHERE id = ANY(%s) AND status = 'running'", (plan["stale"],))
+        # Minor 2 (ревью task-9 раунд 1): зависший running — тот же сбой, что и неудачный
+        # claude (retryable=True), решение через core.after_failure по attempts этого
+        # эпизода — повтор, если лимит не исчерпан, а не сразу окончательный error.
+        rows = conn.execute("SELECT id, attempts FROM jobs.failure_triage WHERE id = ANY(%s)",
+                            (plan["stale"],)).fetchall()
+        for r in rows:
+            status = core.after_failure(r["attempts"], True)
+            conn.execute(
+                "UPDATE jobs.failure_triage SET status = %s, finished_at = now(), "
+                "raw_output = 'разбор прерван: running дольше 30 мин' "
+                "WHERE id = %s AND status = 'running'", (status, r["id"]))
 
 
 def _sh(cmd, timeout=30):
@@ -192,7 +200,12 @@ def run_claude(prompt):
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        out, err_out = p.communicate()
+        try:
+            # SIGKILL к группе обычно закрывает пайпы почти мгновенно — 10 с с запасом на
+            # случай осиротевшего внука вне группы (не наш процесс — не ждём его вечно).
+            out, err_out = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            out, err_out = "", ""
         raw = _scrub_proxy(f"{out}\n--- stderr ---\n{err_out}", proxy)
         return None, f"таймаут {TIMEOUT} с", raw, True
     rep, err, retryable = core.parse_claude_output(out, p.returncode)
@@ -265,13 +278,17 @@ def main():
         if a.episode:
             ep_id = a.episode
         else:
-            started = conn.execute("SELECT count(*) AS n FROM jobs.failure_triage "
-                                   "WHERE started_at > now() - interval '24 hours'").fetchone()["n"]
+            # Бюджет — ЗАПУСКИ claude за сутки (включая повторы одного эпизода), не эпизоды:
+            # иначе эпизод с 3 попытками занимал бы 1 слот из DAILY_LIMIT вместо честных 3.
+            started = conn.execute(
+                "SELECT count(*) AS n FROM jobs.failure_triage, unnest(run_starts) s "
+                "WHERE s > now() - interval '24 hours'").fetchone()["n"]
             ep_id = core.pick_next(conn.execute(OPEN_SQL).fetchall(), started, now)
         if ep_id:
             claimed = conn.execute(
                 "UPDATE jobs.failure_triage SET status = 'running', started_at = now(), "
-                "finished_at = NULL, attempts = attempts + 1 "
+                "finished_at = NULL, attempts = attempts + 1, "
+                "run_starts = array_append(run_starts, now()) "
                 "WHERE id = %s AND status = 'queued' RETURNING *", (ep_id,)).fetchone()
             conn.commit()
     if claimed:

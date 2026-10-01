@@ -1,18 +1,34 @@
 #!/bin/bash
 # triage-sql — единственный путь claude -p (авторазбор падений) к БД: роль saas_ro,
 # транзакция только на чтение, таймаут, без метакоманд psql (обратная косая запрещена
-# целиком — иначе \! даёт shell, \copy/\o пишут файлы, \c меняет роль). Внешний `timeout` —
-# подстраховка поверх PGOPTIONS: SQL вида "set statement_timeout=0; select ..." переопределяет
-# серверный лимит из PGOPTIONS внутри своей же сессии (найдено ревью 01.10.2026). Дополнительно
-# текст SQL со словом "timeout" (в любом регистре) отклоняется целиком — так и внешний `timeout`
-# не спасает: `set_config('statement_timeout', '0', false)` закрепляет снятый лимит на бэкенде,
-# процесс клиента убит, а бэкенд остаётся жить без лимита (ревью task-9, 01.10.2026).
+# целиком — иначе \! даёт shell, \copy/\o пишут файлы, \c меняет роль).
+#
+# Раньше здесь был текстовый запрет SQL со словом "timeout" (защита от
+# `set statement_timeout=0`/`set_config('statement_timeout',...)`, закрепляющего снятый
+# лимит на бэкенде ПОСЛЕ того, как внешний `timeout` убил только клиента psql) — снят
+# ревью task-9 раунд 1 (01.10.2026): ложно блокировал легитимные запросы
+# (`WHERE status='timeout'`) и обходился конкатенацией `'statement_time'||'out'`.
+# Вместо текстового фильтра — убийство самого бэкенда. Соединение получает уникальный
+# `application_name` (`PGAPPNAME=triage-$$`, $$ — PID этого скрипта). Внешний `timeout 90`
+# убивает КЛИЕНТА (psql), но не обязательно серверный процесс: постгрес не замечает обрыв
+# TCP, пока не попытается писать/читать, так что бэкенд с `pg_sleep`/снятым лимитом живёт
+# дальше осиротевшим. При коде возврата 124 (таймаут `timeout`) добиваем такой бэкенд через
+# `pg_terminate_backend` по его же `application_name` — saas_ro имеет право сигналить
+# собственные же сессии (привилегии роли над самой собой) без грантов pg_signal_backend.
 # Использование: triage-sql "SELECT ..."
 set -euo pipefail
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then echo "usage: triage-sql \"<SQL>\"" >&2; exit 2; fi
 case "$1" in *\\*) echo "triage-sql: обратная косая запрещена" >&2; exit 2;; esac
-shopt -s nocasematch
-case "$1" in *timeout*) echo "triage-sql: изменение таймаутов запрещено" >&2; exit 2;; esac
-shopt -u nocasematch
 export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=60000"
-exec timeout 90 psql -X -q -h localhost -U saas_ro -d saas -v ON_ERROR_STOP=1 -At -c "$1"
+export PGAPPNAME="triage-$$"
+set +e
+timeout 90 psql -X -q -h localhost -U saas_ro -d saas -v ON_ERROR_STOP=1 -At -c "$1"
+rc=$?
+set -e
+if [ "$rc" -eq 124 ]; then
+  timeout 10 psql -X -q -h localhost -U saas_ro -d saas -Atc \
+    "select pg_terminate_backend(pid) from pg_stat_activity where application_name='$PGAPPNAME' and usename='saas_ro'" \
+    >/dev/null 2>&1 || true
+  echo "triage-sql: запрос прерван по таймауту 90 с" >&2
+fi
+exit "$rc"
