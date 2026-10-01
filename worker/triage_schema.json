@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "cause", "confidence", "evidence", "proposed_fix", "data_impact", "urgent"],
+  "properties": {
+    "summary": {"type": "string", "description": "2-3 строки: что сломалось и почему"},
+    "cause": {"type": "string", "enum": ["mp_method_changed", "rate_limit", "auth", "our_bug", "data", "infra", "unknown"]},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "evidence": {"type": "array", "items": {"type": "string"}, "description": "факты: файл:строка, строка лога, результат SQL"},
+    "proposed_fix": {"type": "string"},
+    "data_impact": {"type": "string", "description": "какие кабинеты/даты без данных, нужен ли бэкфилл"},
+    "urgent": {"type": "boolean", "description": "теряются финансовые данные клиента прямо сейчас"}
+  }
+}

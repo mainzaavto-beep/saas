@@ -171,3 +171,35 @@ claude -p --model sonnet --output-format json --json-schema <schema> \
 - Телеграм.
 - Повторный разбор «всё ещё падает через 3 суток».
 - Разбор падений панели (`saas-web`), не сборщиков.
+
+## 10. Результаты пробы CLI (2026-10-01)
+
+Проба (`claude -p --model sonnet --output-format json --json-schema "$(cat worker/triage_schema.json)"
+--setting-sources user --permission-mode default --allowedTools ... --disallowedTools ...`) прогнана
+из `/opt/agents/saas`. Шаг 4 брифа (`rm -f .../README.md`) заменён решением контроллера на
+`rm -f /tmp/triage_probe_keep` (файл-сентинел создан перед прогоном: `README.md` в репозитории
+не существует, поэтому его удаление ничего бы не доказало).
+
+- Запреты: Write, `touch`, `psql -U postgres`, `rm` — отклонены; `psql -U saas_ro` — выполнен.
+  Подтверждено тремя способами: (1) файловой системой — `/tmp/triage_probe_x` не создан (`No such
+  file or directory`), `/tmp/triage_probe_keep` цел после прогона; (2) `structured_output.evidence`
+  модели — по каждому шагу «needs approval» / «disabled for this session» для 1–4, успешный `1`
+  для шага 5; (3) массивом `permission_denials` в конверте — 3 записи (`touch ...`, `psql -U
+  postgres ...`, `rm -f /tmp/triage_probe_keep ...`), все `tool_name: "Bash"`. Write отклонён ещё
+  раньше — инструмент физически недоступен в сессии («No such tool available: Write»), в
+  `permission_denials` не попадает (не доходит до проверки разрешений).
+- Конверт `--output-format json`: ключи — `api_error_status, duration_api_ms, duration_ms,
+  fast_mode_disabled_reason, fast_mode_state, first_content_frame_ms, is_error, modelUsage,
+  num_turns, permission_denials, queued_turn_count, result, result_index, session_id, stop_reason,
+  structured_output, subagent_stats, subtype, terminal_reason, time_to_request_ms, total_cost_usd,
+  ttft_ms, ttft_stream_ms, type, usage, uuid`; структурированный ответ — в `structured_output`
+  (готовый распарсенный объект по `worker/triage_schema.json`; `result` несёт ту же структуру как
+  JSON-строку — дублирование, не альтернативный источник). **`STRUCTURED_KEY = "structured_output"`**
+  для Task 3. Полезные дополнительные поля конверта: `is_error`/`subtype` (`"success"`) — быстрый
+  признак валидного прогона; `permission_denials` — структурированный список отклонённых
+  инструментов (годится как доп. evidence при желании).
+- К флагам §5 добавлены `Bash(head:*)`, `Bash(wc:*)` и запреты `Read` на файлы с паролями
+  (`/root/.pgpass*`, `.env.local`, `/etc/saas-worker.env`, `/etc/collectors.env`).
+- Уточнения при планировании: `timeout` = падение; `run_kind='manual'` игнорируется; эхо
+  юнита — по `run_kind` сборщиков юнита в окне [−70; +5] мин от записи юнита (запись юнита
+  делается в конце прогона, прогон длится до часа — окно ±10 мин из §4 не ловило эхо).
