@@ -135,15 +135,33 @@ analytics/data в память и только потом одной транз�
 **Авторазбор падений (с 2026-10-01).** Таймер `saas-triage` (15 мин) открывает эпизод в
 `jobs.failure_triage` после 2 падений подряд (`failed`/`timeout`) у пары «сборщик × кабинет»
 и молчит до `ok`; эхо `unit:*` (упал сборщик того же юнита) не учитывается, `manual` — тоже.
-Разбор — `claude -p --model sonnet` с инструментами только на чтение (БД под `saas_ro`, без
-`Edit`/`Write`), ≤3 в сутки, таймаут 20 мин; итог — письмо пользователям `SAAS_OPS_USER_IDS`
-и блок «Разборы падений» на `/health`. Только диагноз — чинит человек. Выключатель
-`SAAS_TRIAGE_ENABLED=0` в `/etc/saas-worker.env`. Решения тика — чистое ядро
-`worker/triage_core.py` (селф-тест `worker/triage_core_selftest.py`), промпт —
-`worker/triage_prompt.md`, письмо — `lib/triageMail.js`. Спека
-`docs/superpowers/specs/2026-09-30-failure-triage-design.md`. Прокси для `claude -p` —
-`SAAS_TRIAGE_PROXY` в `/etc/saas-triage.env` (root, 600, вне git): напрямую с сервера
-API Anthropic отвечает 403 «Request not allowed».
+Суточный юнит не закрывает/не переоткрывает эпизод на джиттере таймера — порог тишины
+юнитов `UNIT_QUIET` 30 ч (не 24 ч: сутки + запас). Разбор — `claude -p --model sonnet` с
+инструментами только на чтение (БД под `saas_ro`, без `Edit`/`Write`), ≤3 в сутки, таймаут
+20 мин; доступ claude к БД/журналу/git — только через обёртки `worker/bin/triage-{sql,journal,
+git}` (единственный путь, метакоманды psql и `--no-index`/абсолютные пути git запрещены);
+`triage-sql` также отклоняет SQL, где встречается слово `timeout` (любой регистр) — иначе
+`set_config('statement_timeout',...)` внутри сессии переживает внешний `timeout`, которым
+обёртка убивает только клиента; `triage-git` отдельно отклоняет любой аргумент с подстрокой
+`001_tenant_core` (в этой миграции захардкожен пароль БД, заплатка до отдельной чистки) —
+тот же путь закрыт и `Read` claude (`DISALLOWED` в `worker/failure_triage.py`). `WebFetch` —
+только `dev.wildberries.ru`/`docs.ozon.ru`. Окружение claude — белый список `ENV_KEEP`
+(секреты воркера не наследуются). Сбой самого `claude -p` (не нашёлся бинарник, таймаут,
+битый/не-JSON ответ) — отличается от валидного, но не прошедшего схему отчёта: первое
+повторяется до `MAX_ATTEMPTS=3` раз не чаще раза в час (`RETRY_BACKOFF`, счётчик `attempts` —
+миграция 061), второе сразу уходит в `error` (повтор не поможет, схема и промпт те же). На
+таймауте вся группа процессов claude (включая Bash-детей вроде `triage-sql`) убивается
+`SIGKILL` через `os.killpg` (`start_new_session=True` в `run_claude`), а не только сам claude.
+Прокси `SAAS_TRIAGE_PROXY` вырезается из `raw_output` перед записью в БД. Итог — письмо
+пользователям `SAAS_OPS_USER_IDS` (уходит, если доставлено хотя бы одному адресату — сбой по
+части списка не блокирует остальных) и блок «Разборы падений» на `/health`. Только диагноз —
+чинит человек. Выключатель `SAAS_TRIAGE_ENABLED=0` в `/etc/saas-worker.env`. Данные кабинетов
+кроме #1 — в отчёт только агрегаты (без строк заказов/сумм/имён, см. `worker/triage_prompt.md`).
+Решения тика — чистое ядро `worker/triage_core.py` (селф-тест
+`worker/triage_core_selftest.py`), промпт — `worker/triage_prompt.md`, письмо —
+`lib/triageMail.js`. Спека `docs/superpowers/specs/2026-09-30-failure-triage-design.md`.
+Прокси для `claude -p` — `SAAS_TRIAGE_PROXY` в `/etc/saas-triage.env` (root, 600, вне git):
+напрямую с сервера API Anthropic отвечает 403 «Request not allowed».
 
 ## Боевое расписание (systemd, `/etc/systemd/system/`)
 

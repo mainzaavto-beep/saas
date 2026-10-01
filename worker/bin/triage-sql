@@ -3,10 +3,16 @@
 # транзакция только на чтение, таймаут, без метакоманд psql (обратная косая запрещена
 # целиком — иначе \! даёт shell, \copy/\o пишут файлы, \c меняет роль). Внешний `timeout` —
 # подстраховка поверх PGOPTIONS: SQL вида "set statement_timeout=0; select ..." переопределяет
-# серверный лимит из PGOPTIONS внутри своей же сессии (найдено ревью 01.10.2026).
+# серверный лимит из PGOPTIONS внутри своей же сессии (найдено ревью 01.10.2026). Дополнительно
+# текст SQL со словом "timeout" (в любом регистре) отклоняется целиком — так и внешний `timeout`
+# не спасает: `set_config('statement_timeout', '0', false)` закрепляет снятый лимит на бэкенде,
+# процесс клиента убит, а бэкенд остаётся жить без лимита (ревью task-9, 01.10.2026).
 # Использование: triage-sql "SELECT ..."
 set -euo pipefail
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then echo "usage: triage-sql \"<SQL>\"" >&2; exit 2; fi
 case "$1" in *\\*) echo "triage-sql: обратная косая запрещена" >&2; exit 2;; esac
+shopt -s nocasematch
+case "$1" in *timeout*) echo "triage-sql: изменение таймаутов запрещено" >&2; exit 2;; esac
+shopt -u nocasematch
 export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=60000"
 exec timeout 90 psql -X -q -h localhost -U saas_ro -d saas -v ON_ERROR_STOP=1 -At -c "$1"

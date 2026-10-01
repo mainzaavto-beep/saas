@@ -29,9 +29,11 @@ UNIT_KIND = {
 KIND_UNIT = {v: k[len("unit:"):] for k, v in UNIT_KIND.items()}
 ECHO_BEFORE = timedelta(minutes=70)
 ECHO_AFTER = timedelta(minutes=5)
-UNIT_QUIET = timedelta(hours=24)
+UNIT_QUIET = timedelta(hours=30)      # > суток: суточный юнит не мигает close→reopen на джиттере таймера
 STALE = timedelta(minutes=30)
 DAILY_LIMIT = 3
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF = timedelta(minutes=60)
 
 STRUCTURED_KEY = "structured_output"   # ключ конверта claude -p --output-format json (проба Task 1)
 CAUSES = {"mp_method_changed", "rate_limit", "auth", "our_bug", "data", "infra", "unknown"}
@@ -123,16 +125,23 @@ def plan_tick(runs, open_episodes, now):
     return out
 
 
-def pick_next(open_episodes, started_24h):
-    """Следующий эпизод к разбору: самый старый queued, если нет running и лимит не выбран."""
+def pick_next(open_episodes, started_24h, now):
+    """Следующий эпизод к разбору: самый старый queued, если нет running и лимит не выбран.
+    Повтор после неудачи ждёт RETRY_BACKOFF с последнего finished_at (не чаще раза в час)."""
     if any(e["status"] == "running" for e in open_episodes):
         return None
     if started_24h >= DAILY_LIMIT:
         return None
-    queued = [e for e in open_episodes if e["status"] == "queued"]
+    queued = [e for e in open_episodes if e["status"] == "queued"
+              and not (e.get("finished_at") and now - e["finished_at"] < RETRY_BACKOFF)]
     if not queued:
         return None
     return min(queued, key=lambda e: (e["opened_at"], e["id"]))["id"]
+
+
+def after_failure(attempts, retryable):
+    """Статус эпизода после неудачной попытки: повтор (queued) или окончательно error."""
+    return "queued" if retryable and attempts < MAX_ATTEMPTS else "error"
 
 
 def validate_report(rep):
@@ -149,24 +158,29 @@ def validate_report(rep):
 
 
 def parse_claude_output(stdout, returncode):
-    """(отчёт, None) либо (None, причина ошибки)."""
+    """(отчёт, None, False) либо (None, причина ошибки, retryable). retryable=True — сбой
+    запуска/формата claude (стоит повторить попыткой позже), False — валидный ответ, но отчёт
+    не прошёл validate_report (повтор не поможет, промпт/схема дают тот же результат)."""
     if returncode != 0:
-        return None, f"claude завершился с кодом {returncode}"
+        return None, f"claude завершился с кодом {returncode}", True
     try:
         env = json.loads(stdout)
     except ValueError as e:
-        return None, f"ответ не JSON: {e}"
+        return None, f"ответ не JSON: {e}", True
     if not isinstance(env, dict):
-        return None, "конверт ответа не объект"
+        return None, "конверт ответа не объект", True
     if env.get("is_error"):
-        return None, f"claude is_error: {str(env.get('result'))[:300]}"
+        return None, f"claude is_error: {str(env.get('result'))[:300]}", True
     rep = env.get(STRUCTURED_KEY)
     if rep is None:
         try:
             rep = json.loads(env.get("result") or "")
         except ValueError:
-            return None, f"нет {STRUCTURED_KEY}, а result не JSON"
-    return validate_report(rep)
+            return None, f"нет {STRUCTURED_KEY}, а result не JSON", True
+    rep, err = validate_report(rep)
+    if err is not None:
+        return None, err, False
+    return rep, None, False
 
 
 _HDR = re.compile(r"^=== SaaS \S+ \[[^\]]*\] \w{3} (\w{3}) +(\d+) (\d\d:\d\d:\d\d) \S+ (\d{4})")

@@ -27,8 +27,9 @@
    БД — только `/opt/agents/saas/worker/bin/triage-sql "<SQL>"` (роль saas_ro, только чтение,
    без метакоманд psql); журнал юнита — `/opt/agents/saas/worker/bin/triage-journal <saas-юнит>
    "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"`; история кода — `/opt/agents/saas/worker/bin/triage-git
-   log|show|diff …`; документация — WebFetch только dev.wildberries.ru и docs.ozon.ru. Другие
-   команды недоступны. Таблицы клиентов — схема `tenant.*`.
+   log|show|diff …` (диапазоны `a..b` не принимаются — используй `log b ^a`); документация —
+   WebFetch только dev.wildberries.ru и docs.ozon.ru. Другие команды недоступны. Таблицы
+   клиентов — схема `tenant.*`.
 4. Оцени последствия для данных: какие кабинеты и даты остались без данных, нужен ли бэкфилл,
    что видит клиент в панели. `urgent=true` — только если прямо сейчас теряются или искажаются
    финансовые данные клиента.

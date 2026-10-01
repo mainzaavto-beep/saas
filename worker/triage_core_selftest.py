@@ -31,10 +31,12 @@ def run(coll, cab, status, mins_ago, kind="main"):
             "status": status, "started_at": NOW - timedelta(minutes=mins_ago)}
 
 
-def ep(i, coll, cab, status="queued", last=None, started_mins_ago=None, opened_mins_ago=100):
+def ep(i, coll, cab, status="queued", last=None, started_mins_ago=None, opened_mins_ago=100,
+       finished_mins_ago=None):
     return {"id": i, "collector": coll, "cabinet_id": cab, "status": status,
             "opened_at": NOW - timedelta(minutes=opened_mins_ago),
             "started_at": None if started_mins_ago is None else NOW - timedelta(minutes=started_mins_ago),
+            "finished_at": None if finished_mins_ago is None else NOW - timedelta(minutes=finished_mins_ago),
             "last_failed_run_id": last}
 
 
@@ -98,12 +100,20 @@ rs = [run(U, None, "failed", 600, kind="systemd"), run(U, None, "failed", 300, k
 p = m.plan_tick(rs, [], NOW)
 check(len(p["open"]) == 1 and p["open"][0]["cabinet_id"] is None, "два одиночных падения юнита за сутки открывают")
 
-rs = [run(U, None, "failed", 60 * 60, kind="systemd"), run(U, None, "failed", 60 * 30, kind="systemd")]
-check(m.plan_tick(rs, [], NOW)["open"] == [], "падения юнита с разрывом > 24 ч — не серия")
+rs = [run(U, None, "failed", 60 * 62, kind="systemd"), run(U, None, "failed", 60 * 31, kind="systemd")]
+check(m.plan_tick(rs, [], NOW)["open"] == [], "падения юнита с разрывом 31 ч — не серия (порог 30 ч)")
+
+rs = [run(U, None, "failed", 60 * 28, kind="systemd"), run(U, None, "failed", 60 * 2, kind="systemd")]
+check(len(m.plan_tick(rs, [], NOW)["open"]) == 1,
+      "два падения юнита с разрывом 26 ч, последнее 2 ч назад — открывает")
+
+rs = [run(U, None, "failed", 60 * 31, kind="systemd")]
+check(m.plan_tick(rs, [ep(9, U, None, status="done", last=rs[0]["id"])], NOW)["close"] == [9],
+      "юнит закрывается после 31 ч без новых падений (порог 30 ч)")
 
 rs = [run(U, None, "failed", 60 * 26, kind="systemd")]
-check(m.plan_tick(rs, [ep(9, U, None, status="done", last=rs[0]["id"])], NOW)["close"] == [9],
-      "юнит закрывается после 24 ч без новых падений")
+check(m.plan_tick(rs, [ep(10, U, None, status="done", last=rs[0]["id"])], NOW)["close"] == [],
+      "последнее падение юнита 26 ч назад, эпизод открыт — НЕ закрывается (порог 30 ч)")
 
 R = "unit:saas-ozon-recon.service"
 rs = [run("ozon_finance", 1, "failed", 305), run(R, None, "failed", 300, kind="systemd"),
@@ -122,28 +132,46 @@ p = m.plan_tick([run("x", 1, "failed", 10)], [ep(5, "x", 1, status="running", st
 check(p["stale"] == [], "running 10 мин — не stale")
 
 eps = [ep(1, "a", 1, opened_mins_ago=50), ep(2, "b", 1, opened_mins_ago=90), ep(3, "c", 1, status="done")]
-check(m.pick_next(eps, 0) == 2, "берётся самый старый queued")
-check(m.pick_next(eps, 3) is None, "лимит 3 за сутки")
-check(m.pick_next(eps + [ep(4, "d", 1, status="running", started_mins_ago=1)], 0) is None, "не больше одного running")
-check(m.pick_next([ep(3, "c", 1, status="done")], 0) is None, "нет queued — None")
+check(m.pick_next(eps, 0, NOW) == 2, "берётся самый старый queued")
+check(m.pick_next(eps, 3, NOW) is None, "лимит 3 за сутки")
+check(m.pick_next(eps + [ep(4, "d", 1, status="running", started_mins_ago=1)], 0, NOW) is None,
+      "не больше одного running")
+check(m.pick_next([ep(3, "c", 1, status="done")], 0, NOW) is None, "нет queued — None")
+
+eps = [ep(1, "a", 1, finished_mins_ago=30, opened_mins_ago=200), ep(2, "b", 1, opened_mins_ago=50)]
+check(m.pick_next(eps, 0, NOW) == 2,
+      "queued с finished_at 30 мин назад пропускается (откат часа), берётся другой")
+eps = [ep(1, "a", 1, finished_mins_ago=61, opened_mins_ago=200)]
+check(m.pick_next(eps, 0, NOW) == 1, "queued с finished_at 61 мин назад — берётся (откат прошёл)")
 
 # --- разбор ответа ---
 GOOD = {"summary": "s", "cause": "mp_method_changed", "confidence": "high", "evidence": ["e"],
         "proposed_fix": "f", "data_impact": "d", "urgent": True}
 env = {"type": "result", "is_error": False, "result": "", m.STRUCTURED_KEY: GOOD}
-rep, err = m.parse_claude_output(json.dumps(env), 0)
-check(rep == GOOD and err is None, "валидный конверт")
+rep, err, retryable = m.parse_claude_output(json.dumps(env), 0)
+check(rep == GOOD and err is None and retryable is False, "валидный конверт")
 env2 = {"type": "result", "is_error": False, "result": json.dumps(GOOD)}
 check(m.parse_claude_output(json.dumps(env2), 0)[0] == GOOD, "fallback: отчёт JSON-строкой в result")
-check(m.parse_claude_output("garbage", 0)[0] is None, "битый JSON → ошибка")
-check(m.parse_claude_output(json.dumps(env), 1)[0] is None, "ненулевой код → ошибка")
+
+rep, err, retryable = m.parse_claude_output("garbage", 0)
+check(rep is None and retryable is True, "битый JSON → ошибка, повторяемая")
+rep, err, retryable = m.parse_claude_output(json.dumps(env), 1)
+check(rep is None and retryable is True, "ненулевой код → ошибка, повторяемая")
+rep, err, retryable = m.parse_claude_output(json.dumps({"is_error": True, "result": "boom"}), 0)
+check(rep is None and retryable is True, "is_error → ошибка, повторяемая")
+
 bad = dict(GOOD, cause="whatever")
-check(m.parse_claude_output(json.dumps({"is_error": False, m.STRUCTURED_KEY: bad}), 0)[0] is None,
-      "cause вне перечня → ошибка")
+rep, err, retryable = m.parse_claude_output(json.dumps({"is_error": False, m.STRUCTURED_KEY: bad}), 0)
+check(rep is None and retryable is False, "cause вне перечня → ошибка, не повторяемая")
 bad = {k: v for k, v in GOOD.items() if k != "urgent"}
-check(m.parse_claude_output(json.dumps({"is_error": False, m.STRUCTURED_KEY: bad}), 0)[0] is None,
-      "нет обязательного поля → ошибка")
-check(m.parse_claude_output(json.dumps({"is_error": True, "result": "boom"}), 0)[0] is None, "is_error → ошибка")
+rep, err, retryable = m.parse_claude_output(json.dumps({"is_error": False, m.STRUCTURED_KEY: bad}), 0)
+check(rep is None and retryable is False, "нет обязательного поля → ошибка, не повторяемая")
+
+# --- решение после неудачи ---
+check(m.after_failure(1, True) == "queued", "1-я неудача, повторяемая → queued")
+check(m.after_failure(2, True) == "queued", "2-я неудача, повторяемая → queued")
+check(m.after_failure(3, True) == "error", "3-я неудача, повторяемая → error (лимит)")
+check(m.after_failure(1, False) == "error", "неповторяемая ошибка → error сразу")
 
 # --- нарезка лога ---
 LOG = "\n".join([

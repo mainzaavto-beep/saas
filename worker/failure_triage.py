@@ -12,6 +12,7 @@ failure_triage.py — тик сторожа авторазбора падени�
 """
 import argparse
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -50,14 +51,17 @@ ALLOWED = ["Read(//opt/agents/saas/**)", "Read(//opt/agentsDB/logs/**)",
 # allow на более глубоком пути) плюс общая подстраховка на случай растущего allow-списка.
 DISALLOWED = ["Edit", "Write", "NotebookEdit", "Agent", "WebSearch",
               "Read(//root/**)", "Read(//proc/**)", "Read(//sys/**)", "Read(//etc/**)",
-              "Read(//opt/agents/saas/.env*)", "Read(//opt/agents/saas/.claude/**)"]
+              "Read(//opt/agents/saas/.env*)", "Read(//opt/agents/saas/.claude/**)",
+              # заплатка до отдельной чистки: захардкоженный пароль БД в этом файле (см. triage-git).
+              "Read(//opt/agents/saas/db/migrations/001_tenant_core.sql)"]
 # Окружение claude — белый список: секреты воркера (POSTGRES_PASSWORD, SAAS_*_PASSWORD,
 # SAAS_CRED_MASTER_KEY и любые будущие) не наследуются ни claude, ни его Bash-детьми.
 ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "TERM")
 
 RUNS_SQL = """SELECT id, collector, cabinet_id, run_kind, status, started_at
                 FROM jobs.collector_runs WHERE started_at > now() - interval '7 days'"""
-OPEN_SQL = """SELECT id, collector, cabinet_id, status, opened_at, started_at, last_failed_run_id
+OPEN_SQL = """SELECT id, collector, cabinet_id, status, opened_at, started_at, finished_at,
+                     last_failed_run_id, attempts
                 FROM jobs.failure_triage WHERE status <> 'closed'"""
 
 
@@ -125,17 +129,22 @@ def build_context(conn, ep):
     last = conn.execute("SELECT run_kind, started_at FROM jobs.collector_runs WHERE id = %s",
                         (ep["last_failed_run_id"],)).fetchone()
     at = (last["started_at"] if last else ep["opened_at"])
-    since = (at - timedelta(minutes=5)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
-    until = (at + timedelta(minutes=70)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
+    # Окно журнала несимметрично: у сборщиков started_at близко к моменту ошибки в логе
+    # (−5/+70 — прогон длится до часа); у unit:* запись OnFailure делает В КОНЦЕ прогона, поэтому
+    # сам сбой в journalctl мог случиться до 70 мин РАНЬШЕ started_at записи (I1, task-9).
+    since_c = (at - timedelta(minutes=5)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
+    until_c = (at + timedelta(minutes=70)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
     if core.is_unit(ep["collector"]):
         unit = ep["collector"][len("unit:"):]
-        log_txt = _sh(["journalctl", "-u", unit, "--since", since, "--until", until, "--no-pager", "-n", "200"])
+        since_u = (at - timedelta(minutes=70)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
+        until_u = (at + timedelta(minutes=5)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
+        log_txt = _sh(["journalctl", "-u", unit, "--since", since_u, "--until", until_u, "--no-pager", "-n", "200"])
     else:
         log_txt = core.slice_worker_log(_worker_log_tail(), ep["collector"],
                                         at.astimezone(MSK).replace(tzinfo=None))
         if not log_txt and last and last["run_kind"] in core.KIND_UNIT:
-            log_txt = _sh(["journalctl", "-u", core.KIND_UNIT[last["run_kind"]], "--since", since,
-                           "--until", until, "--no-pager", "-n", "200"])
+            log_txt = _sh(["journalctl", "-u", core.KIND_UNIT[last["run_kind"]], "--since", since_c,
+                           "--until", until_c, "--no-pager", "-n", "200"])
     src = REPO / "worker" / "collectors" / f"{ep['collector']}.py"
     source = str(src.relative_to(REPO)) if src.exists() else "(не найден — определи по AGENTS.md)"
     git_log = _sh(["git", "log", "--oneline", "-15", "--", source]) if src.exists() else "(нет)"
@@ -151,7 +160,14 @@ def build_context(conn, ep):
     }
 
 
+def _scrub_proxy(text, proxy):
+    """M1: значение SAAS_TRIAGE_PROXY (если задано) не должно осесть в raw_output в БД."""
+    return text.replace(proxy, "***") if proxy and text else text
+
+
 def run_claude(prompt):
+    """(rep, err, raw, retryable). Сбой запуска/таймаут claude → retryable=True (стоит
+    повторить); иначе решение берётся из core.parse_claude_output."""
     cmd = [CLAUDE, "-p", "--model", MODEL, "--output-format", "json",
            "--json-schema", SCHEMA.read_text(),
            "--setting-sources", "user", "--permission-mode", "default",
@@ -162,23 +178,38 @@ def run_claude(prompt):
         env["HTTPS_PROXY"] = proxy
         env["HTTP_PROXY"] = proxy
     try:
-        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                           timeout=TIMEOUT, cwd=REPO, env=env)
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        return None, f"таймаут {TIMEOUT} с", out
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, cwd=REPO, env=env, start_new_session=True)
     except (OSError, subprocess.SubprocessError) as e:
-        return None, f"не удалось запустить claude: {e}", ""
-    rep, err = core.parse_claude_output(p.stdout, p.returncode)
-    return rep, err, f"{p.stdout}\n--- stderr ---\n{p.stderr}"
+        return None, f"не удалось запустить claude: {e}", "", True
+    # M2: start_new_session=True делает claude лидером отдельной группы процессов — на таймауте
+    # убиваем всю группу (SIGKILL), а не только claude: Bash-детей (triage-sql/journal/git)
+    # subprocess.run/Popen без group-kill оставлял бы сиротами после TimeoutExpired.
+    try:
+        out, err_out = p.communicate(input=prompt, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, err_out = p.communicate()
+        raw = _scrub_proxy(f"{out}\n--- stderr ---\n{err_out}", proxy)
+        return None, f"таймаут {TIMEOUT} с", raw, True
+    rep, err, retryable = core.parse_claude_output(out, p.returncode)
+    # err — часть ответа claude (сообщение is_error/ответ маркетплейса) и сохраняется вместе
+    # с raw в raw_output (triage()) — скраб нужен и ему, иначе прокси утекает в БД в обход raw.
+    err = _scrub_proxy(err, proxy)
+    raw = _scrub_proxy(f"{out}\n--- stderr ---\n{err_out}", proxy)
+    return rep, err, raw, retryable
 
 
 def triage(ep):
     with connect() as conn:
         ctx = build_context(conn, ep)
     prompt = core.build_prompt(PROMPT.read_text(), ctx)
-    log(f"разбор эпизода #{ep['id']} {ep['collector']} каб={ep['cabinet_id']}")
-    rep, err, raw = run_claude(prompt)
+    log(f"разбор эпизода #{ep['id']} {ep['collector']} каб={ep['cabinet_id']} "
+        f"(попытка {ep['attempts']}/{core.MAX_ATTEMPTS})")
+    rep, err, raw, retryable = run_claude(prompt)
     with connect() as conn:
         if rep:
             conn.execute(
@@ -188,11 +219,13 @@ def triage(ep):
                 (rep["summary"], rep["cause"], rep["confidence"], rep["urgent"], Jsonb(rep), ep["id"]))
             log(f"#{ep['id']} готов: {rep['cause']} ({rep['confidence']})")
         else:
+            # ep["attempts"] — уже увеличенное значение из RETURNING * на claim (main()).
+            status = core.after_failure(ep["attempts"], retryable)
             conn.execute(
-                "UPDATE jobs.failure_triage SET status = 'error', finished_at = now(), raw_output = %s "
+                "UPDATE jobs.failure_triage SET status = %s, finished_at = now(), raw_output = %s "
                 "WHERE id = %s AND status = 'running'",
-                (f"{err}\n\n{raw}"[:20000], ep["id"]))
-            log(f"#{ep['id']} разбор не удался: {err}")
+                (status, f"{err}\n\n{raw}"[:20000], ep["id"]))
+            log(f"#{ep['id']} попытка {ep['attempts']}/{core.MAX_ATTEMPTS} не удалась: {err} → {status}")
 
 
 def notify():
@@ -234,10 +267,11 @@ def main():
         else:
             started = conn.execute("SELECT count(*) AS n FROM jobs.failure_triage "
                                    "WHERE started_at > now() - interval '24 hours'").fetchone()["n"]
-            ep_id = core.pick_next(conn.execute(OPEN_SQL).fetchall(), started)
+            ep_id = core.pick_next(conn.execute(OPEN_SQL).fetchall(), started, now)
         if ep_id:
             claimed = conn.execute(
-                "UPDATE jobs.failure_triage SET status = 'running', started_at = now() "
+                "UPDATE jobs.failure_triage SET status = 'running', started_at = now(), "
+                "finished_at = NULL, attempts = attempts + 1 "
                 "WHERE id = %s AND status = 'queued' RETURNING *", (ep_id,)).fetchone()
             conn.commit()
     if claimed:
