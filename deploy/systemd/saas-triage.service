@@ -10,6 +10,8 @@ Group=root
 WorkingDirectory=/opt/agents/saas
 # POSTGRES_PASSWORD для записи jobs.failure_triage; SAAS_TRIAGE_ENABLED=0 — выключатель.
 EnvironmentFile=/etc/saas-worker.env
+# прокси только для claude -p (API Anthropic недоступен напрямую с сервера), файл вне git.
+EnvironmentFile=-/etc/saas-triage.env
 # HOME — там авторизация claude; TZ — время в промпте и письме.
 Environment=HOME=/root TZ=Europe/Moscow SAAS_DB_HOST=localhost SAAS_DB_PORT=5432 SAAS_DB=saas
 # Один тик за раз; занято — тихий выход (разбор до 20 мин длиннее шага таймера).

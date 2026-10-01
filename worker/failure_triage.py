@@ -145,6 +145,11 @@ def run_claude(prompt):
            "--allowedTools", *ALLOWED, "--disallowedTools", *DISALLOWED]
     env = {k: v for k, v in os.environ.items()
            if k not in ("POSTGRES_PASSWORD", "SAAS_APP_DB_PASSWORD", "SAAS_CRED_MASTER_KEY")}
+    proxy = os.environ.get("SAAS_TRIAGE_PROXY")
+    if proxy:
+        env["HTTPS_PROXY"] = proxy
+        env["HTTP_PROXY"] = proxy
+    env.pop("SAAS_TRIAGE_PROXY", None)
     try:
         p = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
                            timeout=TIMEOUT, cwd=REPO, env=env)

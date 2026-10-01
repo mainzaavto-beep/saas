@@ -141,7 +141,9 @@ analytics/data в память и только потом одной транз�
 `SAAS_TRIAGE_ENABLED=0` в `/etc/saas-worker.env`. Решения тика — чистое ядро
 `worker/triage_core.py` (селф-тест `worker/triage_core_selftest.py`), промпт —
 `worker/triage_prompt.md`, письмо — `lib/triageMail.js`. Спека
-`docs/superpowers/specs/2026-09-30-failure-triage-design.md`.
+`docs/superpowers/specs/2026-09-30-failure-triage-design.md`. Прокси для `claude -p` —
+`SAAS_TRIAGE_PROXY` в `/etc/saas-triage.env` (root, 600, вне git): напрямую с сервера
+API Anthropic отвечает 403 «Request not allowed».
 
 ## Боевое расписание (systemd, `/etc/systemd/system/`)
 
