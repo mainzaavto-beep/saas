@@ -36,16 +36,28 @@ const eps = await query(
     ORDER BY t.id`
 );
 
-let sent = 0;
+let sent = 0, failed = 0;
 for (const ep of eps) {
   const { subject, text } = formatTriageMail(ep, base);
   try {
-    for (const addr of to) await sendMail({ to: addr, subject, text });
-    await query('UPDATE jobs.failure_triage SET notified_at = now() WHERE id = $1', [ep.id]);
-    sent++;
+    let allOk = true;
+    for (const addr of to) {
+      const res = await sendMail({ to: addr, subject, text });
+      if (!res.ok) {
+        console.error(`notify-triage: эпизод #${ep.id} не отправлен (${addr}): ${res.error}`);
+        allOk = false;
+      }
+    }
+    if (allOk) {
+      await query('UPDATE jobs.failure_triage SET notified_at = now() WHERE id = $1', [ep.id]);
+      sent++;
+    } else {
+      failed++;
+    }
   } catch (e) {
-    console.error(`notify-triage: эпизод #${ep.id} не отправлен:`, e);
+    console.error(`notify-triage: эпизод #${ep.id} ошибка обработки: ${e.message}`);
+    failed++;
   }
 }
-console.log(`notify-triage: отправлено ${sent} из ${eps.length}`);
-process.exit(0);
+console.log(`notify-triage: отправлено ${sent} из ${eps.length}, ошибок ${failed}`);
+process.exit(failed ? 1 : 0);
