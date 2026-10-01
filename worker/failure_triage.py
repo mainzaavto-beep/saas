@@ -151,6 +151,8 @@ def run_claude(prompt):
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
         return None, f"таймаут {TIMEOUT} с", out
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"не удалось запустить claude: {e}", ""
     rep, err = core.parse_claude_output(p.stdout, p.returncode)
     return rep, err, f"{p.stdout}\n--- stderr ---\n{p.stderr}"
 
