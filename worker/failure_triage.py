@@ -35,18 +35,19 @@ CLAUDE = os.environ.get("SAAS_TRIAGE_CLAUDE", "/usr/bin/claude")
 MODEL = os.environ.get("SAAS_TRIAGE_MODEL", "sonnet")
 TIMEOUT = int(os.environ.get("SAAS_TRIAGE_TIMEOUT_SEC", "1200"))
 BIN = REPO / "worker" / "bin"
-ALLOWED = ["Read", "Grep", "Glob",
+# Абсолютные пути в правилах Claude Code — с двумя слешами (//path); один слеш = от каталога проекта.
+# Read/Grep/Glob — allow-list по каталогам, а не голые имена инструментов: голое "Read" читало
+# ЛЮБОЙ путь на диске (под rootʼом воркера), включая чужие продукты (`/opt/agents/*/.env*`,
+# `ozon-panel/.../.pw-profile/**` — живая сессия владельца, `/opt/agentsDB/backups/**` — дампы PG).
+# Разбор падений сборщика никогда не выходит за пределы своего репозитория и общего лога воркера —
+# им и ограничен allow-list. Разбор итераций, проб обхода и почему это не no-op — §11 спеки.
+ALLOWED = ["Read(//opt/agents/saas/**)", "Read(//opt/agentsDB/logs/**)",
+           "Grep(//opt/agents/saas/**)", "Grep(//opt/agentsDB/logs/**)",
+           "Glob(//opt/agents/saas/**)", "Glob(//opt/agentsDB/logs/**)",
            "WebFetch(domain:dev.wildberries.ru)", "WebFetch(domain:docs.ozon.ru)",
            f"Bash({BIN}/triage-sql:*)", f"Bash({BIN}/triage-journal:*)", f"Bash({BIN}/triage-git:*)"]
-# Абсолютные пути в правилах Claude Code — с двумя слешами (//path); один слеш = от каталога проекта.
-# `Read(...)` закрывает путь для Read/Grep/Glob разом (общая проверка доступа к файлу под капотом);
-# отдельные правила `Grep(//path/**)` проверены 01.10.2026 и оказались НЕ рабочими (не влияют на
-# Grep/Glob вообще — вероятно, парсятся как ограничение на сам паттерн поиска, а не на путь) —
-# первая версия с точечными `Read(//etc/saas-*.env)`/`Read(//etc/collectors.env)` пропускала
-# Grep по каталогу /etc целиком (секретные файлы молча отфильтровывались из результата, но сам
-# вызов не отклонялся — по правилу брифа это тоже BLOCKED). Фикс — закрыть `/etc` целиком одним
-# `Read(//etc/**)`: авторазбору не нужно читать или грепать /etc, конфиги не относятся к
-# диагностике падений сборщиков (см. §11 спеки, итерации 2-3).
+# Deny поверх allow — для исключений ВНУТРИ уже разрешённого /opt/agents/saas/** (deny побеждает
+# allow на более глубоком пути) плюс общая подстраховка на случай растущего allow-списка.
 DISALLOWED = ["Edit", "Write", "NotebookEdit", "Agent", "WebSearch",
               "Read(//root/**)", "Read(//proc/**)", "Read(//sys/**)", "Read(//etc/**)",
               "Read(//opt/agents/saas/.env*)", "Read(//opt/agents/saas/.claude/**)"]
