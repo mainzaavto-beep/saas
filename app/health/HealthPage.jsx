@@ -15,6 +15,11 @@ const BILLING_COLOR = {
   trial: "#3b82f6", active: "#22c55e", grace: "#eab308", locked: "#ef4444",
 };
 
+const TRIAGE_STATUS = {
+  queued: "в очереди", running: "разбирается", done: "разобрано",
+  error: "разбор не удался", closed: "закрыт",
+};
+
 export default function HealthPage() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -25,6 +30,13 @@ export default function HealthPage() {
       .then(setData)
       .catch((e) => setErr(String(e)));
   }, []);
+
+  // Ссылка из письма /health#triage-<id> — раскрыть эпизод и прокрутить к нему.
+  useEffect(() => {
+    if (!data || !window.location.hash.startsWith("#triage-")) return;
+    const el = document.getElementById(window.location.hash.slice(1));
+    if (el) { el.open = true; el.scrollIntoView(); }
+  }, [data]);
 
   if (err) return <div style={{ padding: 24 }}>Нет доступа: {err}</div>;
   if (!data) return <div style={{ padding: 24 }}>Загрузка…</div>;
@@ -178,6 +190,43 @@ export default function HealthPage() {
                 {s.cabinet_last_error ? ` · ${s.cabinet_last_error}` : ""}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+      {Array.isArray(data.triage) && data.triage.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 16, margin: "24px 0 8px" }}>Разборы падений ({data.triage.length})</h2>
+          <div style={{ fontSize: 13 }}>
+            {data.triage.map((t) => {
+              const r = t.report_json;
+              const fixed = t.status === "closed" && t.finished_at;
+              return (
+                <details key={t.id} id={`triage-${t.id}`}
+                         style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                  <summary style={{ cursor: "pointer" }}>
+                    {r?.urgent ? "🔴 " : ""}{t.collector} · {t.cabinet_id == null ? "сервер" : `#${t.cabinet_id}`} ·
+                    с {new Date(t.opened_at).toLocaleDateString("ru-RU")} ·{" "}
+                    {fixed ? "✓ починилось" : TRIAGE_STATUS[t.status] || t.status}
+                    {t.cause ? ` · ${t.cause} (${t.confidence})` : ""}
+                    {t.summary ? ` — ${t.summary}` : ""}
+                  </summary>
+                  {r ? (
+                    <div style={{ padding: "8px 0 4px 16px", color: "#a1a1aa", whiteSpace: "pre-wrap" }}>
+                      <div><b>Доказательства:</b></div>
+                      <ul style={{ margin: "4px 0 8px 16px" }}>
+                        {(r.evidence || []).map((e, i) => <li key={i}>{e}</li>)}
+                      </ul>
+                      <div><b>Фикс:</b> {r.proposed_fix}</div>
+                      <div style={{ marginTop: 6 }}><b>Данные:</b> {r.data_impact}</div>
+                    </div>
+                  ) : t.raw_output ? (
+                    <pre style={{ padding: "8px 0 4px 16px", color: "#a1a1aa", whiteSpace: "pre-wrap" }}>
+                      {t.raw_output}
+                    </pre>
+                  ) : null}
+                </details>
+              );
+            })}
           </div>
         </div>
       )}

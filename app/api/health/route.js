@@ -70,6 +70,15 @@ export async function GET() {
       WHERE s.is_active = true AND s.cabinet_state = 'expired'`
   );
 
+  // Авторазбор падений (worker/failure_triage.py, спека 2026-09-30-failure-triage-design.md §7).
+  const triage = await query(
+    `SELECT id, collector, cabinet_id, status, opened_at, closed_at, started_at, finished_at,
+            summary, cause, confidence, urgent, report_json, left(raw_output, 5000) AS raw_output
+       FROM jobs.failure_triage
+      ORDER BY opened_at DESC
+      LIMIT 30`
+  );
+
   return NextResponse.json({
     days,
     runs,
@@ -84,5 +93,6 @@ export async function GET() {
     payments_mismatch: paymentsMismatch,
     shops_auth: shopsAuth,
     cabinets_expired: cabinetsExpired,
+    triage,
   });
 }
