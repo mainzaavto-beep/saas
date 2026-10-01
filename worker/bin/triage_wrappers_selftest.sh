@@ -22,6 +22,27 @@ check_rc() {
     fi
 }
 
+# I1 (ревью раунд 2, 01.10.2026): пароль saas_app не должен попасть в вывод triage-git, даже
+# когда путь к 001_tenant_core.sql не назван в аргументах явно (ревизия вместо пути). Значение
+# читаем так же, как сама обёртка — из /etc/saas-worker.env, не экспортируем, не печатаем,
+# считаем только количество совпавших строк.
+check_no_password() {
+    local desc="$1"; shift
+    local pass cnt
+    pass="$( . /etc/saas-worker.env 2>/dev/null; printf '%s' "${SAAS_APP_DB_PASSWORD:-}" )" || true
+    if [ -z "$pass" ]; then
+        echo "SKIP — $desc (SAAS_APP_DB_PASSWORD не задан)"
+        return
+    fi
+    cnt="$("$@" 2>&1 | grep -cF -e "$pass")" || true
+    if [ "${cnt:-0}" -eq 0 ]; then
+        echo "PASS — $desc (0 строк с паролем)"
+    else
+        echo "FAIL — $desc (строк с паролем: $cnt)"
+        failed=1
+    fi
+}
+
 # --- triage-git: отклоняющие ветки (до exec git) ---
 check_rc "triage-git: --no-index запрещён"                             2 "$BIN/triage-git" diff --no-index
 check_rc "triage-git: абсолютный путь запрещён"                        2 "$BIN/triage-git" show /etc/hostname
@@ -31,6 +52,8 @@ check_rc "triage-git: -O (запрещённый флаг -[oO]*) запрещё
 check_rc "triage-git: 001_tenant_core запрещён (захардкоженный пароль)" 2 "$BIN/triage-git" show HEAD:db/migrations/001_tenant_core.sql
 check_rc "triage-git: диапазон a..b запрещён"                          2 "$BIN/triage-git" log a..b
 check_rc "triage-git: обычный log работает (позитив)"                  0 "$BIN/triage-git" log --oneline -1
+check_no_password "triage-git: show f288080 без пароля"                  "$BIN/triage-git" show f288080
+check_no_password "triage-git: log -p db/migrations без пароля"          "$BIN/triage-git" log -p db/migrations
 
 # --- triage-sql: отклоняющие ветки (до PGOPTIONS/psql) ---
 check_rc "triage-sql: обратная косая запрещена"                        2 "$BIN/triage-sql" 'bad\sql'

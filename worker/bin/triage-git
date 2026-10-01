@@ -7,7 +7,10 @@
 # ревью 01.10.2026, см. §11 спеки). Диапазоны вида a..b не поддерживаются (запрет '..' ниже) —
 # используй `log b ^a`. db/migrations/001_tenant_core.sql несёт захардкоженный пароль БД
 # (заплатка до отдельной чистки) — любой аргумент с этой подстрокой отклоняется, чтобы
-# show/diff не могли напечатать файл по пути или через ревизию (ревью task-9, 01.10.2026).
+# show/diff не могли напечатать файл по пути (ревью task-9, 01.10.2026). Запрет по имени файла
+# не ловит `show <ревизия>`/`log -p`, когда путь не назван в аргументах явно (напр. `show
+# f288080`), поэтому ниже дополнительно вычёркиваем сам пароль из вывода по значению, а не по
+# имени (ревью, раунд 2, 01.10.2026).
 # Использование: triage-git log|show|diff [args...]
 set -euo pipefail
 sub="${1:-}"; shift || true
@@ -26,4 +29,21 @@ for a in "$@"; do
   [[ "$a" =~ ^[A-Za-z0-9._/@^~:=+,-]+$ ]] || { echo "triage-git: недопустимые символы: $a" >&2; exit 2; }
 done
 cd /opt/agents/saas
-exec git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@"
+
+# Значение пароля saas_app читаем из /etc/saas-worker.env в подоболочке (не экспортируем в
+# окружение этого процесса, не печатаем) — только чтобы вычеркнуть его из вывода git построчно.
+pass=""
+if [ -r /etc/saas-worker.env ]; then
+  pass="$( . /etc/saas-worker.env >/dev/null 2>&1; printf '%s' "${SAAS_APP_DB_PASSWORD:-}" )" || true
+fi
+
+set +e
+if [ -n "$pass" ]; then
+  git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@" | grep -vF -e "$pass"
+  rc=${PIPESTATUS[0]}
+else
+  git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@"
+  rc=$?
+fi
+set -e
+exit "$rc"
