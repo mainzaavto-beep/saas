@@ -1,0 +1,15 @@
+#!/bin/bash
+# triage-git — только чтение истории репозитория для авторазбора: log/show/diff,
+# без --output, внешних diff и textconv. Использование: triage-git log|show|diff [args...]
+set -euo pipefail
+sub="${1:-}"; shift || true
+case "$sub" in log|show|diff) ;; *) echo "triage-git: разрешены log, show, diff" >&2; exit 2;; esac
+for a in "$@"; do
+  case "$a" in
+    --output*|-o*|--ext-diff*|--textconv*|-c|--exec*|--upload-pack*|--git-dir*|--work-tree*)
+      echo "triage-git: аргумент запрещён: $a" >&2; exit 2;;
+  esac
+  [[ "$a" =~ ^[A-Za-z0-9._/@^~:=+,-]+$ ]] || { echo "triage-git: недопустимые символы: $a" >&2; exit 2; }
+done
+cd /opt/agents/saas
+exec git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@"

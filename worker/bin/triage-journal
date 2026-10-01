@@ -1,0 +1,10 @@
+#!/bin/bash
+# triage-journal — чтение журнала saas-юнита для авторазбора (без vacuum/rotate и прочих
+# пишущих ключей journalctl). Использование: triage-journal <unit> "<since>" "<until>"
+# unit: saas-*.service|timer; since/until: "YYYY-MM-DD HH:MM[:SS]".
+set -euo pipefail
+if [ "$#" -ne 3 ]; then echo "usage: triage-journal <saas-unit> \"YYYY-MM-DD HH:MM\" \"YYYY-MM-DD HH:MM\"" >&2; exit 2; fi
+[[ "$1" =~ ^saas-[a-z0-9@._-]+$ ]] || { echo "triage-journal: юнит должен быть saas-*" >&2; exit 2; }
+TS='^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+[[ "$2" =~ $TS && "$3" =~ $TS ]] || { echo "triage-journal: время в формате YYYY-MM-DD HH:MM[:SS]" >&2; exit 2; }
+exec journalctl -u "$1" --since "$2" --until "$3" --no-pager -n 400

@@ -1,0 +1,10 @@
+#!/bin/bash
+# triage-sql — единственный путь claude -p (авторазбор падений) к БД: роль saas_ro,
+# транзакция только на чтение, таймаут, без метакоманд psql (обратная косая запрещена
+# целиком — иначе \! даёт shell, \copy/\o пишут файлы, \c меняет роль).
+# Использование: triage-sql "SELECT ..."
+set -euo pipefail
+if [ "$#" -ne 1 ] || [ -z "$1" ]; then echo "usage: triage-sql \"<SQL>\"" >&2; exit 2; fi
+case "$1" in *\\*) echo "triage-sql: обратная косая запрещена" >&2; exit 2;; esac
+export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=60000"
+exec psql -X -q -h localhost -U saas_ro -d saas -v ON_ERROR_STOP=1 -At -c "$1"

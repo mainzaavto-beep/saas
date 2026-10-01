@@ -34,13 +34,25 @@ MSK = ZoneInfo("Europe/Moscow")
 CLAUDE = os.environ.get("SAAS_TRIAGE_CLAUDE", "/usr/bin/claude")
 MODEL = os.environ.get("SAAS_TRIAGE_MODEL", "sonnet")
 TIMEOUT = int(os.environ.get("SAAS_TRIAGE_TIMEOUT_SEC", "1200"))
-ALLOWED = ["Read", "Grep", "Glob", "WebFetch", "WebSearch",
-           "Bash(psql -h localhost -U saas_ro:*)", "Bash(journalctl:*)",
-           "Bash(git log:*)", "Bash(git show:*)", "Bash(git diff:*)",
-           "Bash(grep:*)", "Bash(tail:*)", "Bash(head:*)", "Bash(wc:*)", "Bash(ls:*)"]
-DISALLOWED = ["Edit", "Write", "NotebookEdit", "Agent",
-              "Read(/root/.pgpass*)", "Read(/opt/agents/saas/.env.local)",
-              "Read(/etc/saas-worker.env)", "Read(/etc/collectors.env)"]
+BIN = REPO / "worker" / "bin"
+ALLOWED = ["Read", "Grep", "Glob",
+           "WebFetch(domain:dev.wildberries.ru)", "WebFetch(domain:docs.ozon.ru)",
+           f"Bash({BIN}/triage-sql:*)", f"Bash({BIN}/triage-journal:*)", f"Bash({BIN}/triage-git:*)"]
+# Абсолютные пути в правилах Claude Code — с двумя слешами (//path); один слеш = от каталога проекта.
+# `Read(...)` закрывает путь для Read/Grep/Glob разом (общая проверка доступа к файлу под капотом);
+# отдельные правила `Grep(//path/**)` проверены 01.10.2026 и оказались НЕ рабочими (не влияют на
+# Grep/Glob вообще — вероятно, парсятся как ограничение на сам паттерн поиска, а не на путь) —
+# первая версия с точечными `Read(//etc/saas-*.env)`/`Read(//etc/collectors.env)` пропускала
+# Grep по каталогу /etc целиком (секретные файлы молча отфильтровывались из результата, но сам
+# вызов не отклонялся — по правилу брифа это тоже BLOCKED). Фикс — закрыть `/etc` целиком одним
+# `Read(//etc/**)`: авторазбору не нужно читать или грепать /etc, конфиги не относятся к
+# диагностике падений сборщиков (см. §11 спеки, итерации 2-3).
+DISALLOWED = ["Edit", "Write", "NotebookEdit", "Agent", "WebSearch",
+              "Read(//root/**)", "Read(//proc/**)", "Read(//sys/**)", "Read(//etc/**)",
+              "Read(//opt/agents/saas/.env*)", "Read(//opt/agents/saas/.claude/**)"]
+# Окружение claude — белый список: секреты воркера (POSTGRES_PASSWORD, SAAS_*_PASSWORD,
+# SAAS_CRED_MASTER_KEY и любые будущие) не наследуются ни claude, ни его Bash-детьми.
+ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "TERM")
 
 RUNS_SQL = """SELECT id, collector, cabinet_id, run_kind, status, started_at
                 FROM jobs.collector_runs WHERE started_at > now() - interval '7 days'"""
@@ -143,13 +155,11 @@ def run_claude(prompt):
            "--json-schema", SCHEMA.read_text(),
            "--setting-sources", "user", "--permission-mode", "default",
            "--allowedTools", *ALLOWED, "--disallowedTools", *DISALLOWED]
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("POSTGRES_PASSWORD", "SAAS_APP_DB_PASSWORD", "SAAS_CRED_MASTER_KEY")}
+    env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
     proxy = os.environ.get("SAAS_TRIAGE_PROXY")
     if proxy:
         env["HTTPS_PROXY"] = proxy
         env["HTTP_PROXY"] = proxy
-    env.pop("SAAS_TRIAGE_PROXY", None)
     try:
         p = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
                            timeout=TIMEOUT, cwd=REPO, env=env)
