@@ -4,7 +4,9 @@
 //   1) у товаров с размерами Σ quantity/quantity_full/in_way по размерам = строка товара;
 //   2) Σ скоростей размеров = скорость товара (допуск — округление 0,01 на размер);
 //   3) Σ размеров в ответе = Σ wb_daily_stock_sizes в БД на дату среза (Δ=0);
-//   4) у каждого размера есть имя (не «chrt N») и валидный статус.
+//   4) у каждого размера есть имя (не «chrt N») и валидный статус;
+//   5) «К закупке, шт» (lib/supplyPlan.js, как UI): строка товара = Σ по размерам,
+//      размер с неизвестной скоростью → null; supplyTargetDays задан.
 // Аутентификация — sealed-cookie, как scripts/smoke-timing-30m.mjs.
 // Запуск: node scripts/smoke-stocks-sizes.mjs [cabinetId=1] [baseUrl] [vel=7]
 import { readFileSync } from 'node:fs';
@@ -14,6 +16,7 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
 }
 const { query, withTenant } = await import('../lib/db.js');
+const { purchaseNeedForRow, purchaseNeedForItem } = await import('../lib/supplyPlan.js');
 const CAB = Number(process.argv[2] || 1);
 const BASE = process.argv[3] || 'http://127.0.0.1:3200';
 const VEL = Number(process.argv[4] || 7);
@@ -61,6 +64,20 @@ const [db] = await withTenant(CAB, async (q) => (await q(
    WHERE s.date = $1::date AND s.nm_id = ANY($2::bigint[])`,
   [data.dateWb, withSizes.map((it) => it.sku)])).rows);
 check(`Σ доступно по размерам: API ${apiQty} = БД ${db.q}`, apiQty === Number(db.q));
+
+const P = { leadDays: 20, targetDays: data.supplyTargetDays };
+check(`supplyTargetDays задан (${data.supplyTargetDays})`, Number(data.supplyTargetDays) >= 1);
+const badNeed = [];
+for (const it of withSizes) {
+  const parts = it.sizes.map((s) => purchaseNeedForRow(s, P));
+  for (const [i, s] of it.sizes.entries()) if ((s.velocity == null) !== (parts[i] == null)) badNeed.push(`${it.sku}/${s.size}: null-правило`);
+  if (parts.every((v) => v != null) && purchaseNeedForItem(it, P) !== parts.reduce((a, v) => a + v, 0)) badNeed.push(`${it.sku}: товар≠Σ`);
+}
+check('«К закупке»: строка товара = Σ по размерам, неизвестная скорость → —', badNeed.length === 0, badNeed);
+for (const it of withSizes.slice(0, 3)) {
+  console.log(`      ${it.sku} ${String(it.name).slice(0, 24)}: к закупке ${purchaseNeedForItem(it, P)} = ` +
+    it.sizes.map((s) => `${s.size}:${purchaseNeedForRow(s, P)}`).join(' + ') + ` (по товару было бы ${purchaseNeedForRow(it, P)})`);
+}
 
 console.log(failed ? `ИТОГ: ${failed} FAIL` : 'ИТОГ: ALL PASS');
 process.exit(failed ? 1 : 0);

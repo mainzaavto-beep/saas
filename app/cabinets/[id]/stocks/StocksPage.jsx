@@ -1,6 +1,8 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { useEffect, useState, useCallback, useMemo, Fragment } from "react";
+import { purchaseNeedForRow, purchaseNeedForItem } from "@/lib/supplyPlan.js";
+import { clampDays } from "@/lib/supplyDays.js";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 // /cabinets/[id]/stocks — Склады и индексы.
@@ -35,6 +37,42 @@ const TABS = [
   { id: "efficiency",  label: "Эффективность", icon: "⚡" },
 ];
 const VEL_OPTIONS = [7, 14, 30, 60];
+// «К закупке, шт»: срок поставки (дефолт 20 дн) и запас (дефолт — target_days кабинета
+// из ответа API). Выбор хранится в URL (?lead=&stockDays=) и localStorage; сервер не пишет.
+const LEAD_DEFAULT = 20;
+const LS_KEY = "stocks.purchase.v1";
+function readPurchasePrefs() {
+  const out = {};
+  try {
+    const ls = JSON.parse(window.localStorage.getItem(LS_KEY) || "{}");
+    if (ls.lead != null) out.lead = clampDays(ls.lead, LEAD_DEFAULT);
+    if (ls.stockDays != null) out.stockDays = clampDays(ls.stockDays, null);
+  } catch (e) { console.error("[stocks] localStorage read", e); }
+  try {
+    const qp = new URL(window.location.href).searchParams;
+    if (qp.get("lead")) out.lead = clampDays(qp.get("lead"), LEAD_DEFAULT);
+    if (qp.get("stockDays")) out.stockDays = clampDays(qp.get("stockDays"), null);
+  } catch (e) { console.error("[stocks] URL read", e); }
+  return out;
+}
+function writePurchasePrefs(lead, stockDays) {
+  try { window.localStorage.setItem(LS_KEY, JSON.stringify({ lead, stockDays })); }
+  catch (e) { console.error("[stocks] localStorage write", e); }
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.set("lead", String(lead));
+    if (stockDays != null) u.searchParams.set("stockDays", String(stockDays)); else u.searchParams.delete("stockDays");
+    window.history.replaceState(null, "", u.toString());
+  } catch (e) { console.error("[stocks] URL write", e); }
+}
+// «К закупке» — lib/supplyPlan.js (purchaseNeedForRow/ForItem, тестируется там же и смоуком).
+const needOf = (row, p) => purchaseNeedForRow(row, { leadDays: p.lead, targetDays: p.stockDays });
+const itemNeed = (it, p) => purchaseNeedForItem(it, { leadDays: p.lead, targetDays: p.stockDays });
+const NEED_HINT = (p) =>
+  `К закупке = ⌈скорость × (срок поставки ${p.lead} + запас ${p.stockDays} дн) − доступно − в пути ОТ клиента⌉, не меньше 0. `
+  + `«В пути ОТ клиента» — возвраты, вернутся на склад, поэтому вычитаются. «В пути К клиенту» НЕ вычитается: `
+  + `это уже проданный товар, едущий покупателю. У товара WB с размерами — сумма по размерам; `
+  + `размер с неизвестной скоростью — «—».`;
 
 // OOS-статус → метаданные для бейджа.
 const OOS_META = {
@@ -81,7 +119,7 @@ function useSort(initialKey, initialDir = "desc") {
   return { sort: s, toggle, apply };
 }
 // Кликабельный <th> со стрелкой ▲/▼/‖. baseStyle — thLeft/thR (выравнивание).
-function SortTh({ colKey, sort, toggle, baseStyle, children }) {
+function SortTh({ colKey, sort, toggle, baseStyle, children, title }) {
   const active = sort.key === colKey;
   const icon = active ? (sort.dir === "asc" ? " ▲" : " ▼") : " ↕";
   return (
@@ -94,7 +132,7 @@ function SortTh({ colKey, sort, toggle, baseStyle, children }) {
         color: active ? C.ink : undefined,
       }}
       onClick={() => toggle(colKey)}
-      title="Сортировка: клик меняет направление"
+      title={title ? `${title}\n\nКлик — сортировка.` : "Сортировка: клик меняет направление"}
     >
       {children}
       <span style={{ fontSize: 9, color: active ? C.accent : C.faint, fontWeight: 700 }}>{icon}</span>
@@ -111,6 +149,17 @@ export default function StocksPage({ cabinetId }) {
   const [tab, setTab] = useState("warehouses");
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("");
+  // Параметры «К закупке»: lead — срок поставки, stockDays — запас (null = target_days кабинета).
+  const [lead, setLead] = useState(LEAD_DEFAULT);
+  const [stockDaysSel, setStockDaysSel] = useState(null);
+  const [prefsReady, setPrefsReady] = useState(false);
+  useEffect(() => {
+    const p = readPurchasePrefs();
+    if (p.lead != null) setLead(p.lead);
+    if (p.stockDays != null) setStockDaysSel(p.stockDays);
+    setPrefsReady(true);
+  }, []);
+  useEffect(() => { if (prefsReady) writePurchasePrefs(lead, stockDaysSel); }, [prefsReady, lead, stockDaysSel]);
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -142,6 +191,7 @@ export default function StocksPage({ cabinetId }) {
 
   const whF = useMemo(() => mpFilter(allWh), [mpFilter, allWh]);
 
+  const purchase = { lead, stockDays: stockDaysSel ?? (data?.supplyTargetDays || 30) };
   const totals = data?.totals || { all: {}, wb: {}, ozon: {} };
   const totalsForMp = mp === "wb" ? totals.wb : mp === "ozon" ? totals.ozon : totals.all;
 
@@ -163,6 +213,11 @@ export default function StocksPage({ cabinetId }) {
         <Segmented value={String(vel)} onChange={(v) => setVel(Number(v))} options={
           VEL_OPTIONS.map((v) => ({ v: String(v), l: `${v} дн` }))
         } />
+        <DaysInput label="Срок поставки, дн" value={purchase.lead} onChange={(v) => setLead(clampDays(v, LEAD_DEFAULT))}
+          hint="Для колонки «К закупке, шт» (вкладка «Индексы OOS»): сколько дней идёт поставка" />
+        <DaysInput label="Запас, дн" value={purchase.stockDays}
+          onChange={(v) => setStockDaysSel(clampDays(v, data?.supplyTargetDays || 30))}
+          hint={`Для колонки «К закупке, шт»: на сколько дней продаж держать запас после прихода. По умолчанию — порог «целевой запас» кабинета (${data?.supplyTargetDays || 30} дн, ⚙️ Настройки)`} />
       </div>
 
       {/* KPI */}
@@ -194,7 +249,7 @@ export default function StocksPage({ cabinetId }) {
         <WarehousesTable rows={whF} trend={data.warehouseTrend} />
       )}
       {tab === "oos" && (
-        <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} sizesSince={data.wbSizesSince} />
+        <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} sizesSince={data.wbSizesSince} purchase={purchase} />
       )}
       {tab === "dynamics" && (
         <DynamicsChart dynamics={data.dynamics} wbTooShort={data.wbTooShort} mp={mp} />
@@ -392,7 +447,7 @@ function WarehouseTrend({ series, platform }) {
 // =====================================================================
 //  Вкладка 2: индексы OOS
 // =====================================================================
-function OosTable({ items, vel, categories, q, setQ, category, setCategory, sizesSince }) {
+function OosTable({ items, vel, categories, q, setQ, category, setCategory, sizesSince, purchase }) {
   // Режим: «По товарам» (строки WB с размерами раскрываются ▸) или «По размерам WB»
   // (плоский список размеров — удобно найти закончившийся размер сортировкой).
   const [view, setView] = useState("items");
@@ -427,9 +482,10 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory, size
     days_to_oos:  (it) => it.days_to_oos,
     status:       (it) => (OOS_ORDER[it.status] != null ? OOS_ORDER[it.status] : 9),
     value_cost:   (it) => it.value_cost,
+    need:         (it) => it.isSize ? needOf(it, purchase) : itemNeed(it, purchase),
   };
   const sorted = apply(view === "sizes" ? sizeRows : items, spec);
-  const COLS = 10;
+  const COLS = 11;
   return (
     <>
       <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -468,11 +524,12 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory, size
               <SortTh colKey="days_to_oos"   sort={sort} toggle={toggle} baseStyle={thR}>Дней до OOS</SortTh>
               <SortTh colKey="status"        sort={sort} toggle={toggle} baseStyle={thLeft}>Статус</SortTh>
               <SortTh colKey="value_cost"    sort={sort} toggle={toggle} baseStyle={thR}>Заморожено ₽</SortTh>
+              <SortTh colKey="need"          sort={sort} toggle={toggle} baseStyle={thR} title={NEED_HINT(purchase)}>К закупке, шт ⓘ</SortTh>
             </tr>
           </thead>
           <tbody>
             {view === "sizes" && sorted.map((sz) => (
-              <OosRow key={`s-${sz.sku}-${sz.chrt_id}`} it={sz} flatSize />
+              <OosRow key={`s-${sz.sku}-${sz.chrt_id}`} it={sz} flatSize need={needOf(sz, purchase)} />
             ))}
             {view === "items" && sorted.map((it, i) => {
               const key = `${it.platform}-${it.sku}`;
@@ -480,9 +537,9 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory, size
               const isOpen = hasSizes && open.has(key);
               return (
                 <Fragment key={`${key}-${i}`}>
-                  <OosRow it={it} expandable={hasSizes} isOpen={isOpen} onToggle={() => toggleOpen(key)} />
+                  <OosRow it={it} expandable={hasSizes} isOpen={isOpen} onToggle={() => toggleOpen(key)} need={itemNeed(it, purchase)} />
                   {isOpen && it.sizes.map((sz) => (
-                    <OosRow key={`${key}-${sz.chrt_id}`} sub
+                    <OosRow key={`${key}-${sz.chrt_id}`} sub need={needOf(sz, purchase)}
                       it={{ ...sz, platform: it.platform, value_cost: round2((sz.quantity_full || 0) * (Number(it.cost) || 0)) }} />
                   ))}
                 </Fragment>
@@ -502,7 +559,7 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory, size
 
 // Строка OOS: товар (expandable — есть размеры), подстрока размера (sub) или
 // строка плоского списка размеров (flatSize).
-function OosRow({ it, expandable, isOpen, onToggle, sub, flatSize }) {
+function OosRow({ it, expandable, isOpen, onToggle, sub, flatSize, need }) {
   const meta = OOS_META[it.status] || OOS_META.no_sales;
   const color = C[meta.color] || C.faint;
   const inWay = (it.in_way_to || 0) + (it.in_way_from || 0);
@@ -550,6 +607,9 @@ function OosRow({ it, expandable, isOpen, onToggle, sub, flatSize }) {
       </td>
       <td style={{ ...tdRight, color: (it.value_cost || 0) > 0 && it.status === "no_sales" ? C.warn : C.faint }}>
         {money(it.value_cost)}
+      </td>
+      <td style={{ ...tdRight, fontWeight: need > 0 && !sub ? 700 : 400, color: need == null ? C.faint : need > 0 ? C.warn : C.faint }}>
+        {need == null ? "—" : num(need)}
       </td>
     </tr>
   );
@@ -953,6 +1013,17 @@ function Segmented({ value, onChange, options }) {
         </button>
       ))}
     </div>
+  );
+}
+// Числовое поле «N дн» для параметров «К закупке» (1..365, кламп на onChange-родителе).
+function DaysInput({ label, value, onChange, hint }) {
+  return (
+    <label title={hint} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: C.muted }}>
+      {label}
+      <input type="number" min={1} max={365} value={value ?? ""}
+        onChange={(e) => e.target.value !== "" && onChange(e.target.value)}
+        style={{ ...inputStyle, minWidth: 0, width: 64, padding: "5px 8px" }} />
+    </label>
   );
 }
 function MpBadge({ platform }) {

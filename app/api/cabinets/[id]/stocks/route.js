@@ -3,6 +3,7 @@ import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { wbSalesLocalityByWarehouse } from "@/lib/geoMetrics.js";
 import { velocityPerDay, VELOCITY_WINDOW_DAYS } from "@/lib/stockCoverage.js";
+import { readSupplySettings } from "@/lib/supplyPlanData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,11 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     // Окно velocity: 7/14/30/60 (по согласованию с хозяином — выбирается на странице).
     const velRaw = parseInt(qp?.get("vel"), 10);
     const vel = [7, 14, 30, 60].includes(velRaw) ? velRaw : 7;
+
+    // Запас по умолчанию для колонки «К закупке, шт» — target_days кабинета (тот же
+    // источник, что у плана поставок, lib/supplyDays.js). Сам расчёт — на клиенте
+    // (lib/supplyPlan.js purchaseNeedQty): срок/запас меняются без перезапроса.
+    const supply = await readSupplySettings(cabinet.cabinet_id);
 
     const wb = await collectWB(vel);
     const oz = await collectOzon(vel);
@@ -94,6 +100,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       // С какой даты есть снимки остатков WB по размерам (миграция 063): история
       // по размерам копится с 2026-10-01, динамики по размерам пока нет.
       wbSizesSince: wb.sizesSince || null,
+      supplyTargetDays: supply.targetDays,
       // Вкладка 1: распределение по складам
       byWarehouse: allWarehouses,
       // Вкладка 2: индексы OOS
