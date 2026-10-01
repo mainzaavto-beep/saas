@@ -485,6 +485,17 @@ def upsert_stock_many(rows):
     return len(rows)
 
 
+# Остатки WB по размерам (chrt_id), миграция 063: вторая запись того же снимка
+# stocks-report, без свёртки chrtId. Агрегат wb_daily_stock не трогает.
+_STOCK_SIZE_COLS = ["nm_id", "chrt_id", "date", "warehouse", "warehouse_id",
+                    "quantity", "quantity_full", "in_way_to", "in_way_from"]
+
+
+def upsert_stock_sizes_many(rows):
+    return _batch_upsert("wb_daily_stock_sizes", ["nm_id", "chrt_id", "date", "warehouse"],
+                         _STOCK_SIZE_COLS, rows)
+
+
 def _batch_upsert(table, pk_cols, data_cols, rows):
     """Общий батч-upsert для таблиц с однородной структурой."""
     if not rows:

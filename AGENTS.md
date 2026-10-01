@@ -951,6 +951,19 @@ Seller API не отдаёт позиции товара по поисковым
     Проверка: `python3 -c "import worker.collectors.wb_stocks as m; m._fetch=lambda:None; m.collect()"`.
     Сверка 2026-07-18 (cabinet #1): записано 150 строк, Σ qty=435, Σ qty_full=761
     (включая in_way_to=131, in_way_from=195). Формула quantity_full проверена.
+    **Остатки по размерам (с 2026-10-01, миграция 063):** `wb_stocks` пишет ВТОРУЮ запись того же
+    снимка без свёртки chrtId — `tenant.wb_daily_stock_sizes` (PK `cabinet_id, nm_id, chrt_id, date,
+    warehouse`; RLS + `panel_local_ro_cab1`; в `lib/db.js` — `daily_stock_sizes`, рядом замаплен
+    `wb_barcodes`). Агрегат `wb_daily_stock` не менялся; размеры пишутся отдельной транзакцией ПОСЛЕ
+    него, сбой → exit 3 (partial), основной снимок цел. Разбор — чистая `build_rows` (селф-тест
+    `worker/collectors/wb_stocks_selftest.py`, инвариант Σ размеров = агрегат); `SAAS_PROBE=1` —
+    сводка без записи. chrtId приходит и при псевдоскладе «Склад WB» (−999999). Имя размера — из
+    `wb_barcodes.tech_size` по `chrt_id`. Витрина: `/stocks` → «Индексы OOS» — строки WB с ▸
+    раскрываются по размерам + режим «По размерам WB»; скорость размера = скорость товара
+    (`daily_metrics`) × доля размера в `wb_orders` за окно (Σ = строка товара), закончившийся
+    размер с заказами в окне — строка «нет остатка». История по размерам — только с 01.10.2026.
+    Сверка 01.10 (каб. #1): 38 агрегатных строк / 66 по размерам, Σ qty 673, Σ full 1165, Δ=0;
+    смоук `node scripts/smoke-stocks-sizes.mjs 1`.
 12. **WB цена для остатков:** `wb_daily_metrics.price` НЕ наполняется сборщиком
     (пустая). Розничную цену WB брать из `wb_prices` (`price_seller × (1 − discount/100)`).
     Ловили на `/mp-stock` (сумма реализации WB = 0).

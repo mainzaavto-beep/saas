@@ -43,10 +43,12 @@ const OOS_META = {
   low:       { label: "Мало",         color: "warn",  icon: "🟡" },
   ok:        { label: "Норма",        color: "pos",   icon: "🟢" },
   no_sales:  { label: "Нет продаж",   color: "faint", icon: "⚪" },
+  // Только у размеров WB: товар продаётся, но заказы окна не сопоставлены с размерами.
+  unknown:   { label: "Нет данных",   color: "faint", icon: "❔" },
 };
 // Приоритет статуса для сортировки (совпадает с OOS_ORDER в route.js):
 // out → critical → low → ok → no_sales.
-const OOS_ORDER = { out: 0, critical: 1, low: 2, ok: 3, no_sales: 4 };
+const OOS_ORDER = { out: 0, critical: 1, low: 2, ok: 3, no_sales: 4, unknown: 5 };
 
 // ── Сортировка колонок (кликабельные заголовки таблиц) ──────────────────
 // useSort хранит выбранную колонку и направление. apply(rows, spec) возвращает
@@ -192,7 +194,7 @@ export default function StocksPage({ cabinetId }) {
         <WarehousesTable rows={whF} trend={data.warehouseTrend} />
       )}
       {tab === "oos" && (
-        <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} />
+        <OosTable items={itemsF} vel={data.velocityWindow} categories={cats} q={q} setQ={setQ} category={category} setCategory={setCategory} sizesSince={data.wbSizesSince} />
       )}
       {tab === "dynamics" && (
         <DynamicsChart dynamics={data.dynamics} wbTooShort={data.wbTooShort} mp={mp} />
@@ -390,21 +392,50 @@ function WarehouseTrend({ series, platform }) {
 // =====================================================================
 //  Вкладка 2: индексы OOS
 // =====================================================================
-function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
+function OosTable({ items, vel, categories, q, setQ, category, setCategory, sizesSince }) {
+  // Режим: «По товарам» (строки WB с размерами раскрываются ▸) или «По размерам WB»
+  // (плоский список размеров — удобно найти закончившийся размер сортировкой).
+  const [view, setView] = useState("items");
+  const [open, setOpen] = useState(() => new Set());
+  const toggleOpen = (key) => setOpen((cur) => {
+    const n = new Set(cur);
+    n.has(key) ? n.delete(key) : n.add(key);
+    return n;
+  });
+  // Плоские строки размеров: имя товара + размер, себест. — по себест. товара.
+  const sizeRows = useMemo(() => items.flatMap((it) => (it.sizes || []).map((sz) => ({
+    ...sz,
+    platform: it.platform,
+    sku: it.sku,
+    article: it.article,
+    category: it.category,
+    name: it.name,
+    value_cost: round2((sz.quantity_full || 0) * (Number(it.cost) || 0)),
+    isSize: true,
+  }))), [items]);
+  const withSizes = items.filter((it) => it.sizes && it.sizes.length > 0).length;
+
   // Дефолт: days_to_oos asc (критичные сверху). Статус сортируется по приоритету (OOS_ORDER).
   const { sort, toggle, apply } = useSort("days_to_oos", "asc");
-  const sorted = apply(items, {
-    name:         (it) => it.name,
+  const spec = {
+    name:         (it) => it.isSize ? `${it.name} ${it.size}` : it.name,
     platform:     (it) => it.platform,
+    quantity:     (it) => it.quantity,
+    in_way:       (it) => (it.in_way_to || 0) + (it.in_way_from || 0),
     quantity_full:(it) => it.quantity_full,
     velocity:     (it) => it.velocity,
     days_to_oos:  (it) => it.days_to_oos,
     status:       (it) => (OOS_ORDER[it.status] != null ? OOS_ORDER[it.status] : 9),
     value_cost:   (it) => it.value_cost,
-  });
+  };
+  const sorted = apply(view === "sizes" ? sizeRows : items, spec);
+  const COLS = 10;
   return (
     <>
-      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <Segmented value={view} onChange={setView} options={[
+          { v: "items", l: "По товарам" }, { v: "sizes", l: `По размерам WB${withSizes ? ` (${sizeRows.length})` : ""}` },
+        ]} />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="поиск товара/артикула…"
           style={{ ...inputStyle, flex: 1, minWidth: 200 }} />
         {categories.length > 0 && (
@@ -414,17 +445,25 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
           </select>
         )}
       </div>
-      <div style={{ fontSize: 12, color: C.faint, marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: C.faint, marginBottom: 8, lineHeight: 1.5 }}>
         Кликайте на заголовки колонок для сортировки (▲/▼). По умолчанию — по срочности (дней до OOS, критичные сверху).
-        Оборачиваемость = средние продажи/день за {vel} дн.
+        Оборачиваемость = средние продажи/день за {vel} дн; дни до OOS считаются от «Доступно».
+        {" "}<b style={{ color: C.muted }}>Размеры WB</b>{" "}
+        {sizesSince
+          ? <>— строки товаров со значком ▸ раскрываются по размерам. Скорость размера = скорость товара × доля размера в заказах за окно.
+              {" "}Снимки по размерам ведутся с {fmtFullLong(sizesSince)} — истории/динамики по размерам пока нет; WB отдаёт остатки одной строкой «Склад WB», без разбивки по складам.</>
+          : <>— снимков по размерам ещё нет (появятся после следующего сбора остатков).</>}
       </div>
       <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.surfaceAlt, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
-              <SortTh colKey="name"          sort={sort} toggle={toggle} baseStyle={thLeft}>Товар</SortTh>
+              <th style={{ ...thLeft, width: 24, cursor: "default" }}></th>
+              <SortTh colKey="name"          sort={sort} toggle={toggle} baseStyle={thLeft}>{view === "sizes" ? "Товар · размер" : "Товар"}</SortTh>
               <SortTh colKey="platform"      sort={sort} toggle={toggle} baseStyle={thLeft}>МП</SortTh>
-              <SortTh colKey="quantity_full" sort={sort} toggle={toggle} baseStyle={thR}>Остаток</SortTh>
+              <SortTh colKey="quantity"      sort={sort} toggle={toggle} baseStyle={thR}>Доступно</SortTh>
+              <SortTh colKey="in_way"        sort={sort} toggle={toggle} baseStyle={thR}>В пути</SortTh>
+              <SortTh colKey="quantity_full" sort={sort} toggle={toggle} baseStyle={thR}>Полный</SortTh>
               <SortTh colKey="velocity"      sort={sort} toggle={toggle} baseStyle={thR}>Продаж/день</SortTh>
               <SortTh colKey="days_to_oos"   sort={sort} toggle={toggle} baseStyle={thR}>Дней до OOS</SortTh>
               <SortTh colKey="status"        sort={sort} toggle={toggle} baseStyle={thLeft}>Статус</SortTh>
@@ -432,12 +471,26 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((it, i) => (
-              <OosRow key={`${it.platform}-${it.sku}-${i}`} it={it} />
+            {view === "sizes" && sorted.map((sz) => (
+              <OosRow key={`s-${sz.sku}-${sz.chrt_id}`} it={sz} flatSize />
             ))}
+            {view === "items" && sorted.map((it, i) => {
+              const key = `${it.platform}-${it.sku}`;
+              const hasSizes = (it.sizes || []).length > 0;
+              const isOpen = hasSizes && open.has(key);
+              return (
+                <Fragment key={`${key}-${i}`}>
+                  <OosRow it={it} expandable={hasSizes} isOpen={isOpen} onToggle={() => toggleOpen(key)} />
+                  {isOpen && it.sizes.map((sz) => (
+                    <OosRow key={`${key}-${sz.chrt_id}`} sub
+                      it={{ ...sz, platform: it.platform, value_cost: round2((sz.quantity_full || 0) * (Number(it.cost) || 0)) }} />
+                  ))}
+                </Fragment>
+              );
+            })}
             {sorted.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: C.muted }}>
-                Нет товаров по фильтру.
+              <tr><td colSpan={COLS} style={{ padding: 24, textAlign: "center", color: C.muted }}>
+                {view === "sizes" ? "Нет товаров WB с разбивкой по размерам для этого фильтра." : "Нет товаров по фильтру."}
               </td></tr>
             )}
           </tbody>
@@ -447,22 +500,46 @@ function OosTable({ items, vel, categories, q, setQ, category, setCategory }) {
   );
 }
 
-function OosRow({ it }) {
+// Строка OOS: товар (expandable — есть размеры), подстрока размера (sub) или
+// строка плоского списка размеров (flatSize).
+function OosRow({ it, expandable, isOpen, onToggle, sub, flatSize }) {
   const meta = OOS_META[it.status] || OOS_META.no_sales;
   const color = C[meta.color] || C.faint;
+  const inWay = (it.in_way_to || 0) + (it.in_way_from || 0);
+  const isSize = sub || flatSize;
   return (
-    <tr style={{ borderBottom: `1px solid ${soft("line", 20)}` }}>
-      <td style={tdLeft}>
-        <div>{it.name || "—"}</div>
-        <div style={{ fontSize: 11, color: C.faint }}>{it.article || it.sku}{it.category ? ` · ${it.category}` : ""}</div>
+    <tr
+      onClick={expandable ? onToggle : undefined}
+      title={expandable ? "Клик — показать по размерам" : undefined}
+      style={{
+        borderBottom: `1px solid ${soft("line", 20)}`,
+        cursor: expandable ? "pointer" : "default",
+        background: sub ? soft("accent", 5) : isOpen ? soft("accent", 8) : "transparent",
+      }}>
+      <td style={{ ...tdLeft, color: C.muted, fontSize: 11, width: 24 }}>{expandable ? (isOpen ? "▾" : "▸") : ""}</td>
+      <td style={{ ...tdLeft, paddingLeft: sub ? 28 : 10 }}>
+        {sub ? (
+          <div>Размер <b>{it.size}</b></div>
+        ) : (
+          <>
+            <div>{it.name || "—"}{flatSize && <> · <b>{it.size}</b></>}</div>
+            <div style={{ fontSize: 11, color: C.faint }}>
+              {it.article || it.sku}{it.category ? ` · ${it.category}` : ""}
+              {expandable && !flatSize ? ` · размеров: ${it.sizes.length}` : ""}
+            </div>
+          </>
+        )}
       </td>
-      <td style={tdLeft}><MpBadge platform={it.platform} /></td>
-      <td style={{ ...tdRight, fontWeight: 700, color: (it.quantity_full || 0) === 0 ? C.neg : C.ink }}>
-        {num(it.quantity_full)}
+      <td style={tdLeft}>{sub ? "" : <MpBadge platform={it.platform} />}</td>
+      <td style={{ ...tdRight, fontWeight: 700, color: (it.quantity || 0) <= 0 ? C.neg : C.ink }}>{num(it.quantity)}</td>
+      <td style={{ ...tdRight, color: inWay > 0 ? C.ink : C.faint }}
+        title={it.platform === "wb" ? `к клиенту ${it.in_way_to || 0} · от клиента ${it.in_way_from || 0}` : undefined}>
+        {it.platform === "wb" ? num(inWay) : "—"}
       </td>
-      <td style={tdRight}>{num(it.velocity) || "—"}</td>
+      <td style={{ ...tdRight, color: isSize ? C.muted : C.ink }}>{num(it.quantity_full)}</td>
+      <td style={tdRight}>{it.velocity == null ? "—" : num(it.velocity)}</td>
       <td style={{ ...tdRight, fontWeight: 700, color: color }}>
-        {it.days_to_oos == null ? (it.status === "out" ? "—" : "∞") : num(it.days_to_oos)}
+        {it.days_to_oos == null ? (it.status === "out" || it.status === "unknown" ? "—" : "∞") : num(it.days_to_oos)}
       </td>
       <td style={tdLeft}>
         <span style={{

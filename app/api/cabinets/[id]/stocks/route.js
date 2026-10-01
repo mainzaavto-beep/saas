@@ -91,6 +91,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       dateOzon: oz.date,
       velocityWindow: vel,
       wbTooShort: wb.tooShort,
+      // С какой даты есть снимки остатков WB по размерам (миграция 063): история
+      // по размерам копится с 2026-10-01, динамики по размерам пока нет.
+      wbSizesSince: wb.sizesSince || null,
       // Вкладка 1: распределение по складам
       byWarehouse: allWarehouses,
       // Вкладка 2: индексы OOS
@@ -164,7 +167,7 @@ function oosSort(a, b) {
 async function collectWB(vel) {
   const db = new DatabaseSync("wb", { readOnly: true });
   const date = await resolveStockDate(db);
-  if (!date) return { date: null, items: [], byWarehouse: [], dynamics: [], tooShort: true };
+  if (!date) return { date: null, items: [], byWarehouse: [], dynamics: [], tooShort: true, sizesSince: null };
 
   // Остатки по nm_id (агрегировано по всем складам) + имя/себест/цена.
   const stockRows = (await db.prepare(
@@ -212,10 +215,18 @@ async function collectWB(vel) {
   ).all(vel);
   const velBySku = {};
   for (const r of velRows) velBySku[r.nm_id] = velocityPerDay(r.ord, vel);
-  const items = stockRows.map((it) => ({
-    ...it,
-    velocity: round2(velBySku[it.sku] || 0),
-  }));
+  const sizeData = await sizesWB(db, date, vel, velBySku);
+  const items = stockRows.map((it) => {
+    const sizes = sizeData.byNm.get(Number(it.sku));
+    return {
+      ...it,
+      velocity: round2(velBySku[it.sku] || 0),
+      // Разбивка по размерам (миграция 063) — только у товаров с >1 размером
+      // либо с настоящим именем размера (не «0» у безразмерных карточек).
+      ...(sizes && (sizes.length > 1 || (sizes[0] && !["", "0"].includes(sizes[0].size)))
+        ? { sizes } : {}),
+    };
+  });
 
   // byWarehouse: остаток + стоимость по складам (для вкладок «Склады» и «Финансы»).
   const byWarehouse = await byWarehouseWB(db, date);
@@ -233,7 +244,119 @@ async function collectWB(vel) {
     ).all()).map((r) => ({ date: r.d, total: Number(r.total) || 0 }));
   }
 
-  return { date, items, byWarehouse, dynamics, tooShort };
+  return { date, items, byWarehouse, dynamics, tooShort, sizesSince: sizeData.since };
+}
+
+// ---------- WB: остатки и OOS по размерам (chrt_id) ----------
+// Источник остатка — tenant.wb_daily_stock_sizes (миграция 063, сборщик wb_stocks пишет
+// её рядом с агрегатом wb_daily_stock; Σ по размерам = агрегат, сверено Δ=0 01.10.2026).
+// Имя размера — tenant.wb_barcodes.tech_size по chrt_id. Остаток суммируется по складам
+// (с 01.09.2026 WB отдаёт одну строку «Склад WB», разбивки по складам нет).
+//
+// Скорость размера = скорость ТОВАРА (daily_metrics, канон velocityPerDay) × доля размера
+// в заказах wb_orders за то же окно (все заказы, включая отменённые, — как daily_metrics.orders).
+// Так Σ скоростей размеров = скорость строки товара: одна цифра на странице, не две
+// (прямой счёт по wb_orders расходился бы с daily_metrics на единицы заказов).
+// Заказ → размер: по штрихкоду (wb_barcodes.barcode), иначе по (nm_id, tech_size).
+// Товар продаётся, а ни один заказ окна не сопоставлен с размером → velocity размера null
+// (статус «нет данных», не «нет продаж»).
+// Размер без строки в снимке, но с заказами в окне → остаток 0, статус «нет остатка»
+// (WB может не прислать строку закончившегося размера).
+const SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "2XL", "XXXL", "3XL", "4XL", "5XL", "6XL"];
+function sizeCmp(a, b) {
+  const ia = SIZE_ORDER.indexOf(String(a.size).toUpperCase());
+  const ib = SIZE_ORDER.indexOf(String(b.size).toUpperCase());
+  if (ia >= 0 && ib >= 0) return ia - ib;
+  if (ia >= 0) return -1;
+  if (ib >= 0) return 1;
+  const na = parseFloat(a.size), nb = parseFloat(b.size);
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return String(a.size).localeCompare(String(b.size), "ru", { numeric: true });
+}
+
+async function sizesWB(db, date, vel, velBySku) {
+  const byNm = new Map();
+  const sinceRow = await db.prepare(`SELECT MIN(date) AS d FROM daily_stock_sizes`).get();
+  const since = sinceRow?.d || null;
+  if (!since) return { byNm, since };
+
+  const stock = await db.prepare(
+    `SELECT s.nm_id, s.chrt_id, MAX(b.tech_size) AS size,
+            SUM(s.quantity) AS quantity, SUM(s.quantity_full) AS quantity_full,
+            SUM(s.in_way_to) AS in_way_to, SUM(s.in_way_from) AS in_way_from
+     FROM daily_stock_sizes s
+     LEFT JOIN (SELECT chrt_id, MAX(tech_size) AS tech_size FROM wb_barcodes
+                WHERE chrt_id IS NOT NULL GROUP BY chrt_id) b ON b.chrt_id = s.chrt_id
+     WHERE s.date = ?
+     GROUP BY s.nm_id, s.chrt_id`
+  ).all(date);
+
+  const ord = await db.prepare(
+    `SELECT o.nm_id, COALESCE(b.chrt_id, bs.chrt_id) AS chrt_id,
+            MAX(COALESCE(b.tech_size, o.tech_size)) AS size, COUNT(*) AS n
+     FROM orders o
+     LEFT JOIN wb_barcodes b ON b.barcode = o.barcode
+     LEFT JOIN LATERAL (
+       SELECT chrt_id FROM wb_barcodes
+       WHERE nm_id = o.nm_id AND tech_size = o.tech_size AND chrt_id IS NOT NULL
+       ORDER BY chrt_id LIMIT 1
+     ) bs ON b.chrt_id IS NULL
+     WHERE substr(o.order_dt, 1, 10)::date >= current_date - ?::int
+     GROUP BY o.nm_id, COALESCE(b.chrt_id, bs.chrt_id)`
+  ).all(vel);
+
+  // Доли заказов по размерам внутри товара (только сопоставленные с chrt_id).
+  const ordByNm = new Map();
+  for (const r of ord) {
+    if (r.chrt_id == null) continue;
+    const nm = Number(r.nm_id);
+    if (!ordByNm.has(nm)) ordByNm.set(nm, { total: 0, byChrt: new Map() });
+    const o = ordByNm.get(nm);
+    o.total += Number(r.n) || 0;
+    o.byChrt.set(Number(r.chrt_id), { n: Number(r.n) || 0, size: r.size });
+  }
+
+  const raw = new Map();  // nm → Map(chrt → row)
+  for (const r of stock) {
+    const nm = Number(r.nm_id);
+    if (!raw.has(nm)) raw.set(nm, new Map());
+    raw.get(nm).set(Number(r.chrt_id), {
+      chrt_id: Number(r.chrt_id),
+      size: r.size ?? (Number(r.chrt_id) ? `chrt ${r.chrt_id}` : "—"),
+      quantity: Number(r.quantity) || 0,
+      quantity_full: Number(r.quantity_full) || 0,
+      in_way_to: Number(r.in_way_to) || 0,
+      in_way_from: Number(r.in_way_from) || 0,
+    });
+  }
+  // Закончившиеся размеры: есть заказы в окне, строки в снимке нет.
+  for (const [nm, o] of ordByNm) {
+    const m = raw.get(nm);
+    if (!m) continue;  // товара нет в снимке — строки товара тоже нет
+    for (const [chrt, x] of o.byChrt) {
+      if (!m.has(chrt)) {
+        m.set(chrt, { chrt_id: chrt, size: x.size ?? `chrt ${chrt}`, quantity: 0, quantity_full: 0, in_way_to: 0, in_way_from: 0 });
+      }
+    }
+  }
+
+  for (const [nm, m] of raw) {
+    const nmVel = Number(velBySku[nm]) || 0;
+    const o = ordByNm.get(nm);
+    const rows = [...m.values()].map((sz) => {
+      let velocity;
+      if (nmVel <= 0) velocity = 0;
+      else if (!o || o.total <= 0) velocity = null;
+      else velocity = round2(nmVel * ((o.byChrt.get(sz.chrt_id)?.n || 0) / o.total));
+      const e = velocity == null
+        ? { ...sz, velocity: null, days_to_oos: null, status: sz.quantity <= 0 ? "out" : "unknown" }
+        : enrichOos({ ...sz, velocity });
+      return e;
+    });
+    rows.sort(sizeCmp);
+    byNm.set(nm, rows);
+  }
+  return { byNm, since };
 }
 
 // Распределение по складам WB с долей %, себестоимостью и реализацией.

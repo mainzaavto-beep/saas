@@ -15,8 +15,9 @@ SaaS-сборщик ОСТАТКОВ по складам WB → tenant.wb_daily_
    • ⚠️ НЕТ поля quantityFull (как в старом) → считаем сами:
        quantity_full = quantity + inWayToClient + inWayFromClient
      (склад + в пути обе стороны). Это и есть «полный остаток».
-   • Новые поля chrtId / regionName — не пишем (схема не менялась, колонок
-     для них нет; при желании добавим миграцией). warehouseId — пишем.
+   • chrtId (размер) — с 2026-10-01 пишется во ВТОРУЮ таблицу
+     tenant.wb_daily_stock_sizes (миграция 063, см. build_rows); regionName — не
+     пишем. warehouseId — пишем.
 
 ⚠️ ГРАБЛЯ chrtId (фикс 2026-07-22): WB отдаёт ОТДЕЛЬНУЮ строку на каждый
    chrtId (характеристика = размер/цвет внутри карточки nm_id). Товары с
@@ -104,28 +105,20 @@ def _fetch():
     return None
 
 
-def collect():
-    today = date.today().isoformat()
-    print(f"[wb_stocks] снимок остатков на {today}", flush=True)
-    db_pg.init()
-    data = _fetch()
-    if data is None:
-        # WB API недоступен — НЕ падаем. Снимок за сегодня просто не запишется,
-        # следующий прогон таймера допишет. Это лучше, чем валить весь сервис
-        # (ozon_stocks и т.д.). См. инцидент 2026-07-14.
-        print("[wb_stocks] ПРОПУСК: WB API недоступен, снимок не записан (exit 0)", flush=True)
-        return 0
-    known = set(db_pg.active_nm_ids())
+def build_rows(data, known, today):
+    """Чистая функция (без сети и БД): ответ stocks-report → строки двух таблиц.
 
-    # ⚠️ АГРЕГАЦИЯ chrtId → одна строка на (nm_id, склад) [фикс 2026-07-22].
-    # WB отдаёт ОТДЕЛЬНУЮ строку на каждый chrtId (характеристика = размер/цвет
-    # внутри карточки nm_id). Товары с размерами дают 2-5 строк на один (nm_id,
-    # warehouseName). PK таблицы = (cabinet_id, nm_id, date, warehouse) → без
-    # агрегации строки перезаписывали друг друга через ON CONFLICT DO UPDATE,
-    # выживала последняя (терялось до 90 шт на Невинномысске: 63→12, 54→15).
-    # Группируем заранее: складываем quantity / inWay* всех характеристик.
-    # warehouse_id берём из первой строки группы (одинаков для одного склада).
+    Возвращает (agg_rows, size_rows, stats):
+      • agg_rows  — одна строка на (nm_id, склад), chrtId свёрнуты (ГРАБЛЯ chrtId,
+        фикс 2026-07-22) → tenant.wb_daily_stock, поведение НЕ менялось;
+      • size_rows — одна строка на (nm_id, chrt_id, склад) → tenant.wb_daily_stock_sizes
+        (миграция 063, с 2026-10-01). Размер (tech_size) в ответе WB нет — только
+        chrtId; имя размера панель берёт из tenant.wb_barcodes (Content API).
+        chrtId=None → 0 (строка не теряется, Σ по размерам = агрегату).
+    Инвариант (проверяет селф-тест): Σ size_rows по (nm, склад) == agg_rows.
+    """
     grouped = {}  # (nm_id, warehouse_name) → {quantity, in_to, in_from, warehouse_id}
+    by_size = {}  # (nm_id, chrt_id, warehouse_name) → то же
     skipped_unknown_nm = 0
     skipped_no_wh = 0
     for s in data:
@@ -137,56 +130,114 @@ def collect():
         if not wh:
             skipped_no_wh += 1
             continue
-        key = (nm, wh)
         qty = int(s.get("quantity", 0) or 0)
         in_to = int(s.get("inWayToClient", 0) or 0)
         in_from = int(s.get("inWayFromClient", 0) or 0)
-        acc = grouped.get(key)
-        if acc is None:
-            # warehouse_id одинаковый для всех строк одного склада, но кладём
-            # только при первом появлении (на случай NULL в какой-то строке).
-            grouped[key] = {
-                "quantity": qty, "in_to": in_to, "in_from": in_from,
-                "warehouse_id": s.get("warehouseId"),
-            }
-        else:
-            acc["quantity"] += qty
-            acc["in_to"] += in_to
-            acc["in_from"] += in_from
-            if acc.get("warehouse_id") is None:
-                acc["warehouse_id"] = s.get("warehouseId")
+        chrt = int(s.get("chrtId") or 0)
+        for acc_map, key in ((grouped, (nm, wh)), (by_size, (nm, chrt, wh))):
+            acc = acc_map.get(key)
+            if acc is None:
+                # warehouse_id одинаковый для всех строк одного склада, но кладём
+                # только при первом появлении (на случай NULL в какой-то строке).
+                acc_map[key] = {
+                    "quantity": qty, "in_to": in_to, "in_from": in_from,
+                    "warehouse_id": s.get("warehouseId"),
+                }
+            else:
+                acc["quantity"] += qty
+                acc["in_to"] += in_to
+                acc["in_from"] += in_from
+                if acc.get("warehouse_id") is None:
+                    acc["warehouse_id"] = s.get("warehouseId")
 
-    # Разворот аккумулированных групп в строки для upsert.
-    rows = []
-    for (nm, wh), acc in grouped.items():
-        qty = acc["quantity"]
-        in_to = acc["in_to"]
-        in_from = acc["in_from"]
+    def _row(acc, **extra):
         # ⚠️ Новый endpoint НЕ отдаёт quantityFull — считаем сами:
         # полный остаток = склад + в пути к клиенту + в пути от клиента.
-        rows.append({
-            "nm_id": nm, "date": today, "warehouse": wh,
+        r = dict(extra)
+        r.update({
+            "date": today,
             "warehouse_id": acc["warehouse_id"],  # для маппинга к shared.wb_warehouses (миграция 025)
-            "quantity": qty,
-            "quantity_full": qty + in_to + in_from,
-            "in_way_to": in_to,
-            "in_way_from": in_from,
+            "quantity": acc["quantity"],
+            "quantity_full": acc["quantity"] + acc["in_to"] + acc["in_from"],
+            "in_way_to": acc["in_to"],
+            "in_way_from": acc["in_from"],
         })
+        return r
+
+    agg_rows = [_row(acc, nm_id=nm, warehouse=wh) for (nm, wh), acc in grouped.items()]
+    size_rows = [_row(acc, nm_id=nm, chrt_id=chrt, warehouse=wh)
+                 for (nm, chrt, wh), acc in by_size.items()]
+    stats = {
+        "src": len(data),
+        "skipped_unknown_nm": skipped_unknown_nm,
+        "skipped_no_wh": skipped_no_wh,
+        "merged": len(data) - len(agg_rows) - skipped_unknown_nm - skipped_no_wh,
+        "no_chrt": sum(1 for (_, c, _) in by_size if c == 0),
+    }
+    return agg_rows, size_rows, stats
+
+
+def collect():
+    """Возвращает код выхода: 0 ok · 3 partial (основной снимок записан, размеры — нет)."""
+    today = date.today().isoformat()
+    probe = os.environ.get("SAAS_PROBE")
+    print(f"[wb_stocks] снимок остатков на {today}" + (f" (ПРОБА {probe}: без записи)" if probe else ""), flush=True)
+    db_pg.init()
+    data = _fetch()
+    if data is None:
+        # WB API недоступен — НЕ падаем. Снимок за сегодня просто не запишется,
+        # следующий прогон таймера допишет. Это лучше, чем валить весь сервис
+        # (ozon_stocks и т.д.). См. инцидент 2026-07-14.
+        print("[wb_stocks] ПРОПУСК: WB API недоступен, снимок не записан (exit 0)", flush=True)
+        return 0
+    known = set(db_pg.active_nm_ids())
+    rows, size_rows, st = build_rows(data, known, today)
 
     # Диагностика: сколько характеристик было свёрнуто (лог помогает заметить
     # регрессию, если WB поменяет структуру ответа).
-    n_src = len(data)
-    n_merged = n_src - len(rows) - skipped_unknown_nm - skipped_no_wh
-    if n_merged > 0:
-        print(f"[wb_stocks] свёрнуто chrtId-дублей: {n_merged} "
-              f"({n_src} строк API → {len(rows)} уникальных nm_id+склад)", flush=True)
+    if st["merged"] > 0:
+        print(f"[wb_stocks] свёрнуто chrtId-дублей: {st['merged']} "
+              f"({st['src']} строк API → {len(rows)} уникальных nm_id+склад, "
+              f"{len(size_rows)} строк по размерам)", flush=True)
+    if st["no_chrt"]:
+        print(f"[wb_stocks] ⚠ строк без chrtId: {st['no_chrt']} (записаны с chrt_id=0)", flush=True)
+
+    if probe:
+        import json
+        print("[wb_stocks] ПРОБА: первые сырые строки API:", flush=True)
+        for s in data[:5]:
+            print("   " + json.dumps(s, ensure_ascii=False), flush=True)
+        whs = sorted({(r["warehouse"], r["warehouse_id"]) for r in rows}, key=str)
+        multi = {}
+        for r in size_rows:
+            multi.setdefault(r["nm_id"], set()).add(r["chrt_id"])
+        n_multi = sum(1 for v in multi.values() if len(v) > 1)
+        # Сводка — ПОСЛЕДНЕЙ строкой: оркестратор показывает только её.
+        print(f"[wb_stocks] ПРОБА: api={st['src']} чужих_nm={st['skipped_unknown_nm']} "
+              f"без_склада={st['skipped_no_wh']} без_chrt={st['no_chrt']} → agg={len(rows)} "
+              f"sizes={len(size_rows)} nm_с_>1_размером={n_multi} "
+              f"Σqty agg/sizes={sum(r['quantity'] for r in rows)}/{sum(r['quantity'] for r in size_rows)} "
+              f"складов={len(whs)} {whs[:5]}", flush=True)
+        return 0
+
     n = db_pg.upsert_stock_many(rows)
     print(f"[wb_stocks] записано {n} строк → tenant.wb_daily_stock", flush=True)
     print(f"##OBS rows={n}", flush=True)
-    return n
+
+    # Разбивка по размерам — ОТДЕЛЬНОЙ транзакцией ПОСЛЕ основного снимка:
+    # её сбой (нет миграции 063, ошибка записи) не откатывает и не ломает
+    # агрегат, а делает прогон partial (exit 3) — видно в jobs.collector_runs.
+    try:
+        ns = db_pg.upsert_stock_sizes_many(size_rows)
+        print(f"[wb_stocks] записано {ns} строк → tenant.wb_daily_stock_sizes", flush=True)
+    except Exception as e:
+        print(f"[wb_stocks] ⚠ ОШИБКА записи по размерам ({e.__class__.__name__}: {e}) — "
+              f"основной снимок записан, прогон partial", flush=True)
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     os.environ["NO_PROXY"] = "*"
-    collect()
+    sys.exit(collect())
