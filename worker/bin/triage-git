@@ -30,20 +30,29 @@ for a in "$@"; do
 done
 cd /opt/agents/saas
 
-# Значение пароля saas_app читаем из /etc/saas-worker.env в подоболочке (не экспортируем в
-# окружение этого процесса, не печатаем) — только чтобы вычеркнуть его из вывода git построчно.
-pass=""
-if [ -r /etc/saas-worker.env ]; then
-  pass="$( . /etc/saas-worker.env >/dev/null 2>&1; printf '%s' "${SAAS_APP_DB_PASSWORD:-}" )" || true
+# Строки для вычёркивания (пароль saas_app) — файлом через `grep -f`, НЕ аргументом: в argv пароль
+# виден в списке процессов (вариант 2, 02.10.2026). Источник:
+#   - /run/saas-triage/redact (root:saas-triage 640) — его перед каждым запуском claude пишет тик
+#     worker/failure_triage.py из своего окружения; так обёртка работает под пользователем
+#     saas-triage, которому /etc/saas-worker.env не читается;
+#   - иначе (ручной запуск под root) — значение из /etc/saas-worker.env через подстановку процесса.
+# Нет ни того, ни другого — ОТКАЗ (exit 3), а не молчаливый вывод без вычёркивания.
+REDACT="${SAAS_TRIAGE_REDACT:-/run/saas-triage/redact}"
+redact_src() {
+  if [ -r "$REDACT" ] && [ -s "$REDACT" ]; then cat "$REDACT"; return; fi
+  ( . /etc/saas-worker.env >/dev/null 2>&1; printf '%s\n' "${SAAS_APP_DB_PASSWORD:-}" )
+}
+if ! { [ -r "$REDACT" ] && [ -s "$REDACT" ]; } && ! [ -r /etc/saas-worker.env ]; then
+  echo "triage-git: список вычёркивания недоступен ($REDACT) — вывод не выдаётся" >&2; exit 3
+fi
+patterns="$(redact_src | grep -v '^$' || true)"
+if [ -z "$patterns" ]; then
+  echo "triage-git: список вычёркивания пуст — вывод не выдаётся" >&2; exit 3
 fi
 
 set +e
-if [ -n "$pass" ]; then
-  git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@" | grep -vF -e "$pass"
-  rc=${PIPESTATUS[0]}
-else
-  git --no-pager -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@"
-  rc=$?
-fi
+git --no-pager -c safe.directory=/opt/agents/saas -c core.pager=cat -c diff.external= "$sub" --no-ext-diff --no-textconv "$@" \
+  | grep -vF -f <(printf '%s\n' "$patterns")
+rc=${PIPESTATUS[0]}
 set -e
 exit "$rc"

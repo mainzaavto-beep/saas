@@ -8,7 +8,9 @@ failure_triage.py — тик сторожа авторазбора падени�
 
 Решения — worker/triage_core.py (чистое ядро). Здесь только I/O: PG под postgres
 (как worker/record_failure.py), сбор контекста, subprocess claude, вызов писем.
-Разбор — только диагноз: claude запускается с инструментами на чтение и БД под saas_ro.
+Разбор — только диагноз: claude запускается с инструментами на чтение и БД под saas_triage.
+Вариант 2 (02.10.2026): сам claude — под системным пользователем saas-triage (runuser), без доступа
+к /etc/saas-*.env, .env.local, /root и ключам в auth.* (deploy/install-triage-user.sh).
 """
 import argparse
 import os
@@ -56,7 +58,15 @@ DISALLOWED = ["Edit", "Write", "NotebookEdit", "Agent", "WebSearch",
               "Read(//opt/agents/saas/db/migrations/001_tenant_core.sql)"]
 # Окружение claude — белый список: секреты воркера (POSTGRES_PASSWORD, SAAS_*_PASSWORD,
 # SAAS_CRED_MASTER_KEY и любые будущие) не наследуются ни claude, ни его Bash-детьми.
-ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "TERM")
+ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TZ", "TERM")
+# Пользователь для claude (вариант 2). Пустое значение — старый режим «под тем же пользователем, что
+# и тик» (только для отладки). Вход в claude — у самого пользователя (~/.claude) либо токен
+# CLAUDE_CODE_OAUTH_TOKEN из /etc/saas-triage.env (пробрасывается только claude).
+TRIAGE_USER = os.environ.get("SAAS_TRIAGE_USER", "saas-triage")
+TRIAGE_HOME = Path(os.environ.get("SAAS_TRIAGE_HOME", "/var/lib/saas-triage"))
+# Строки для вычёркивания из вывода triage-git (пароль saas_app): пользователю saas-triage
+# /etc/saas-worker.env не читается — тик кладёт значение сюда на время разбора (см. triage-git).
+REDACT = Path("/run/saas-triage/redact")
 
 RUNS_SQL = """SELECT id, collector, cabinet_id, run_kind, status, started_at
                 FROM jobs.collector_runs WHERE started_at > now() - interval '7 days'"""
@@ -173,6 +183,49 @@ def _scrub_proxy(text, proxy):
     return text.replace(proxy, "***") if proxy and text else text
 
 
+def claude_ready():
+    """(ok, причина). Без пользователя или без входа в claude эпизод не берём (не тратим попытки)."""
+    if not TRIAGE_USER:
+        return True, ""
+    try:
+        import pwd
+        pwd.getpwnam(TRIAGE_USER)
+    except KeyError:
+        return False, f"нет пользователя {TRIAGE_USER} (deploy/install-triage-user.sh)"
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or (TRIAGE_HOME / ".claude" / ".credentials.json").exists():
+        return True, ""
+    return False, f"нет входа в claude у {TRIAGE_USER} (см. AGENTS.md, «Авторазбор»)"
+
+
+def write_redact():
+    """Пароль saas_app → /run/saas-triage/redact (root:saas-triage 640) на время разбора."""
+    pw = os.environ.get("SAAS_APP_DB_PASSWORD", "")
+    if not TRIAGE_USER or not pw or not REDACT.parent.is_dir():
+        return
+    import grp
+    fd = os.open(REDACT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w") as f:
+        f.write(pw + "\n")
+    os.chown(REDACT, 0, grp.getgrnam(TRIAGE_USER).gr_gid)
+    os.chmod(REDACT, 0o640)
+
+
+def drop_redact():
+    try:
+        REDACT.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log(f"redact не удалён: {e}")
+
+
+def kill_user_leftovers():
+    """Всё, что осталось от разбора под saas-triage (Bash-дети claude вне группы процессов),
+    добивается по пользователю: у него нет других задач, кроме разбора."""
+    if TRIAGE_USER:
+        subprocess.run(["pkill", "-KILL", "-u", TRIAGE_USER], capture_output=True)
+
+
 def run_claude(prompt):
     """(rep, err, raw, retryable). Сбой запуска/таймаут claude → retryable=True (стоит
     повторить); иначе решение берётся из core.parse_claude_output."""
@@ -181,6 +234,15 @@ def run_claude(prompt):
            "--setting-sources", "user", "--permission-mode", "default",
            "--allowedTools", *ALLOWED, "--disallowedTools", *DISALLOWED]
     env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
+    env["DISABLE_AUTOUPDATER"] = "1"
+    if TRIAGE_USER:
+        # runuser выставит HOME/USER/LOGNAME из passwd; claude видит только свой ~/.claude.
+        env.update(HOME=str(TRIAGE_HOME), USER=TRIAGE_USER, LOGNAME=TRIAGE_USER)
+        cmd = ["/usr/sbin/runuser", "-u", TRIAGE_USER, "--", *cmd]
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = os.environ["CLAUDE_CODE_OAUTH_TOKEN"]
+    else:
+        env.update({k: os.environ[k] for k in ("HOME", "USER", "LOGNAME") if k in os.environ})
     proxy = os.environ.get("SAAS_TRIAGE_PROXY")
     if proxy:
         env["HTTPS_PROXY"] = proxy
@@ -222,7 +284,12 @@ def triage(ep):
     prompt = core.build_prompt(PROMPT.read_text(), ctx)
     log(f"разбор эпизода #{ep['id']} {ep['collector']} каб={ep['cabinet_id']} "
         f"(попытка {ep['attempts']}/{core.MAX_ATTEMPTS})")
-    rep, err, raw, retryable = run_claude(prompt)
+    write_redact()
+    try:
+        rep, err, raw, retryable = run_claude(prompt)
+    finally:
+        drop_redact()
+        kill_user_leftovers()
     with connect() as conn:
         if rep:
             conn.execute(
@@ -284,6 +351,11 @@ def main():
                 "SELECT count(*) AS n FROM jobs.failure_triage, unnest(run_starts) s "
                 "WHERE s > now() - interval '24 hours'").fetchone()["n"]
             ep_id = core.pick_next(conn.execute(OPEN_SQL).fetchall(), started, now)
+        if ep_id:
+            ready, why = claude_ready()
+            if not ready:
+                log(f"эпизод #{ep_id} ждёт: {why}")
+                ep_id = None
         if ep_id:
             claimed = conn.execute(
                 "UPDATE jobs.failure_triage SET status = 'running', started_at = now(), "

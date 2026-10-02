@@ -1,5 +1,7 @@
 #!/bin/bash
-# triage-sql — единственный путь claude -p (авторазбор падений) к БД: роль saas_ro,
+# triage-sql — единственный путь claude -p (авторазбор падений) к БД: роль saas_triage (вариант 2,
+# 02.10.2026: без ключей маркетплейсов/хэшей/ПДн — db/ops/saas_triage_role.sql; пароль только в
+# /var/lib/saas-triage/.pgpass, не в argv/окружении),
 # транзакция только на чтение, таймаут, без метакоманд psql (обратная косая запрещена
 # целиком — иначе \! даёт shell, \copy/\o пишут файлы, \c меняет роль).
 #
@@ -13,7 +15,7 @@
 # убивает КЛИЕНТА (psql), но не обязательно серверный процесс: постгрес не замечает обрыв
 # TCP, пока не попытается писать/читать, так что бэкенд с `pg_sleep`/снятым лимитом живёт
 # дальше осиротевшим. При коде возврата 124 (таймаут `timeout`) добиваем такой бэкенд через
-# `pg_terminate_backend` по его же `application_name` — saas_ro имеет право сигналить
+# `pg_terminate_backend` по его же `application_name` — роль имеет право сигналить
 # собственные же сессии (привилегии роли над самой собой) без грантов pg_signal_backend.
 # Использование: triage-sql "SELECT ..."
 set -euo pipefail
@@ -21,13 +23,14 @@ if [ "$#" -ne 1 ] || [ -z "$1" ]; then echo "usage: triage-sql \"<SQL>\"" >&2; e
 case "$1" in *\\*) echo "triage-sql: обратная косая запрещена" >&2; exit 2;; esac
 export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=60000"
 export PGAPPNAME="triage-$$"
+export PGPASSFILE=/var/lib/saas-triage/.pgpass
 set +e
-timeout 90 psql -X -q -h localhost -U saas_ro -d saas -v ON_ERROR_STOP=1 -At -c "$1"
+timeout 90 psql -X -q -h localhost -U saas_triage -d saas -v ON_ERROR_STOP=1 -At -c "$1"
 rc=$?
 set -e
 if [ "$rc" -eq 124 ]; then
-  timeout 10 psql -X -q -h localhost -U saas_ro -d saas -Atc \
-    "select pg_terminate_backend(pid) from pg_stat_activity where application_name='$PGAPPNAME' and usename='saas_ro'" \
+  timeout 10 psql -X -q -h localhost -U saas_triage -d saas -Atc \
+    "select pg_terminate_backend(pid) from pg_stat_activity where application_name='$PGAPPNAME' and usename='saas_triage'" \
     >/dev/null 2>&1 || true
   echo "triage-sql: запрос прерван по таймауту 90 с" >&2
 fi

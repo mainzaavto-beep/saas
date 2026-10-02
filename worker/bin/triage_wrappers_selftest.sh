@@ -34,7 +34,7 @@ check_no_password() {
         echo "SKIP — $desc (SAAS_APP_DB_PASSWORD не задан)"
         return
     fi
-    cnt="$("$@" 2>&1 | grep -cF -e "$pass")" || true
+    cnt="$("$@" 2>&1 | grep -cF -f <(printf '%s\n' "$pass"))" || true
     if [ "${cnt:-0}" -eq 0 ]; then
         echo "PASS — $desc (0 строк с паролем)"
     else
@@ -62,6 +62,37 @@ check_rc "triage-sql: два аргумента запрещены"             
 # --- triage-journal: отклоняющие ветки (до exec journalctl) ---
 check_rc "triage-journal: юнит не saas-* запрещён"                     2 "$BIN/triage-journal" notaunit "2026-10-01 00:00" "2026-10-01 01:00"
 check_rc "triage-journal: битое время запрещено"                       2 "$BIN/triage-journal" saas-worker.service "bad-time" "2026-10-01 01:00"
+
+# --- вариант 2 (02.10.2026): граница под пользователем saas-triage ---
+TU=saas-triage
+if getent passwd "$TU" >/dev/null && [ "$(id -u)" -eq 0 ]; then
+    as_u() { runuser -u "$TU" -- "$@"; }
+    for f in /etc/saas-worker.env /etc/collectors.env /etc/saas-triage.env /opt/agents/saas/.env.local /root/.pgpass /root/.claude/settings.local.json; do
+        check_rc "saas-triage: не читает $f"                            1 as_u test -r "$f"
+    done
+    check_rc "saas-triage: не пишет в worker/"                           1 as_u test -w /opt/agents/saas/worker
+    check_rc "saas-triage: не пишет в worker/bin/"                       1 as_u test -w /opt/agents/saas/worker/bin
+    check_rc "saas-triage: triage-sql читает tenant (позитив)"          0 as_u "$BIN/triage-sql" "select count(*) from tenant.wb_orders where cabinet_id=1"
+    check_rc "saas-triage: triage-sql не видит api_creds_enc"            1 as_u "$BIN/triage-sql" "select api_creds_enc from auth.shops limit 1"
+    check_rc "saas-triage: triage-sql не видит хэши паролей"             1 as_u "$BIN/triage-sql" "select password_hash from auth.users limit 1"
+    check_rc "saas-triage: triage-sql не видит user_tokens"              1 as_u "$BIN/triage-sql" "select count(*) from auth.user_tokens"
+    check_rc "saas-triage: triage-sql запись отклонена"                  1 as_u "$BIN/triage-sql" "create table tenant.triage_probe(i int)"
+    if [ -s /run/saas-triage/redact ]; then
+        echo "SKIP — saas-triage: отказ triage-git без redact (идёт разбор, файл есть)"
+    else
+        check_rc "saas-triage: triage-git без redact отказывает"        3 as_u "$BIN/triage-git" log --oneline -1
+        # позитив: со списком вычёркивания (как его кладёт тик) git работает и пароля в выводе нет
+        tmp_r=/run/saas-triage/redact.selftest
+        if [ -d /run/saas-triage ] && ( . /etc/saas-worker.env 2>/dev/null; [ -n "${SAAS_APP_DB_PASSWORD:-}" ] ); then
+            ( umask 027; . /etc/saas-worker.env; printf '%s\n' "$SAAS_APP_DB_PASSWORD" > "$tmp_r" ); chgrp "$TU" "$tmp_r"
+            check_rc "saas-triage: triage-git с redact работает (позитив)" 0 as_u env SAAS_TRIAGE_REDACT="$tmp_r" "$BIN/triage-git" log --oneline -1
+            check_no_password "saas-triage: show f288080 без пароля"           as_u env SAAS_TRIAGE_REDACT="$tmp_r" "$BIN/triage-git" show f288080
+            rm -f "$tmp_r"
+        fi
+    fi
+else
+    echo "SKIP — проверки пользователя saas-triage (нет пользователя или не root)"
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then

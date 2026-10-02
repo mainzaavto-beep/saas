@@ -184,6 +184,23 @@ claude после килла ограничен ещё 10 с (пусто, есл
 `docs/superpowers/specs/2026-09-30-failure-triage-design.md`. Прокси для `claude -p` —
 `SAAS_TRIAGE_PROXY` в `/etc/saas-triage.env` (root, 600, вне git): напрямую с сервера API
 Anthropic отвечает 403 «Request not allowed».
+**Вариант 2 (02.10.2026): claude — под отдельным пользователем.** Тик (`failure_triage.py`, запись
+в `jobs.failure_triage`, письма) остаётся под root, а сам `claude -p` запускается через
+`runuser -u saas-triage` (системный, nologin, HOME `/var/lib/saas-triage` 700, группа
+`systemd-journal`): ему не читаются `/etc/saas-*.env`, `/etc/collectors.env`, `.env.local` (теперь
+600), `/root` (включая `/root/.claude/settings*.json` — пользовательские настройки владельца больше
+не входят в границу песочницы), в `worker/` (теперь 755) писать нельзя. БД — роль `saas_triage`
+(`db/ops/saas_triage_role.sql`): tenant/jobs/shared целиком, из auth/billing — только колонки без
+ключей (`api_creds*`, `external_keys`), хэшей, токенов и ПДн; новые таблицы auth/billing не выдаются
+автоматически; пароль только в `/var/lib/saas-triage/.pgpass`. Пароль `saas_app` для вычёркивания
+из `triage-git` тик кладёт на время разбора в `/run/saas-triage/redact` (root:saas-triage 640,
+`/etc/tmpfiles.d/saas-triage.conf`) и удаляет после; обёртка читает его через `grep -f`, не argv;
+нет списка — отказ (exit 3), не вывод без вычёркивания. После разбора всё, что осталось под
+`saas-triage`, добивается `pkill -KILL -u saas-triage`. Пока у пользователя нет входа в claude
+(`~/.claude/.credentials.json` либо `CLAUDE_CODE_OAUTH_TOKEN` в `/etc/saas-triage.env`), тик эпизоды
+не берёт (лог «ждёт: нет входа в claude»), попытки не тратятся. Установка/починка — идемпотентный
+`bash deploy/install-triage-user.sh`; граница проверяется `worker/bin/triage_wrappers_selftest.sh`
+(под root). `SAAS_TRIAGE_USER=` (пусто) — старый режим под root, только для отладки.
 
 ## Боевое расписание (systemd, `/etc/systemd/system/`)
 

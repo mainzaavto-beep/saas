@@ -24,8 +24,10 @@
    «deprecated» — смотри тело ответа и release-notes dev.wildberries.ru / docs.ozon.ru);
    429; сломанные ключи (401/403); наш баг; аномалия данных; инфраструктура.
 3. Инструменты: `Read`/`Grep`/`Glob` — код и логи (`/opt/agentsDB/logs/saas_worker.log`);
-   БД — только `/opt/agents/saas/worker/bin/triage-sql "<SQL>"` (роль saas_ro, только чтение,
-   без метакоманд psql); журнал юнита — `/opt/agents/saas/worker/bin/triage-journal <saas-юнит>
+   БД — только `/opt/agents/saas/worker/bin/triage-sql "<SQL>"` (роль saas_triage, только чтение,
+   без метакоманд psql; из `auth.*`/`billing.*` выданы только колонки без ключей и персональных
+   данных — `SELECT *` по ним даст permission denied, перечисляй колонки явно; `auth.user_tokens`/
+   `auth.invitations` закрыты целиком); журнал юнита — `/opt/agents/saas/worker/bin/triage-journal <saas-юнит>
    "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"`; история кода — `/opt/agents/saas/worker/bin/triage-git
    log|show|diff …` (диапазоны `a..b` не принимаются — используй `log b ^a`); документация —
    WebFetch только dev.wildberries.ru и docs.ozon.ru. Другие команды недоступны. Таблицы
