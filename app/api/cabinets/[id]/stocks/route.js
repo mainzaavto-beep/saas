@@ -31,6 +31,8 @@ export const dynamic = "force-dynamic";
 //  редко продающихся товаров и держало в одном файле две правды о velocity (карточки
 //  товаров и рекомендации перевозки считали по-разному). Нет продаж → velocity=0 →
 //  status='no_sales' (классификация не изменилась: продаж нет ⇔ скорость 0).
+//  Окно — N ПОЛНЫХ дней по вчера (date >= сегодня−N AND date < сегодня, 06.10.2026):
+//  раньше в окно попадал и неполный сегодняшний день — N+1 дат делились на N.
 //  Окно карточек товара выбирает пользователь (?vel=7|14|30|60); рекомендации
 //  перевозки жёстко считают по каноническому окну VELOCITY_WINDOW_DAYS = 28 дней —
 //  это тот же helper, что у плана поставок (/supply-plan).
@@ -217,7 +219,7 @@ async function collectWB(vel) {
   const velRows = await db.prepare(
     `SELECT nm_id, SUM(orders) AS ord
      FROM daily_metrics
-     WHERE date >= current_date - ?::int
+     WHERE date >= current_date - ?::int AND date < current_date
      GROUP BY nm_id`
   ).all(vel);
   const velBySku = {};
@@ -309,6 +311,7 @@ async function sizesWB(db, date, vel, velBySku) {
        ORDER BY chrt_id LIMIT 1
      ) bs ON b.chrt_id IS NULL
      WHERE substr(o.order_dt, 1, 10)::date >= current_date - ?::int
+       AND substr(o.order_dt, 1, 10)::date < current_date
      GROUP BY o.nm_id, COALESCE(b.chrt_id, bs.chrt_id)`
   ).all(vel);
 
@@ -466,7 +469,7 @@ async function collectOzon(vel) {
   const velRows = await db.prepare(
     `SELECT product_id, SUM(orders) AS ord
      FROM daily_metrics
-     WHERE date >= current_date - ?::int
+     WHERE date >= current_date - ?::int AND date < current_date
      GROUP BY product_id`
   ).all(vel);
   const velBySku = {};
@@ -769,7 +772,7 @@ async function buildReallocRecommendations() {
       vel AS (
         SELECT nm_id, SUM(orders) AS ord
         FROM daily_metrics
-        WHERE date >= current_date - ?::int
+        WHERE date >= current_date - ?::int AND date < current_date
         GROUP BY nm_id
       ),
       -- Тотал по SKU + сколько складов + distribute target per wh.
