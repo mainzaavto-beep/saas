@@ -187,6 +187,58 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
   ).all()) {
     sppAuto[r.nm_id] = r.spp;
   }
+  // Факт логистики за 30 дней по вчера (06.10.2026, зеркало Ozon-модели):
+  // отчёт реализации по дате операции rr_dt. F — «К клиенту при продаже» на
+  // проданную штуку; всё остальное (к клиенту/обратно при отмене, возвраты)
+  // делится на невыкупы = отменённые после отгрузки srid + штуки «Возврат».
+  // b = продано / (продано + невыкупы). F + R(1 − b)/b = Σлогистики / продано.
+  const { from: winFrom, to: winTo } = defaultPeriod(30);
+  const logFacts = {};
+  let cabSold = 0, cabUnb = 0, cabFwd = 0, cabRest = 0;
+  for (const r of await db.prepare(
+    `SELECT nm_id,
+        COALESCE(SUM(quantity) FILTER (WHERE supplier_oper_name = 'Продажа'), 0) AS sold,
+        COALESCE(SUM(quantity) FILTER (WHERE supplier_oper_name = 'Возврат'), 0) AS returns,
+        COUNT(DISTINCT srid) FILTER (WHERE supplier_oper_name IN ('Логистика', 'Доставка')
+                                       AND bonus_type_name ILIKE 'К клиенту при отмене%') AS cancels,
+        COALESCE(SUM(delivery_rub) FILTER (WHERE supplier_oper_name IN ('Логистика', 'Доставка')
+                                             AND bonus_type_name ILIKE 'К клиенту при продаже%'), 0) AS log_fwd,
+        COALESCE(SUM(delivery_rub) FILTER (WHERE supplier_oper_name IN ('Логистика', 'Доставка')), 0) AS log_all
+      FROM finance_report
+      WHERE nm_id <> 0 AND substr(rr_dt, 1, 10) >= ? AND substr(rr_dt, 1, 10) <= ?
+      GROUP BY nm_id`
+  ).all(winFrom, winTo)) {
+    const sold = Number(r.sold) || 0;
+    const unb = (Number(r.cancels) || 0) + (Number(r.returns) || 0);
+    const fwd = Number(r.log_fwd) || 0;
+    const rest = Math.max(0, (Number(r.log_all) || 0) - fwd);
+    logFacts[r.nm_id] = { sold, unb, fwd, rest };
+    cabSold += sold; cabUnb += unb; cabFwd += fwd; cabRest += rest;
+  }
+  // Средние по кабинету — для товаров без продаж в окне (⚙ оценка). Нет продаж у
+  // кабинета вовсе → logisticsFbo не задаём, calcWB падает на формулу от литража.
+  const cabLog = cabSold > 0 ? {
+    logisticsFbo: cabFwd / cabSold,
+    returnLogistics: cabUnb > 0 ? cabRest / cabUnb : 0,
+    buyout: cabSold / (cabSold + cabUnb),
+  } : null;
+  function logInputs(nm) {
+    const f = logFacts[nm];
+    if (!f || !(f.sold > 0)) return { inputs: cabLog || {}, fact: false };
+    // Невыкупов у товара нет — вся логистика окна (включая редкую «возврат брака»)
+    // ложится на проданные: b = 1, R — средняя по кабинету (для прикидки выкупа).
+    if (!(f.unb > 0)) {
+      return {
+        inputs: { logisticsFbo: (f.fwd + f.rest) / f.sold, returnLogistics: cabLog?.returnLogistics ?? 0, buyout: 1 },
+        fact: true,
+      };
+    }
+    return {
+      inputs: { logisticsFbo: f.fwd / f.sold, returnLogistics: f.rest / f.unb, buyout: f.sold / (f.sold + f.unb) },
+      fact: true,
+    };
+  }
+
   const manual = await loadManual("wb");
   // Статус SKU (active|inactive) — единый источник tenant.item_status с fallback "active"
   // (как на странице «Себестоимость» /items). По умолчанию юнитка показывает только active.
@@ -196,7 +248,8 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
   for (const s of salesRows) {
     const nm = s.nm_id;
     const name = names[nm] || s.art || String(nm);
-    const input = { ...autoWb(s), spp: sppAuto[nm] ?? null, ...manual[String(nm)], sku: String(nm), name, ...rates };
+    const lg = logInputs(nm);
+    const input = { ...autoWb(s), ...lg.inputs, spp: sppAuto[nm] ?? null, ...manual[String(nm)], sku: String(nm), name, ...rates };
     if (cogs[nm] != null) input.cost = cogs[nm];
     if (prices[nm]) {
       if (prices[nm].priceSeller != null) input.priceSeller = prices[nm].priceSeller;
@@ -210,6 +263,8 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
     if (imgs[nm]) r.im_url = imgs[nm];
     r.draft = !input.priceWb && !input.priceSeller;
     r.status = stat[`wb|${nm}|0`] || "active";
+    // «⚙ оценка»: продажи были, но не в окне 30 дней — логистика/выкуп средние по кабинету.
+    if (!lg.fact && manual[String(nm)]?.logisticsFbo == null) r.estimated = true;
     result.push(r);
   }
 
@@ -253,6 +308,7 @@ async function computeWB(rates = {}, { includeInactive = false } = {}) {
       discount: prices[nm].discount,
       priceBuy: prices[nm].priceBuy ?? null,
       buyout: 0.9,
+      ...(cabLog || {}), // логистика и выкуп — средние по кабинету за 30 дней (если есть)
       commissionRate: subject && subjAvg[subject] != null ? subjAvg[subject] : globalComm,
       spp: sppAuto[nm] ?? null,
       ...manual[String(nm)],

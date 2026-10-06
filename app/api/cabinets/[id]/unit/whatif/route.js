@@ -33,6 +33,7 @@ const ALLOWED_KEYS = {
     spp: { max: 1 },
     commissionRate: { max: 1 },
     buyout: { max: 1 },
+    logisticsFbo: { max: 100000 }, // прямая логистика WB — вход прикидки с 06.10.2026 (факт отчёта реализации)
     adsRate: { max: 1 },
     cost: { max: 1000000 },
     defectRate: { max: 1 },

@@ -26,7 +26,9 @@ const COMPACT = {
   // priceBuy («Цена на сайте») добавлен в дефолтный набор (фикс 2026-07-28):
   // финальная цена покупателя из WB API (discountedPrice), от которой считаются
   // налоги/комиссии. Заменяет эмуляцию «СПП» (WB не отдаёт её отдельным полем).
-  wb: ["name", "priceSeller", "discount", "priceSell", "spp", "priceWithSpp", "priceBuy", "adsRate", "ads", "buyout", "defectRate", "profitWithDefect"],
+  // logisticsFbo/returnLogistics/logistics — 06.10.2026: логистика WB по факту отчёта
+  // реализации, прямая логистика редактируется в прикидке (как у Ozon).
+  wb: ["name", "priceSeller", "discount", "priceSell", "spp", "priceWithSpp", "priceBuy", "adsRate", "ads", "buyout", "logisticsFbo", "returnLogistics", "logistics", "defectRate", "profitWithDefect"],
   // defectRate/profitWithDefect/marginWithDefect добавлены в дефолтный набор
   // (2026-08-27, режимы юнитки) — зеркало WB-COMPACT (там defectRate/
   // profitWithDefect уже в списке); галочка «с браком» их фильтрует, но им
@@ -42,6 +44,7 @@ const WHATIF_INPUTS = {
     { key: "spp", label: "СПП", unit: "%", max: 100, asFraction: true },
     { key: "commissionRate", label: "Комиссия", unit: "%", max: 100, asFraction: true },
     { key: "buyout", label: "% выкупа", unit: "%", max: 100, asFraction: true },
+    { key: "logisticsFbo", label: "Логистика прямая", unit: "₽", max: 100000 },
     { key: "adsRate", label: "ДРР", unit: "%", max: 100, asFraction: true },
     { key: "cost", label: "Себест.", unit: "₽", max: 1000000 },
     { key: "defectRate", label: "% брака", unit: "%", max: 100, asFraction: true },
@@ -531,7 +534,7 @@ function ProductRow({ it, cols, platform, whatifFields, override, applying, buyo
                       <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: C.muted, textTransform: "uppercase" }}>факт</span>
                       {it.estimated && (
                         <span title={platform === "wb"
-                            ? "Активный товар без продаж: выкуп 90% и комиссия — оценка по категории."
+                            ? "Нет продаж за последние 30 дней: логистика и % выкупа — средние по кабинету, комиссия — по категории."
                             : "Нет проданных штук за последние 30 дней: комиссия — каталожная ставка, логистика — каталожный тариф, эквайринг и невыкуп — средние по кабинету."}
                           style={{ fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "rgba(255,180,0,0.14)", color: "#c98a00", whiteSpace: "nowrap", border: "1px solid rgba(255,180,0,0.3)" }}>⚙ оценка</span>
                       )}
