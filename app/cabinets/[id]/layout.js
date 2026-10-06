@@ -39,6 +39,7 @@ const MENU = [
     label: "Товары", icon: "🏷️", groupBase: "/items",
     items: [
       { href: "/warehouses", label: "Склады" },
+      { href: "/purchase-need", label: "Потребность" },
       { href: "/items", label: "Себестоимость" },
       { href: "/mp-stock", label: "Остатки на МП" },
       { href: "/inventory", label: "Остатки склад/ФФ" },
