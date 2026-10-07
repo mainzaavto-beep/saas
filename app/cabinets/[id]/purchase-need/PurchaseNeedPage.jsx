@@ -98,6 +98,11 @@ export default function PurchaseNeedPage({ cabinetId }) {
         <label style={{ fontSize: 12, color: C.muted, display: "inline-flex", gap: 6, alignItems: "center" }}>
           <input type="checkbox" checked={onlyBuy} onChange={(e) => setOnlyBuy(e.target.checked)} /> только к закупке
         </label>
+        <a href={`/api/cabinets/${cabinetId}/purchase-need?format=xlsx&window=${prefs.window}&horizon=${prefs.horizon}&platform=${prefs.platform}&q=${encodeURIComponent(q.trim())}${onlyBuy ? "&onlyBuy=1" : ""}`}
+          title="Скачать таблицу в Excel — с текущими площадкой, окном, горизонтом, поиском и фильтром «только к закупке»"
+          style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, textDecoration: "none" }}>
+          ⬇ Excel
+        </a>
         <Segmented value={prefs.platform} options={PLATFORMS} onChange={(v) => setPrefs((p) => ({ ...p, platform: v }))} />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: C.muted }}>Продажи за:</span>

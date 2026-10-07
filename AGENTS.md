@@ -345,7 +345,7 @@ Anthropic отвечает 403 «Request not allowed».
   кабинета (⚙). F правится в прикидке (`WHATIF_INPUTS.wb`, белый список `unit/whatif`). Сторож —
   `node scripts/check-unit-wb.mjs 1`, тесты — `lib/__tests__/unitWb.test.mjs`.
 - **Потребность в закупке (с 2026-10-06)** — страница `/purchase-need` (меню «Товары»), API
-  `/api/cabinets/[id]/purchase-need?window=7|14|30&horizon=1..365&platform=all|wb|ozon` (переключатель площадки с 07.10: только артикулы/отгрузки площадки, свой склад — целиком). Чистый расчёт `lib/purchaseNeed.js`
+  `/api/cabinets/[id]/purchase-need?window=7|14|30&horizon=1..365&platform=all|wb|ozon` (переключатель площадки с 07.10: только артикулы/отгрузки площадки, свой склад — целиком); выгрузка в Excel — тот же роут с `&format=xlsx` (+ `q`, `onlyBuy=1`), `lib/purchaseNeedXlsx.js`, зависимость `exceljs`). Чистый расчёт `lib/purchaseNeed.js`
   (тесты `lib/__tests__/purchaseNeed.test.mjs`), данные `lib/purchaseNeedData.js`. Строка = товар как
   связная компонента позиций `/inventory` и артикулов МП (WB+Ozon сливаются только через
   `ff_inventory_skus`). Остаток = доступно на МП (как `/stocks`, отрицательное Ozon → 0) + свой склад
