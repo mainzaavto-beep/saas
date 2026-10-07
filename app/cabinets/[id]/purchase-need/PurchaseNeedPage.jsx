@@ -11,6 +11,7 @@ import { useSort } from "@/lib/useSort.js";
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const LS_KEY = "purchaseNeed.prefs";
 const WINDOWS = [7, 14, 30];
+const PLATFORMS = [{ v: "all", l: "Все" }, { v: "wb", l: "Wildberries" }, { v: "ozon", l: "Ozon" }];
 const nf0 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 const nf1 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 const num = (v) => (v == null || !Number.isFinite(v) ? "—" : nf0.format(v));
@@ -23,8 +24,9 @@ function readPrefs() {
     return {
       window: WINDOWS.includes(p.window) ? p.window : 7,
       horizon: Number.isFinite(p.horizon) && p.horizon >= 1 && p.horizon <= 365 ? p.horizon : 30,
+      platform: PLATFORMS.some((x) => x.v === p.platform) ? p.platform : "all",
     };
-  } catch { return { window: 7, horizon: 30 }; }
+  } catch { return { window: 7, horizon: 30, platform: "all" }; }
 }
 
 export default function PurchaseNeedPage({ cabinetId }) {
@@ -43,7 +45,7 @@ export default function PurchaseNeedPage({ cabinetId }) {
     if (!prefs) return;
     try { window.localStorage.setItem(LS_KEY, JSON.stringify(prefs)); } catch {}
     setLoading(true);
-    fetch(`/api/cabinets/${cabinetId}/purchase-need?window=${prefs.window}&horizon=${prefs.horizon}`)
+    fetch(`/api/cabinets/${cabinetId}/purchase-need?window=${prefs.window}&horizon=${prefs.horizon}&platform=${prefs.platform}`)
       .then((r) => r.json())
       .then((d) => { if (d.error) setError(d.error); else { setData(d); setError(null); } })
       .catch((e) => setError(String(e)))
@@ -85,7 +87,8 @@ export default function PurchaseNeedPage({ cabinetId }) {
         <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>Потребность в закупке</h1>
         <p style={{ margin: "4px 0 0", color: C.muted, fontSize: 13, maxWidth: 980 }}>
           Сколько заказать, чтобы товара хватило на {horizon} дн при продажах последних {data.windowDays} дн (по вчера).
-          {" "}Остаток = доступно на WB и Ozon + свой склад/ФФ + в пути. Только активные товары.
+          {" "}Остаток = доступно {data.platform === "wb" ? "на WB" : data.platform === "ozon" ? "на Ozon" : "на WB и Ozon"} + свой склад/ФФ + в пути. Только активные товары.
+          {data.platform !== "all" && " Свой склад общий для обеих площадок — в фильтре по площадке он учитывается целиком."}
           {" "}Срез WB: {fmtDate(data.stockDates?.wb)} · Ozon: {fmtDate(data.stockDates?.ozon)}.
         </p>
       </div>
@@ -95,6 +98,7 @@ export default function PurchaseNeedPage({ cabinetId }) {
         <label style={{ fontSize: 12, color: C.muted, display: "inline-flex", gap: 6, alignItems: "center" }}>
           <input type="checkbox" checked={onlyBuy} onChange={(e) => setOnlyBuy(e.target.checked)} /> только к закупке
         </label>
+        <Segmented value={prefs.platform} options={PLATFORMS} onChange={(v) => setPrefs((p) => ({ ...p, platform: v }))} />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: C.muted }}>Продажи за:</span>
         <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
@@ -190,6 +194,20 @@ export default function PurchaseNeedPage({ cabinetId }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function Segmented({ value, onChange, options }) {
+  return (
+    <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
+      {options.map((o) => (
+        <button key={o.v} onClick={() => onChange(o.v)}
+          style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600, border: "none", borderRight: `1px solid ${C.line}`,
+            background: value === o.v ? C.accent : C.surface, color: value === o.v ? "var(--accentInk)" : C.muted }}>
+          {o.l}
+        </button>
+      ))}
     </div>
   );
 }
