@@ -56,7 +56,8 @@ export default function PurchaseNeedPage({ cabinetId }) {
     let list = data?.rows || [];
     const s = q.trim().toLowerCase();
     if (s) list = list.filter((r) => (r.name || "").toLowerCase().includes(s)
-      || [...r.skus.wb, ...r.skus.ozon].some((k) => String(k).includes(s)));
+      || [...r.skus.wb, ...r.skus.ozon].some((k) => String(k).includes(s))
+      || (r.offers?.ozon || []).some((o) => o.toLowerCase().includes(s)));
     if (onlyBuy) list = list.filter((r) => r.needQty > 0);
     return apply(list, {
       name: (r) => r.name,
@@ -94,7 +95,7 @@ export default function PurchaseNeedPage({ cabinetId }) {
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <input placeholder="Поиск: название или артикул" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...inputStyle, minWidth: 240 }} />
+        <input placeholder="Поиск: название, артикул, offer_id" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...inputStyle, minWidth: 240 }} />
         <label style={{ fontSize: 12, color: C.muted, display: "inline-flex", gap: 6, alignItems: "center" }}>
           <input type="checkbox" checked={onlyBuy} onChange={(e) => setOnlyBuy(e.target.checked)} /> только к закупке
         </label>
@@ -162,6 +163,7 @@ export default function PurchaseNeedPage({ cabinetId }) {
                         {r.skus.wb.length > 0 && <span>WB {r.skus.wb.join(", ")}</span>}
                         {r.skus.wb.length > 0 && r.skus.ozon.length > 0 && " · "}
                         {r.skus.ozon.length > 0 && <span>Ozon {r.skus.ozon.join(", ")}</span>}
+                        {r.offers?.ozon?.length > 0 && <span style={{ color: C.muted }}> · {r.offers.ozon.join(", ")}</span>}
                       </div>
                     </div>
                   </div>
