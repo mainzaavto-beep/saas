@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+const INP = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14 };
 
 export default function TeamPage({ cabinetId, embedded = false }) {
   const [members, setMembers] = useState([]);
@@ -14,6 +15,8 @@ export default function TeamPage({ cabinetId, embedded = false }) {
   const [newRole, setNewRole] = useState("viewer");
   const [inviteUrl, setInviteUrl] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [acc, setAcc] = useState({ name: "", login: "", password: "", role: "manager" });
+  const [created, setCreated] = useState(null); // { name, login, password } — показать владельцу, чтобы передать
 
   // Ответы читаем с проверкой r.ok: 403 у /invites для не-владельца — норма
   // (раздел скрыт через canManage), остальные ошибки показываем.
@@ -59,6 +62,33 @@ export default function TeamPage({ cabinetId, embedded = false }) {
     load();
   };
 
+  // Сотрудник, которого создаёт владелец: логин + пароль (lib/teamAccounts.js).
+  const createAccount = async () => {
+    setError(null); setCreated(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(acc),
+    });
+    const d = await r.json().catch((e) => { console.error("[team] POST members: ответ не JSON", e); return {}; });
+    if (!r.ok) { setError(d.error || "Не удалось создать сотрудника"); return; }
+    setCreated({ name: acc.name.trim(), login: acc.login.trim().toLowerCase(), password: acc.password });
+    setAcc({ name: "", login: "", password: "", role: "manager" });
+    load();
+  };
+
+  const setPassword = async (m) => {
+    const password = prompt(`Новый пароль для «${m.name || m.email}» (минимум 8 символов):`);
+    if (password == null) return;
+    setError(null);
+    const r = await fetch(`/api/cabinets/${cabinetId}/members`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: m.user_id, password }),
+    });
+    const d = await r.json().catch((e) => { console.error("[team] PATCH members: ответ не JSON", e); return {}; });
+    if (!r.ok) setError(d.error || "Не удалось сменить пароль");
+    else alert(`Пароль изменён. Логин: ${m.email}`);
+  };
+
   const revokeInvite = async (token) => {
     if (!confirm("Отозвать приглашение? Ссылка перестанет работать.")) return;
     setError(null);
@@ -94,6 +124,7 @@ export default function TeamPage({ cabinetId, embedded = false }) {
                     <option value="manager">Менеджер</option>
                     <option value="viewer">Наблюдатель</option>
                   </select>
+                  <button onClick={() => setPassword(m)} title="Сменить пароль" style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: "transparent", color: C.ink, cursor: "pointer", fontSize: 12 }}>🔑</button>
                   <button onClick={() => removeMember(m.user_id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.neg}`, background: "transparent", color: C.neg, cursor: "pointer", fontSize: 12 }}>✕</button>
                 </>
               )}
@@ -101,6 +132,29 @@ export default function TeamPage({ cabinetId, embedded = false }) {
           </div>
         ))}
       </div>
+
+      {/* Создать сотрудника с логином и паролем (только владелец) */}
+      {canManage && (
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 6px" }}>Создать сотрудника</h2>
+          <p style={{ fontSize: 12, color: C.muted, margin: "0 0 12px" }}>Задайте логин и пароль и передайте их сотруднику. Логин — в виде имя@что-то, например wb@sysell. Восстановить пароль сам он не сможет — меняйте кнопкой 🔑.</p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input placeholder="Имя (Менеджер ВБ)" value={acc.name} onChange={e => setAcc({ ...acc, name: e.target.value })} style={INP} />
+            <input placeholder="Логин (wb@sysell)" value={acc.login} onChange={e => setAcc({ ...acc, login: e.target.value })} style={INP} autoComplete="off" />
+            <input placeholder="Пароль (от 8 символов)" value={acc.password} onChange={e => setAcc({ ...acc, password: e.target.value })} style={INP} autoComplete="new-password" />
+            <select value={acc.role} onChange={e => setAcc({ ...acc, role: e.target.value })} style={INP}>
+              <option value="manager">Менеджер</option>
+              <option value="viewer">Наблюдатель</option>
+            </select>
+            <button onClick={createAccount} style={{ padding: "8px 20px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit", fontSize: 14 }}>Создать</button>
+          </div>
+          {created && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: C.surfaceAlt, borderRadius: 8, fontSize: 13 }}>
+              ✓ Создан «{created.name}». Передайте: логин <b>{created.login}</b>, пароль <b>{created.password}</b>. Вход — обычная страница входа.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Приглашения */}
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
