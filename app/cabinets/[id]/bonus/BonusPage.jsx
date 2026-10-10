@@ -29,7 +29,7 @@ export default function BonusPage({ cabinetId }) {
     const q = new URLSearchParams({ period });
     if (userId) q.set("user_id", String(userId));
     const r = await fetch(`/api/cabinets/${cabinetId}/bonus?${q}`);
-    const d = await r.json().catch(() => ({}));
+    const d = await r.json().catch((e) => { console.error("[bonus] GET: ответ не JSON", e); return {}; });
     if (!r.ok) { setData(null); setErr(d.error || `Ошибка ${r.status}`); return; }
     setData(d);
     // card.plan — план ПОСЛЕ снятия исключений; в форму — исходный введённый план.
@@ -44,7 +44,7 @@ export default function BonusPage({ cabinetId }) {
     setBusy(true);
     try {
       const r = await fetch(`/api/cabinets/${cabinetId}/bonus`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const d = await r.json().catch(() => ({}));
+      const d = await r.json().catch((e) => { console.error("[bonus] POST: ответ не JSON", e); return {}; });
       if (!r.ok) { alert(d.error || `Ошибка ${r.status}`); return false; }
       await load();
       return true;
