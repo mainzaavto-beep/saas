@@ -55,6 +55,7 @@ const MENU = [
       { href: "/fin-manual", label: "Сопутств. расходы" },
       { href: "/fin-purchases", label: "Закупки" },
       { href: "/fin-balance", label: "Баланс", roles: ["owner"] },
+      { href: "/bonus", label: "Премия", roles: ["owner", "manager"] },
       { href: "/fin-self-buyouts", label: "Самовыкупы" },
       { href: "/fin-dds", label: "ДДС" },
       { href: "/fin-calendar", label: "План платежей" },
