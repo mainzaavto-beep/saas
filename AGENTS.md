@@ -28,6 +28,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Слой расчёта метрик WB | `lib/wbMetrics.js` (единый источник правды по заказам/выручке/прибыли) |
 | Слой расчёта метрик Ozon | `lib/ozonMetrics.js` |
 | Юнит-экономику | `lib/unit.js` (calcWB / calcOzon, налоги в отдельных колонках) |
+| Премия менеджеров / роли | `lib/bonus.js`, `lib/bonusData.js`, `app/api/cabinets/[id]/bonus/route.js` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
@@ -355,6 +356,19 @@ Anthropic отвечает 403 «Request not allowed».
   FBS-остаток складов продавца (`mp_fbs_daily_stock`) НЕ учитывается — свой склад только из
   `/inventory`. Смоук — `node scripts/smoke-purchase-need.mjs 1` (сверяет одиночные артикулы с `/stocks`).
   Окно скорости на `/stocks` с той же даты — N полных дней по вчера (раньше N+1 дат ÷ N).
+- **Премия менеджеров площадок (с 2026-10-10)** — страница `/bonus` (меню «Финансы»), API
+  `/api/cabinets/[id]/bonus`. Модель — лист KPI владельца: продажи / опер. прибыль / маржа ×
+  % выполнения; любой < порога (0,65) → бонус 0; бонус = `bonus_pct` (0,04) × факт прибыли ×
+  среднее трёх %; к оплате = оклад (40 000) + бонус, потолка нет. Факт — канон площадки
+  (`wbProfitCabinet`/`ozProfitCabinet`: `revenue`, `profit` — как `/pnl`), исключённые
+  артикулы снимают свой факт (`…ProfitProductBatch`) и введённую владельцем долю плана.
+  Текущий месяц — по вчера; владелец фиксирует месяц (`bonus_closings.snapshot`). Ядро
+  `lib/bonus.js` (тесты `lib/__tests__/bonus.test.mjs`), данные `lib/bonusData.js`, миграция
+  064. Менеджер видит только свою карточку (user_id из сессии), наблюдатель — 403.
+  Смоук `node scripts/smoke-bonus.mjs 1`. Спека `docs/superpowers/specs/2026-10-08-managers-bonus-design.md`.
+- **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
+  самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
+  запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
 - **Налоги** (УСН/НДС): `lib/tax.js` (`normalizeTaxMode`). Хранятся per-shop
   в `auth.shops.tax_mode`.
 - **Себестоимость закупки** (формулы «Себес товара», `/fin-purchases`,
