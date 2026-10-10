@@ -37,11 +37,12 @@ export const GET = withCabinet(async (req, { cabinet, session }) => {
 });
 
 export const POST = withCabinet(async (req, { cabinet, session }) => {
-  const b = await req.json().catch(() => ({}));
+  const b = await req.json().catch((e) => { console.error("[bonus] POST: тело не JSON", e); return {}; });
   const uid = Number(b.user_id);
   const me = session.user_id;
 
   if (b.action === "employee_upsert") {
+    if (!Number.isInteger(uid) || uid <= 0) return bad("user_id обязателен");
     if (!["wb", "ozon"].includes(b.platform)) return bad("platform must be wb|ozon");
     const mem = await query(`SELECT 1 FROM auth.memberships WHERE cabinet_id = $1 AND user_id = $2`, [cabinet.cabinet_id, uid]);
     if (!mem.length) return bad("пользователь не участник кабинета");
@@ -58,14 +59,17 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   }
 
   if (b.action === "exclusion_delete") {
-    const [row] = await tenantQuery(`SELECT user_id, period FROM tenant.bonus_exclusions WHERE id = $1`, [Number(b.id)]);
+    const exId = Number(b.id);
+    if (!Number.isInteger(exId) || exId <= 0) return bad("id обязателен");
+    const [row] = await tenantQuery(`SELECT user_id, period FROM tenant.bonus_exclusions WHERE id = $1`, [exId]);
     if (!row) return bad("исключение не найдено", 404);
     if (await isClosed(Number(row.user_id), row.period)) return bad("месяц зафиксирован", 409);
-    await tenantQuery(`DELETE FROM tenant.bonus_exclusions WHERE id = $1`, [Number(b.id)]);
+    await tenantQuery(`DELETE FROM tenant.bonus_exclusions WHERE id = $1`, [exId]);
     return NextResponse.json({ ok: true });
   }
 
   // Остальные действия — по сотруднику программы и месяцу.
+  if (!Number.isInteger(uid) || uid <= 0) return bad("user_id обязателен");
   if (!isValidPeriod(b.period)) return bad("period must be YYYY-MM");
   const employee = (await loadEmployees()).find((e) => e.user_id === uid);
   if (!employee) return bad("сотрудник не в программе", 404);
@@ -94,6 +98,10 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     if (!Number.isInteger(sku) || sku <= 0) return bad("sku_key — артикул площадки");
     if (!Number.isFinite(so) || !Number.isFinite(po) || so < 0) return bad("снятый план — числа, продажи ≥ 0");
     if (!reason) return bad("причина обязательна");
+    const exists = employee.platform === "wb"
+      ? await tenantQuery(`SELECT 1 FROM tenant.wb_articles WHERE nm_id = $1`, [sku])
+      : await tenantQuery(`SELECT 1 FROM tenant.ozon_products WHERE product_id = $1`, [sku]);
+    if (!exists.length) return bad("артикул не найден на площадке сотрудника");
     await tenantQuery(
       `INSERT INTO tenant.bonus_exclusions (cabinet_id, user_id, period, sku_key, sales_plan_off, profit_plan_off, reason, created_by)
        VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3, $4, $5, $6, $7)
@@ -107,10 +115,12 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     const card = await buildLiveCard({ employee, period: b.period, today: todayMsk(),
       taxMode: normalizeTaxMode(cabinet.shopTax?.[employee.platform]) });
     if (card.status === "no_data") return bad("месяц ещё не начался — фиксировать нечего");
-    await tenantQuery(
+    const inserted = await tenantQuery(
       `INSERT INTO tenant.bonus_closings (cabinet_id, user_id, period, snapshot, closed_by)
-       VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3::jsonb, $4)`,
+       VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, $3::jsonb, $4)
+       ON CONFLICT (cabinet_id, user_id, period) DO NOTHING RETURNING 1`,
       [uid, b.period, JSON.stringify(card), me]);
+    if (!inserted.length) return bad("месяц уже зафиксирован", 409);
     return NextResponse.json({ ok: true });
   }
 
