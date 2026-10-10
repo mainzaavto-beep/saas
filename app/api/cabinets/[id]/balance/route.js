@@ -32,6 +32,8 @@ const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 // mpBalance при отсутствии токенов отдаёт {} без .total → NaN съел бы весь актив).
 const num = (v) => (Number(v) || 0);
 
+// Баланс (активы/пассивы, деньги на счетах) — только владелец, включая чтение
+// (спека «Менеджеры и премия» 2026-10-08 §1): менеджер видит всё, кроме этой страницы.
 export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   const dateQ = url.searchParams.get("date");
@@ -144,7 +146,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     as_of: liveDate,
     totals: { assets, liabilities, equity },
   });
-});
+}, { requireRole: 'owner' });
 
 export const POST = withCabinet(async (req, { cabinet }) => {
   const body = await req.json();

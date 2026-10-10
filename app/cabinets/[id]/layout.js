@@ -54,7 +54,7 @@ const MENU = [
       { href: "/fin-plan", label: "План продаж" },
       { href: "/fin-manual", label: "Сопутств. расходы" },
       { href: "/fin-purchases", label: "Закупки" },
-      { href: "/fin-balance", label: "Баланс" },
+      { href: "/fin-balance", label: "Баланс", roles: ["owner"] },
       { href: "/fin-self-buyouts", label: "Самовыкупы" },
       { href: "/fin-dds", label: "ДДС" },
       { href: "/fin-calendar", label: "План платежей" },
@@ -73,7 +73,7 @@ export default async function CabinetLayout({ children, params }) {
   if (!session?.user_id) redirect("/login");
 
   const mem = await query(
-    `SELECT c.display_name, c.marketplaces, c.trial_ends_at, c.paid_until, u.email_verified_at
+    `SELECT m.role, c.display_name, c.marketplaces, c.trial_ends_at, c.paid_until, u.email_verified_at
      FROM auth.memberships m
      JOIN auth.cabinets c ON c.cabinet_id = m.cabinet_id
      JOIN auth.users u ON u.user_id = m.user_id
@@ -84,6 +84,11 @@ export default async function CabinetLayout({ children, params }) {
 
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
+
+  // Видимость пунктов меню по роли (поле roles у пункта; нет поля — видят все).
+  // Только витрина: доступ режет сервер (requireRole в роутах).
+  const canSee = (x) => !x.roles || x.roles.includes(cab.role);
+  const menu = MENU.filter(canSee).map((x) => (x.items ? { ...x, items: x.items.filter(canSee) } : x));
 
   // Магазины со сломанными ключами: данные по ним не собираются, и клиент
   // должен узнать об этом сам, а не по устаревшим цифрам в отчётах.
@@ -279,7 +284,7 @@ export default async function CabinetLayout({ children, params }) {
           </div>
 
           <nav className="topnav" id="topnav-groups">
-            {MENU.map((item) => {
+            {menu.map((item) => {
               if (item.items) {
                 const groupActive = item.items.some((sub) => current === sub.href);
                 return (

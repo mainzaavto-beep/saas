@@ -18,4 +18,4 @@ export const POST = withCabinet(async (req, { cabinet }) => {
     [id]
   );
   return NextResponse.json({ ok: true });
-}, { requireRole: 'owner' });
+}, { requireRole: 'manager' });

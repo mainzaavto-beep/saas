@@ -79,4 +79,4 @@ export const PUT = withCabinet(async (req, { cabinet }) => {
     [body.target_period, body.platform, revenueTarget, marginTargetPct, profitTarget, drrTarget, note]
   );
   return NextResponse.json({ ok: true });
-}, { requireRole: 'owner' });
+}, { requireRole: 'manager' });

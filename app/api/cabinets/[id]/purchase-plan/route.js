@@ -150,7 +150,7 @@ export const POST = withCabinet(async (req) => {
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
-}, { requireRole: 'owner' });
+}, { requireRole: 'manager' });
 
 export const DELETE = withCabinet(async (req) => {
   try {
@@ -172,4 +172,4 @@ export const DELETE = withCabinet(async (req) => {
   } catch (e) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
-}, { requireRole: 'owner' });
+}, { requireRole: 'manager' });
