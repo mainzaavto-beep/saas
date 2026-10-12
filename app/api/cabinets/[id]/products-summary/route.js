@@ -7,6 +7,8 @@ import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
 import { defaultPeriod } from "@/lib/period.js";
+import { aggregateBuyout } from "@/lib/buyout.js";
+import { loadWbBuyoutRows } from "@/lib/buyoutData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,8 +96,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
     // Досчёт производных полей (нужны объединённые данные).
     for (const it of items) {
-      it.buyoutPct = (it.sold + it.returns + it.cancelled) > 0
-        ? round2(100 * it.sold / (it.sold + it.returns + it.cancelled)) : null;
+      it.buyoutPct = it.buyoutResolved > 0 ? round2(100 * it.buyoutSold / it.buyoutResolved) : null;
       it.avgOrdersDay = round2(it.ordered / days);
       it.avgCheck = it.ordered ? round2(it.orderRub / it.ordered) : null;
       it.commissionPct = it.salesRub ? round2(100 * Math.abs(it.commission) / it.salesRub) : null;
@@ -235,6 +236,7 @@ function round2(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
 function aggTotals(items) {
   const t = {
     ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
+    buyoutSold: 0, buyoutResolved: 0, buyoutLegacy: false,
     orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
     acquiring: 0, loyalty: 0, tax: 0, profit: 0, adSpend: 0, stock: 0,
     returnLogistics: 0,
@@ -251,6 +253,9 @@ function aggTotals(items) {
     t.cancelled += i.cancelled || 0;
     t.returns += i.returns || 0;
     t.selfBuyout += i.selfBuyout || 0;
+    t.buyoutSold += i.buyoutSold || 0;
+    t.buyoutResolved += i.buyoutResolved || 0;
+    if (i.buyoutLegacy) t.buyoutLegacy = true;
     t.orderRub += i.orderRub || 0;
     t.salesRub += i.salesRub || 0;
     t.costRub += i.costRub || 0;
@@ -268,8 +273,7 @@ function aggTotals(items) {
     t.realized += i.realized || 0;
     t.payout += i.payout || 0;
   }
-  t.buyoutPct = (t.sold + t.returns + t.cancelled) > 0
-    ? round2(100 * t.sold / (t.sold + t.returns + t.cancelled)) : null;
+  t.buyoutPct = t.buyoutResolved > 0 ? round2(100 * t.buyoutSold / t.buyoutResolved) : null;
   t.margin = t.salesRub ? round2(100 * t.profit / t.salesRub) : null;
   t.avgCheck = t.ordered ? round2(t.orderRub / t.ordered) : null;
   // ДРР итогов — та же пара баз, что у item.drr/item.drrSales выше (решение
@@ -620,6 +624,12 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   // Ozon, см. докстроку wbProfitProduct), profit его теперь вычитает.
   // Один batch-вызов на ВЕСЬ каталог вместо 2×N скалярных (задача 3 плана
   // «канон волна 2») — SQL-число теперь не растёт с числом товаров.
+  // % выкупа — КАНОН lib/buyout.js (спека 2026-10-11): когорта заказов окна по дате
+  // заказа, судьба каждого srid. Одна цифра со страницей «Процент выкупа».
+  const asOf = new Date().toISOString().slice(0, 10);
+  const buyoutByNm = new Map(
+    aggregateBuyout(await loadWbBuyoutRows(from, toEnd.slice(0, 10)), asOf).items.map((b) => [b.nmId, b])
+  );
   const profitBatch = await wbProfitProductBatch(db, taxMode, { from, to: toEnd.slice(0, 10) });
   const out = [];
   for (const r of rows) {
@@ -649,6 +659,9 @@ async function collectWB(from, toEnd, shopName, taxMode) {
       cat: r.cat || "", im_url: r.im_url || null, platform: "wb", shop: shopName,
       ordered, cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
+      buyoutSold: buyoutByNm.get(Number(nm))?.sold || 0,
+      buyoutResolved: buyoutByNm.get(Number(nm))?.resolved || 0,
+      buyoutLegacy: false,
       orderRub: round2(orderRub), salesRub: f.revenue,
       // «Три цены» канона (спека 2026-09-06): salesRub = продажи по цене со
       // скидкой продавца, spp = скидка WB, realized = заплатил покупатель,
@@ -886,6 +899,11 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
       cat: r.grp || "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
+      // % выкупа Ozon — ПРЕЖНЯЯ формула sold/(sold+returns+cancelled) (смешение популяций,
+      // спека 2026-10-11 §2): перевод на когорту — отдельный этап (§8), до него флаг.
+      buyoutSold: r.sold || 0,
+      buyoutResolved: (r.sold || 0) + (r.returns || 0) + (o.cancelled || 0),
+      buyoutLegacy: true,
       orderRub: round2(o.orderRub), salesRub: f.revenue,
       // Симметрия формы с WB (lib/ozonMetrics.js:ozNetForm): spp = 0 (СПП у
       // Ozon нет), realized = revenue, payout = revenue − commission −

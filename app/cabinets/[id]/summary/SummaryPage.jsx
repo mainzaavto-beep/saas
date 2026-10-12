@@ -272,6 +272,7 @@ export default function SummaryPage({ cabinetId }) {
   const filteredTotals = useMemo(() => {
     const ft = {
       ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
+      buyoutSold: 0, buyoutResolved: 0, buyoutLegacy: false,
       orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
       acquiring: 0, loyalty: 0, tax: 0, profit: 0, stock: 0, returnLogistics: 0,
       adSpend: 0, services: 0, spp: 0, payout: 0,
@@ -282,6 +283,9 @@ export default function SummaryPage({ cabinetId }) {
       ft.cancelled += i.cancelled || 0;
       ft.returns += i.returns || 0;
       ft.selfBuyout += i.selfBuyout || 0;
+      ft.buyoutSold += i.buyoutSold || 0;
+      ft.buyoutResolved += i.buyoutResolved || 0;
+      if (i.buyoutLegacy) ft.buyoutLegacy = true;
       ft.orderRub += i.orderRub || 0;
       ft.salesRub += i.salesRub || 0;
       ft.costRub += i.costRub || 0;
@@ -307,8 +311,8 @@ export default function SummaryPage({ cabinetId }) {
     // НЕРАСПРЕДЕЛЁННУЮ часть кабинетной рекламы (корректировки + кампании
     // без товарной разбивки): fullAd − Σ item.adSpend.
     if (!hasProductFilter) ft.profit = round2(ft.profit - Math.max(0, round2(fullAd - ft.adSpend)));
-    ft.buyoutPct = (ft.sold + ft.returns + ft.cancelled) > 0
-      ? round2(100 * ft.sold / (ft.sold + ft.returns + ft.cancelled)) : null;
+    // % выкупа — по счётчикам когорты (lib/buyout.js, спека 2026-10-11); Ozon — legacy-флаг.
+    ft.buyoutPct = ft.buyoutResolved > 0 ? round2(100 * ft.buyoutSold / ft.buyoutResolved) : null;
     ft.margin = ft.salesRub ? round2(100 * ft.profit / ft.salesRub) : null;
     ft.avgCheck = ft.ordered ? round2(ft.orderRub / ft.ordered) : null;
     return ft;
@@ -544,7 +548,7 @@ export default function SummaryPage({ cabinetId }) {
                 <Td right>{num(it.returns)}</Td>
                 <Td right><span style={{ color: (it.returnLogistics || 0) > 0 ? C.neg : C.faint }}>{money(it.returnLogistics)}</span></Td>
                 <Td right>{num(it.stock)}</Td>
-                <Td right>{pct(it.buyoutPct)}</Td>
+                <Td right><span title={it.buyoutLegacy ? "Ozon: прежняя формула, переводится" : "WB: заказы периода → выкуплено / (выкуплено + невыкуп + возвраты), см. «Процент выкупа»"}>{pct(it.buyoutPct)}{it.buyoutLegacy ? "*" : ""}</span></Td>
                 <Td right>{num(it.avgOrdersDay)}</Td>
                 <Td right>{money(it.orderRub)}</Td>
                 <Td right>{money(it.avgCheck)}</Td>
