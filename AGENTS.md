@@ -29,6 +29,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Слой расчёта метрик Ozon | `lib/ozonMetrics.js` |
 | Юнит-экономику | `lib/unit.js` (calcWB / calcOzon, налоги в отдельных колонках) |
 | Премия менеджеров / роли | `lib/bonus.js`, `lib/bonusData.js`, `app/api/cabinets/[id]/bonus/route.js` |
+| Процент выкупа (когорта по заказам, размеры WB) | `lib/buyout.js`, `lib/buyoutData.js`, `/buyout`, контракт §18 |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
@@ -366,6 +367,14 @@ Anthropic отвечает 403 «Request not allowed».
   `lib/bonus.js` (тесты `lib/__tests__/bonus.test.mjs`), данные `lib/bonusData.js`, миграция
   064. Менеджер видит только свою карточку (user_id из сессии), наблюдатель — 403.
   Смоук `node scripts/smoke-bonus.mjs 1`. Спека `docs/superpowers/specs/2026-10-08-managers-bonus-design.md`.
+- **Процент выкупа (с 2026-10-11)** — страница `/buyout` (меню «Товары»), API
+  `/api/cabinets/[id]/buyout` (`?series=1[&nm=]` — 13 недель). WB когортно по дате заказа:
+  судьба каждого `srid` (самовыкуп → возврат → выкуп → невыкуп по логистике «К клиенту при
+  отмене» → отмена до отгрузки > 7 дн → в пути); `% = выкуп / (выкуп + невыкуп + возврат)`;
+  размеры — `wb_orders.tech_size`. Ядро `lib/buyout.js` (тесты `lib/__tests__/buyout.test.mjs`),
+  данные `lib/buyoutData.js`. «Сводка по товарам» берёт WB-выкуп отсюда же (одна цифра);
+  Ozon — прежняя формула с флагом `buyoutLegacy` до отдельного этапа. Юнитка НЕ переведена
+  (коэффициент модели логистики, §18.4). Смоук `node scripts/smoke-buyout.mjs 1`.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
