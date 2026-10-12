@@ -40,6 +40,7 @@ const MENU = [
     items: [
       { href: "/warehouses", label: "Склады" },
       { href: "/purchase-need", label: "Потребность" },
+      { href: "/buyout", label: "Процент выкупа" },
       { href: "/items", label: "Себестоимость" },
       { href: "/mp-stock", label: "Остатки на МП" },
       { href: "/inventory", label: "Остатки склад/ФФ" },
