@@ -7,7 +7,7 @@ import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
 import { defaultPeriod } from "@/lib/period.js";
-import { aggregateBuyout } from "@/lib/buyout.js";
+import { aggregateBuyout, todayMsk } from "@/lib/buyout.js";
 import { loadWbBuyoutRows } from "@/lib/buyoutData.js";
 
 export const runtime = "nodejs";
@@ -320,10 +320,18 @@ async function buildTotals(cabinet, platform, from, to, includeInactive, stat) {
       const key = `${it.platform}|${it.platform === "ozon" ? 0 : it.nm}|${it.platform === "ozon" ? it.nm : 0}`;
       const status = stat[key] || "active";
       it.status = status;
-      // Товар с продажами/возвратами за период → показываем ВСЕГДА (независимо от статуса).
-      // Товар без активности → только если active. Это сохраняет свежие продажи снятого
-      // товара, но убирает inactive-мусор без продаж.
-      const hasActivity = (it.sold || 0) + (it.returns || 0) > 0;
+      // Товар с продажами/возвратами ИЛИ с заказами когорты (включая отказы/возвраты
+      // без продажи — buyoutResolved) за период → показываем ВСЕГДА (независимо от
+      // статуса). Товар без активности → только если active. Это сохраняет свежие
+      // продажи снятого товара, но убирает inactive-мусор без продаж.
+      // ⚠️ Фикс 2026-10-12 (финальное ревью «Процент выкупа»): раньше hasActivity не
+      // учитывал buyoutResolved/ordered — inactive-товар с отказами/возвратами когорты,
+      // но без sale-датированного sold, выпадал из Сводки целиком вместе со своими
+      // счётчиками выкупа → totals Сводки и страницы «Процент выкупа» расходились
+      // (live: 333/603 на странице vs 333/602 в Сводке, nm 721030807 — 1 заказ, 1 отказ).
+      const hasActivity = (it.sold || 0) + (it.returns || 0) > 0
+        || (it.buyoutResolved || 0) > 0
+        || (it.ordered || 0) > 0;
       return hasActivity || status === "active";
     });
   } else {
@@ -626,7 +634,7 @@ async function collectWB(from, toEnd, shopName, taxMode) {
   // «канон волна 2») — SQL-число теперь не растёт с числом товаров.
   // % выкупа — КАНОН lib/buyout.js (спека 2026-10-11): когорта заказов окна по дате
   // заказа, судьба каждого srid. Одна цифра со страницей «Процент выкупа».
-  const asOf = new Date().toISOString().slice(0, 10);
+  const asOf = todayMsk(); // МСК, не UTC сервера — заказы датированы МСК (фикс 2026-10-12)
   const buyoutByNm = new Map(
     aggregateBuyout(await loadWbBuyoutRows(from, toEnd.slice(0, 10)), asOf).items.map((b) => [b.nmId, b])
   );

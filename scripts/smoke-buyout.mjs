@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-// scripts/smoke-buyout.mjs — смоук «Процента выкупа» (11.10.2026). Только чтение. Проверяет:
+// scripts/smoke-buyout.mjs — смоук «Процента выкупа» (11.10.2026, доп. 12.10 — финальное
+// ревью). Только чтение. Проверяет:
 //   1) /buyout 200; Σ размеров = товар по каждому счётчику; Σ товаров = KPI;
 //   2) % = sold/resolved на каждой строке; resolved = sold+refused+returned;
-//   3) WB-выкуп Сводки (platform=wb, то же окно) = выкуп страницы — по товарам и в итогах;
-//   4) недели: 13 штук, последняя — текущая неделя.
+//   3) WB-выкуп Сводки (platform=wb, то же окно) = выкуп страницы — по товарам и в итогах,
+//      И при дефолтном фильтре статуса (без includeInactive), И при includeInactive=1 —
+//      иначе баг «inactive без sold, но с отказами/возвратами когорты выпадает из
+//      дефолтной Сводки вместе со своими счётчиками выкупа» (нашли 12.10) мог бы
+//      вернуться незамеченным (были PASS только на includeInactive=1).
+//   4) недели: 13 штук, последняя — текущая неделя (по МСК, как asOf в API).
 // Аутентификация — sealed-cookie, как scripts/smoke-purchase-need.mjs.
 // Запуск: node scripts/smoke-buyout.mjs [cabinetId=1] [baseUrl]
 import { readFileSync } from 'node:fs';
@@ -13,6 +18,7 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
 }
 const { query } = await import('../lib/db.js');
+const { todayMsk, weekStart } = await import('../lib/buyout.js');
 const CAB = Number(process.argv[2] || 1);
 const BASE = process.argv[3] || 'http://127.0.0.1:3200';
 
@@ -50,21 +56,27 @@ const badPct = [kpi, ...items, ...items.flatMap((i) => i.sizes)].filter((r) =>
   r.buyoutPct !== (r.resolved > 0 ? r2(100 * r.sold / r.resolved) : null));
 check('% = sold/resolved, resolved = sold+refused+returned', badPct.length === 0, badPct.map((r) => r.nmId ?? r.size ?? 'kpi'));
 
-const s = await get(`products-summary?platform=wb&from=${from}&to=${to}&includeInactive=1`);
-check('products-summary: HTTP 200', s.status === 200 && !s.data.error, `${s.status} ${s.data.error || ''}`);
 const byNm = new Map(items.map((i) => [Number(i.nmId), i]));
-const diff = [];
-for (const it of s.data.items || []) {
-  const p = byNm.get(Number(it.nm));
-  const want = p ? p.buyoutPct : null;
-  if (it.buyoutPct !== want) diff.push(`${it.nm}: сводка ${it.buyoutPct} ≠ страница ${want}`);
-}
-check('выкуп по товарам: Сводка = страница', diff.length === 0, diff);
-check('выкуп итогов: Сводка = страница', s.data.totals?.buyoutPct === kpi.buyoutPct,
-  `${s.data.totals?.buyoutPct} ≠ ${kpi.buyoutPct}`);
+const checkSummary = async (label, qs) => {
+  const s = await get(`products-summary?platform=wb&from=${from}&to=${to}${qs}`);
+  check(`products-summary${qs}: HTTP 200`, s.status === 200 && !s.data.error, `${s.status} ${s.data.error || ''}`);
+  const diff = [];
+  for (const it of s.data.items || []) {
+    const p = byNm.get(Number(it.nm));
+    const want = p ? p.buyoutPct : null;
+    if (it.buyoutPct !== want) diff.push(`${it.nm}: сводка ${it.buyoutPct} ≠ страница ${want}`);
+  }
+  check(`выкуп по товарам: Сводка (${label}) = страница`, diff.length === 0, diff);
+  check(`выкуп итогов: Сводка (${label}) = страница`, s.data.totals?.buyoutPct === kpi.buyoutPct,
+    `${s.data.totals?.buyoutPct} ≠ ${kpi.buyoutPct}`);
+};
+// Дефолтный фильтр статуса (без includeInactive) — ровно то, что видит владелец на
+// «Сводке по товарам» по умолчанию; именно здесь нашлась находка 1 финального ревью.
+await checkSummary('default', '');
+await checkSummary('includeInactive=1', '&includeInactive=1');
 
 const w = await get('buyout?series=1');
-const monday = (() => { const d = new Date(); const dow = (d.getUTCDay() + 6) % 7; return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow)).toISOString().slice(0, 10); })();
+const monday = weekStart(todayMsk());
 check('недели: 13, последняя — текущая', w.data.weeks?.length === 13 && w.data.weeks[12].week === monday,
   `${w.data.weeks?.length} ${w.data.weeks?.[12]?.week} ≠ ${monday}`);
 

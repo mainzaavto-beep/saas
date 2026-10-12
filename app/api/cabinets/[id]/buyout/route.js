@@ -5,7 +5,7 @@
 // Расчёт — lib/buyout.js, данные — lib/buyoutData.js. Ozon — следующий этап (спека §8).
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { aggregateBuyout, weeklyBuyout, weekStart } from "@/lib/buyout.js";
+import { aggregateBuyout, weeklyBuyout, weekStart, todayMsk } from "@/lib/buyout.js";
 import { loadWbBuyoutRows } from "@/lib/buyoutData.js";
 import { defaultPeriod } from "@/lib/period.js";
 
@@ -17,7 +17,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}$/;
 export const GET = withCabinet(async (req) => {
   try {
     const qp = new URL(req.url).searchParams;
-    const asOf = new Date().toISOString().slice(0, 10);
+    const asOf = todayMsk(); // МСК, не UTC сервера — заказы датированы МСК (фикс 2026-10-12)
     if (qp.get("series") === "1") {
       const nmRaw = parseInt(qp.get("nm"), 10);
       const nmId = Number.isFinite(nmRaw) ? nmRaw : null;
