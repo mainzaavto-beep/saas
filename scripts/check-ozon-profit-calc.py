@@ -827,6 +827,92 @@ def main():
           merged_single == by_unit_single and stats_single["merged_units"] == []
           and stats_single["ambiguous_families"] == [], (merged_single, stats_single))
 
+    # 17f. РЕГРЕССИЯ 12.10.2026 (бриф scratchpad/ozsib/brief.md, кабинет 1):
+    #     ДВА 3-частных члена семьи — РАЗНЫЕ отправления одного заказа, не
+    #     две формы номера одного отправления. Живой пример: '0116401115-0062-3'
+    #     (delivered, commission-блок: продажа 4100, accrued +1968) и
+    #     '0116401115-0062-2' (cancelled, без commission: обратная логистика
+    #     59/45, упаковка 38/39). До фикса -2 вливался в -3 -> RETURN_TYPE_IDS
+    #     -> is_return=1, выручка настоящей продажи обнулена, COGS не списан.
+    def _row(unit, date_, cat, tid, accrued, sku):
+        return {"unit_number": unit, "accrued_category": cat, "type_id": tid,
+                "sku": sku, "accrued": accrued, "date": date_,
+                "seller_price": None, "sale_price": None, "sale_commission": None,
+                "coinvestment": None, "bonus": None}
+
+    sib_sold = "0116401115-0062-3"
+    sib_cancel = "0116401115-0062-2"
+    sold_rows = [
+        _row(sib_sold, "2026-10-02", "POSTING", 32, -95.0, 5518622570),
+        _row(sib_sold, "2026-10-02", "ITEM", 1, -23.67, 5518622570),
+        {"unit_number": sib_sold, "accrued_category": "POSTING", "type_id": None,
+         "sku": 5518622570, "accrued": 1968.0, "date": "2026-10-02",
+         "seller_price": 4100.0, "sale_price": 1245.71, "sale_commission": -2132.0,
+         "coinvestment": 0.0, "bonus": 0.0},
+        _row(sib_sold, "2026-10-02", "POSTING", 29, -10.83, 5518622570),
+    ]
+    cancel_rows = [
+        _row(sib_cancel, "2026-10-05", "ITEM", 38, -5.0, 5518725535),
+        _row(sib_cancel, "2026-10-05", "ITEM", 39, -10.0, 5518725535),
+        _row(sib_cancel, "2026-10-07", "POSTING", 45, -15.0, 5518725535),
+        _row(sib_cancel, "2026-10-07", "POSTING", 32, -95.0, 5518725535),
+        _row(sib_cancel, "2026-10-07", "POSTING", 59, -95.0, 5518725535),
+        _row(sib_cancel, "2026-10-07", "POSTING", 29, -11.36, 5518725535),
+    ]
+    merged_tt, stats_tt = merge_unit_siblings({sib_sold: sold_rows, sib_cancel: cancel_rows})
+    check("склейка (17f): два 3-частных брата (-3 с commission, -2 cancelled без) — "
+          "РАЗНЫЕ отправления, НЕ склеены, оба остались со своими строками",
+          set(merged_tt.keys()) == {sib_sold, sib_cancel}
+          and len(merged_tt[sib_sold]) == 4 and len(merged_tt[sib_cancel]) == 6, merged_tt)
+    check("склейка (17f): stats.merged_units пуст", stats_tt["merged_units"] == [], stats_tt)
+    r_tt_sold = build_order_costs(merged_tt[sib_sold], {"product_id": 6017499656, "qty": 1},
+                                  {6017499656: 1000.0}, today=MATURE_TODAY)
+    check("склейка (17f): -3 — продажа: is_return=0, выручка 4100, COGS списан (1000)",
+          r_tt_sold["is_return"] == 0 and r_tt_sold["cost_value_retail"] == 4100.0
+          and r_tt_sold["cost"] == 1000.0, r_tt_sold)
+    r_tt_cancel = build_order_costs(merged_tt[sib_cancel],
+                                    {"product_id": 6017618072, "qty": 1, "status": "cancelled"},
+                                    {6017618072: 1000.0}, today=MATURE_TODAY)
+    check("склейка (17f): -2 — невыкуп отдельной записью: is_return=1 (59/45), "
+          "выручка 0, cost 0, profit = Σaccrued (−231,36)",
+          r_tt_cancel["is_return"] == 1 and r_tt_cancel["cost_value_retail"] == 0
+          and r_tt_cancel["cost"] == 0 and abs(r_tt_cancel["profit"] - (-231.36)) < 0.01,
+          r_tt_cancel)
+
+    # 17g. База 2-частная + ДВА 3-частных (один с commission, второй — другое
+    #     отправление без commission): база вливается в commission-несущий
+    #     3-частный (как раньше — та же форма номера одного отправления),
+    #     второй 3-частный остаётся самостоятельным.
+    base_g = "0116401115-0062"
+    merged_g, stats_g = merge_unit_siblings({
+        base_g: [_row(base_g, "2026-10-02", "POSTING", 32, -7.0, 5518622570)],
+        sib_sold: sold_rows, sib_cancel: cancel_rows})
+    check("склейка (17g): база + -3(commission) + -2(без): база слита в -3, -2 отдельно",
+          set(merged_g.keys()) == {sib_sold, sib_cancel} and len(merged_g[sib_sold]) == 5
+          and len(merged_g[sib_cancel]) == 6, merged_g)
+    check("склейка (17g): stats.merged_units == [(-3, [база])]",
+          stats_g["merged_units"] == [(sib_sold, [base_g])], stats_g)
+
+    # 17h. База + 3-частный с commission (исходный кейс задачи 6) — склеиваются
+    #     как раньше (дубль 17b на живых номерах этого заказа).
+    merged_h, stats_h = merge_unit_siblings({
+        base_g: [_row(base_g, "2026-10-02", "POSTING", 32, -7.0, 5518622570)],
+        sib_sold: sold_rows})
+    check("склейка (17h): база 2-частная + 3-частный с commission — склеены (как было)",
+          set(merged_h.keys()) == {sib_sold} and len(merged_h[sib_sold]) == 5
+          and stats_h["merged_units"] == [(sib_sold, [base_g])], (merged_h, stats_h))
+
+    # 17i. База С commission + два 3-частных без commission — какой из них
+    #     пара базе, не решить -> не склеивать, семья помечена неоднозначной.
+    merged_i, stats_i = merge_unit_siblings({
+        base_g: [dict(sold_rows[2], unit_number=base_g)],
+        sib_sold: [_row(sib_sold, "2026-10-02", "POSTING", 32, -95.0, 5518622570)],
+        sib_cancel: cancel_rows})
+    check("склейка (17i): база с commission + 2 трёхчастных без — не склеено, ambiguous",
+          set(merged_i.keys()) == {base_g, sib_sold, sib_cancel}
+          and stats_i["merged_units"] == []
+          and stats_i["ambiguous_families"] == [(base_g, [base_g])], (merged_i, stats_i))
+
     # --- 18. F1 (фикс-волна финального ревью 2026-08-18, .superpowers/sdd/
     #     2026-08-17-ozon-data-repair/): touched-юниты окна (по ЮНИТАМ) должны
     #     расширяться до ПОЛНЫХ семей (_family_key/merge_unit_siblings) ДО

@@ -258,7 +258,25 @@ def merge_unit_siblings(by_unit):
         решить, к какому из них относится остальная часть семьи без
         commission) — НЕ склеивается, попадает в ambiguous_families для
         счётчика/лога в collect(), юниты обрабатываются раздельно как
-        обычно."""
+        обычно.
+
+    ⚠️ РАЗНЫЕ ОТПРАВЛЕНИЯ ОДНОГО ЗАКАЗА НЕ СКЛЕИВАЮТСЯ (фикс 12.10.2026,
+    кабинет 1): «две формы номера одного отправления» — это ТОЛЬКО пара
+    «2-частная база ('…-0449') + 3-частная форма ('…-0449-5')». Два и более
+    3-частных члена семьи ('0116401115-0062-2' cancelled без commission и
+    '0116401115-0062-3' delivered с commission) — это РАЗНЫЕ отправления
+    одного заказа (разные товары/sku): до фикса невыкуп -2 вливался в
+    продажу -3, его 45/59 делали всю группу возвратом — выручка настоящей
+    продажи обнулялась, COGS не списывался (33 таких склейки за историю
+    кабинета 1 против 5 866 законных «база -> 3-частный»). Поэтому при ≥2
+    3-частных членах семьи:
+      • 3-частные члены НИКОГДА не сливаются друг с другом;
+      • 2-частная база (если есть и без commission) вливается в
+        commission-несущий 3-частный член, только если он РОВНО ОДИН;
+      • 2+ commission-члена — ambiguous, как раньше; база С commission при
+        ≥2 трёхчастных (не решить, чья она пара) — тоже ambiguous, не
+        склеивается (на данных кабинета 1 commission под базой не
+        встречался ни разу)."""
     merged = {u: list(rows) for u, rows in by_unit.items()}
     families = defaultdict(list)
     for u in merged:
@@ -270,6 +288,24 @@ def merge_unit_siblings(by_unit):
         if len(members) < 2:
             continue
         commission_members = [m for m in members if _has_commission_block(merged[m])]
+        three_part = [m for m in members if m.count("-") >= 2]
+        if len(three_part) >= 2:
+            # Несколько 3-частных — разные отправления (см. докстроку).
+            bases = [m for m in members if m not in three_part]
+            if len(commission_members) >= 2:
+                ambiguous_families.append((fam_key, commission_members))
+            elif len(commission_members) == 1 and bases:
+                canonical = commission_members[0]
+                if canonical in three_part:
+                    for m in bases:
+                        merged[canonical].extend(merged[m])
+                        del merged[m]
+                    merged_units.append((canonical, bases))
+                else:
+                    # commission под базой, чья она пара — не решить
+                    ambiguous_families.append((fam_key, commission_members))
+            # без базы / без commission — сливать нечего, все независимы
+            continue
         if len(commission_members) == 1:
             canonical = commission_members[0]
             merged_away = [m for m in members if m != canonical]
