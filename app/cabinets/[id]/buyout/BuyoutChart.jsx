@@ -69,7 +69,7 @@ export default function BuyoutChart({ cabinetId, nmId, name, onReset }) {
         <b>% выкупа по неделям заказа{nmId != null ? ` — ${name || nmId}` : " — весь кабинет"}</b>
         <span style={{ fontSize: 12, color: C.muted }}>
           пунктир — неделя не дозрела · бледная точка — доехало &lt; 20
-          {nmId != null ? <> · <a onClick={onReset} style={{ cursor: "pointer", color: C.accent }}>весь кабинет</a></> : " · клик по товару в таблице — график по размерам"}
+          {nmId != null ? <> · <button type="button" onClick={onReset} style={{ cursor: "pointer", color: C.accent, background: "none", border: "none", padding: 0, font: "inherit" }}>весь кабинет</button></> : " · клик по товару в таблице — график по размерам"}
         </span>
       </div>
       {error ? <div style={{ color: C.neg }}>Ошибка: {error}</div> : null}
@@ -80,6 +80,7 @@ export default function BuyoutChart({ cabinetId, nmId, name, onReset }) {
             <XAxis dataKey="week" tickFormatter={fmtWeek} tick={{ fontSize: 11, fill: C.muted }} stroke={soft("line", 30)} />
             <YAxis domain={[0, 100]} tickFormatter={(v) => `${v} %`} tick={{ fontSize: 11, fill: C.muted }} stroke={soft("line", 30)} width={50} />
             <Tooltip
+              payloadUniqBy={(e) => String(e.dataKey).replace(/_(imm|low)$/, "")}
               labelFormatter={(w) => `неделя с ${fmtWeek(w)}`}
               formatter={(v, key, item) => {
                 const base = String(key).replace(/_(imm|low)$/, "");
