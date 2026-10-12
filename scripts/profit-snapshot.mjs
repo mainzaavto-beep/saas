@@ -48,7 +48,7 @@ for (const line of readFileSync(new URL('../.env.local', import.meta.url), 'utf8
 
 const { withTenant, query, DatabaseSync } = await import('../lib/db.js');
 const { ozProfitProduct, ozProfitCabinet } = await import('../lib/ozonMetrics.js');
-const { wbProfitProduct, wbProfitCabinet } = await import('../lib/wbMetrics.js');
+const { wbProfitProduct, wbProfitCabinet, wbCabinetCostLabel } = await import('../lib/wbMetrics.js');
 const { calcTotalTax, normalizeTaxMode } = await import('../lib/tax.js');
 
 // Независимые проверочные суммы WB — ТОЛЬКО saas_ro (bypass RLS, явный
@@ -479,6 +479,19 @@ async function runVerify() {
           round2((pnlWas?.cabinetCostsInfo || []).reduce((a, x) => a + x.amount, 0)),
           round2((pnlCanon.cabinetCostsInfo || []).reduce((a, x) => a + x.amount, 0))
         ) && allOk;
+        // Прямая проверка (не через сумму — сумма 0 совпала бы и при баге
+        // "promotion есть, но компенсируется другой статьёй"): ни одна статья
+        // в ПРИБЫЛЬНОЙ части (cabinetCosts) роута не подписана как оплата
+        // рекламы удержанием WB. Метка берётся из канона (`wbCabinetCostLabel`,
+        // lib/wbMetrics.js), роут отдаёт только `label` (costType внутренний,
+        // наружу не идёт) — сравниваем по ней.
+        if (mp === 'wb') {
+          const promoLabel = wbCabinetCostLabel('promotion');
+          const hasPromoInProfit = (pnlWas?.cabinetCosts || []).some((x) => x.label === promoLabel);
+          const ok = !hasPromoInProfit;
+          console.log(`  ${ok ? 'PASS' : 'FAIL'} pnl.wb.cabinetCosts не содержит «${promoLabel}»: ${ok ? 'нет' : 'ЕСТЬ (двойной счёт рекламы)'}`);
+          allOk = ok && allOk;
+        }
 
         // realized/payout — «реализовано» и «к перечислению», ТОЛЬКО у WB
         // (переезд 06.09.2026, пришли на смену revenueGross). Сверка НЕ с

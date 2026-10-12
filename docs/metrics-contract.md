@@ -1364,8 +1364,8 @@ Ozon (10 статей, Σ = −48 414,37 ₽, знак как в БД):
 
 **База УСН.** Кабинетные расходы НЕ входят в базу налога ни на одной
 странице — `calcTotalTax` вызывается ВНУТРИ `*ProfitProduct` (§9), ДО того,
-как `*ProfitCabinet` прибавляет `cabinetCosts` (`lib/wbMetrics.js:551`,
-`lib/ozonMetrics.js:353`: `profit = base.profit + signedSum`, где `base`
+как `*ProfitCabinet` прибавляет `cabinetCosts` (`lib/wbMetrics.js` функция
+`wbProfitCabinet`, `lib/ozonMetrics.js:353`: `profit = base.profit + signedSum`, где `base`
 уже включает вычтенный `tax`).
 
 ---
@@ -2882,6 +2882,17 @@ API `app/api/cabinets/[id]/search/route.js`) — это заказы покуп�
 `cabinetCosts`, есть в `cabinetCostsInfo` = независимый SQL), `check-profit-canon-
 cross.mjs` (то же), `profit-snapshot.mjs --verify` (шлюз июня + Σ `cabinetCostsInfo`
 `/pnl` = канон). Тест — `lib/__tests__/wbCabinetCosts.test.mjs`.
+
+**Известное ограничение.** После этой правки прибыль WB опирается ТОЛЬКО на расход
+кампаний (`daily_metrics.ad_spend`) — удержание `promotion` больше не подхватывает
+рекламу, если кампании не посчитаны. Если у ключа кабинета нет доступа к Advert API
+(`/adv/v3/fullstats`) или сборщик `wb_ads` падает/даёт partial, `ad_spend ≈ 0`, а
+удержание «WB Продвижение» всё равно приходит в `wb_cabinet_costs` (деньги реально
+списаны) — прибыль будет **завышена** на сумму непосчитанной рекламы, и ни один
+текущий сторож этого не поймает (они сверяют канон с каноном, а не с реальностью
+API). Запланировано (не сделано): сторож/сигнал на `/health`, сравнивающий Σ
+`promotion` за 30 дней с Σ `ad_spend` за те же 30 дней — тревога при отношении вне
+~0,5–2 или при `ad_spend ≈ 0` и `promotion > 0`.
 
 ---
 

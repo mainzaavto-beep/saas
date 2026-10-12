@@ -257,27 +257,33 @@ export default function PnlPage({ cabinetId }) {
           {!hasSegments && ((data.total.cabinetCosts?.length || 0) + (data.total.cabinetCostsInfo?.length || 0)) > 0 && (
             <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18, marginTop: 18 }}>
               <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 700 }}>Кабинетные расходы по статьям</h3>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: `1px solid ${C.line}` }}>
-                    <th style={thLeft}>Статья</th>
-                    <th style={thRight}>Сумма</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(data.total.cabinetCosts || []).map((c, i) => (
-                    <tr key={`${c.label}-${i}`} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
-                      <td style={{ padding: "8px 6px", color: C.ink }}>{c.label}</td>
-                      <td style={{
-                        padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums",
-                        whiteSpace: "nowrap", color: c.amount < 0 ? C.neg : C.pos,
-                      }}>
-                        {c.amount < 0 ? "−" : "+"}{money(Math.abs(c.amount))}
-                      </td>
+              {/* Таблица «Статья/Сумма» — только если есть хоть одна прибыльная
+                  статья (cabinetCosts). Если их нет, а справочные (cabinetCostsInfo,
+                  напр. promotion, §19) есть — пустую таблицу с одной шапкой не
+                  показываем, ниже сразу блок «Справочно». */}
+              {(data.total.cabinetCosts?.length || 0) > 0 && (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                      <th style={thLeft}>Статья</th>
+                      <th style={thRight}>Сумма</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.total.cabinetCosts.map((c, i) => (
+                      <tr key={`${c.label}-${i}`} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
+                        <td style={{ padding: "8px 6px", color: C.ink }}>{c.label}</td>
+                        <td style={{
+                          padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                          whiteSpace: "nowrap", color: c.amount < 0 ? C.neg : C.pos,
+                        }}>
+                          {c.amount < 0 ? "−" : "+"}{money(Math.abs(c.amount))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
               {/* Справочные статьи (cabinetCostsInfo канона) — НЕ входят ни в
                   «Кабинетные расходы», ни в операционную прибыль. WB: оплата рекламы
                   удержанием «WB Продвижение» — та же реклама, что уже вычтена
