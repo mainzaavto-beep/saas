@@ -275,6 +275,13 @@ Anthropic отвечает 403 «Request not allowed».
   `docs/metrics-contract.md`. Прямые формулы по `finance_report`
   (`retail_price_withdisc_rub`, `commission_percent × …`) — НЕ канон:
   они остались только витринными справками в `wbFinanceByDay`.
+- **Реклама WB — один источник (решение владельца 12.10.2026)**: в прибыли только расход
+  кампаний (`daily_metrics.ad_spend`, по дням/товарам). Удержание «WB Продвижение»
+  (`wb_cabinet_costs.cost_type='promotion'`) — оплата той же рекламы: `wbProfitCabinet` кладёт его
+  в `cabinetCostsInfo[]` (справочно, «уже учтена в рекламе»), не в `cabinetCosts[]`/profit; признак —
+  `WB_COST_INFO_ONLY` в `lib/wbMetrics.js`. Было вычитание дважды (11.10: −14 647 ₽). `/pnl`,
+  `/cabinet-costs` (`info`), `products-summary` (`unallocated`) — без него в итогах. Тест
+  `lib/__tests__/wbCabinetCosts.test.mjs`, контракт §19.
 - **Выручка WB (переезд 06.09.2026)**: канон `revenue = Σ cost_value_withdisc`
   (цена со скидкой продавца, `retail_price_withdisc_rub`), а не «к
   перечислению» — решение владельца; см. `docs/metrics-contract.md` §1.1
