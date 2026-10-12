@@ -453,7 +453,8 @@ export default function SummaryPage({ cabinetId }) {
         />
         <Kpi
           label="% выкупа"
-          value={pct(ft.buyoutPct)}
+          value={`${pct(ft.buyoutPct)}${ft.buyoutLegacy ? "*" : ""}`}
+          title={ft.buyoutLegacy ? "Включает Ozon по прежней формуле (переводится); WB — по заказам периода, см. «Процент выкупа»" : undefined}
           delta={delta(ft.buyoutPct, prevTotals?.buyoutPct, { pp: true })}
           deltaTitle={deltaTooltip}
         />
@@ -588,7 +589,7 @@ export default function SummaryPage({ cabinetId }) {
                 <td style={tdFootR}>{num(ft.returns)}</td>
                 <td style={{ ...tdFootR, color: ft.returnLogistics > 0 ? C.neg : C.faint }}>{money(ft.returnLogistics)}</td>
                 <td style={tdFootR}>{num(ft.stock)}</td>
-                <td style={tdFootR}>{pct(ft.buyoutPct)}</td>
+                <td style={tdFootR}><span title={ft.buyoutLegacy ? "Включает Ozon по прежней формуле (переводится); WB — по заказам периода, см. «Процент выкупа»" : undefined}>{pct(ft.buyoutPct)}{ft.buyoutLegacy ? "*" : ""}</span></td>
                 <td style={tdFootR}>—</td>
                 <td style={tdFootR}>{money(ft.orderRub)}</td>
                 <td style={tdFootR}>{money(ft.avgCheck)}</td>
