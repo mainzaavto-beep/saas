@@ -311,6 +311,17 @@ def _group_cabinets(rows):
     return list(cabs.values())
 
 
+def _collect_allowlist():
+    """Белый список кабинетов для регулярного сбора (решение владельца 12.10.2026: пока
+    нет клиентов, ресурсы не тратим — собираем только свой кабинет #1).
+    env SAAS_COLLECT_CABINETS="1,1008" → множество id; пусто/не задано → None (все active).
+    Действует на --all и --drain-queue; явный --cabinet N не фильтруется (ручной прогон)."""
+    raw = os.getenv("SAAS_COLLECT_CABINETS", "").strip()
+    if not raw:
+        return None
+    return {int(x) for x in raw.split(",") if x.strip()}
+
+
 def _read_cabinets(active_only=True):
     """Прочитать кабинеты с shops (креды per-МП). active_only=False → включая provisioning."""
     with psycopg.connect(**PG_SUPER, row_factory=dict_row) as conn:
@@ -329,7 +340,14 @@ def _read_cabinets(active_only=True):
         with conn.cursor() as cur:
             cur.execute(sql, (statuses,))
             rows = cur.fetchall()
-        return _group_cabinets(rows)
+        cabs = _group_cabinets(rows)
+        allow = _collect_allowlist()
+        if allow is not None:
+            skipped = [c["cabinet_id"] for c in cabs if c["cabinet_id"] not in allow]
+            if skipped:
+                print(f"[allowlist] SAAS_COLLECT_CABINETS: пропуск кабинетов {skipped}", flush=True)
+            cabs = [c for c in cabs if c["cabinet_id"] in allow]
+        return cabs
 
 
 def _read_one_cabinet(cabinet_id):
@@ -734,6 +752,8 @@ def drain_queue(verbose=False):
     прогон (иначе while True никогда не увидит пустую очередь).
     Пауза DRAIN_PAUSE_SEC между jobs (rate-limit для очереди из нескольких клиентов)."""
     skip_ids = []  # отложенные (blocked) в этом прогоне — не берём их снова сейчас
+    _allow = _collect_allowlist()  # job'ы чужих кабинетов остаются queued, не трогаем
+    allow_ids = sorted(_allow) if _allow is not None else None
     while True:
         # 1. Взять один queued job атомарно (с блокировкой строки), кроме уже
         #    отложенных в этом прогоне.
@@ -744,9 +764,10 @@ def drain_queue(verbose=False):
                     "FROM jobs.collect_jobs "
                     "WHERE job_type = 'onboarding' AND status = 'queued' "
                     "  AND NOT (job_id = ANY(%s::bigint[])) "
+                    "  AND (%s::bigint[] IS NULL OR cabinet_id = ANY(%s::bigint[])) "
                     "ORDER BY job_id "
                     "FOR UPDATE SKIP LOCKED LIMIT 1",
-                    (skip_ids,))
+                    (skip_ids, allow_ids, allow_ids))
                 job = cur.fetchone()
                 if not job:
                     break  # очередь пуста (с учётом отложенных)

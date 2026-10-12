@@ -101,6 +101,10 @@ subprocess с env-инъекцией (`WB_TOKEN` / `OZON_*` + `WB_SaaS_CABINET_I
 - `--drain-queue` — прогон onboarding-jobs (backfill за 75 дней) из `jobs.collect_jobs`.
   Таймер `saas-backfill` 4×/день. Job создаётся при онбординге нового клиента.
 
+**Белый список кабинетов (с 12.10.2026):** `SAAS_COLLECT_CABINETS=1` в `/etc/saas-worker.env` — `--all` и
+`--drain-queue` собирают только перечисленные кабинеты (пусто/нет переменной — все active; явный `--cabinet N` не
+фильтруется). Решение владельца: пока нет клиентов, ресурсы на #1008/#1009 не тратим; их данные заморожены на 12.10.
+
 **Сборщики** (`worker/collectors/wb_*.py`, `ozon_*.py`) пишут в `tenant.*` через
 `worker/db_pg.py` (тот же паттерн RLS по `WB_SaaS_CABINET_ID`). Все upsert'ы
 идемпотентны (`ON CONFLICT`). Порядок важен: catalog → orders → finance →
