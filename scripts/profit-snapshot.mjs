@@ -347,7 +347,16 @@ const GATE_CHECKS = [
   // Других WB-строк в GATE_CHECKS нет (июль-2026 у WB не заморожен) — пере-
   // считывать больше нечего; июльская WB-прибыль на всякий случай сверена
   // тем же каноном: 202 937,98 ₽ (commission там ПОЛОЖИТЕЛЬНАЯ, +22 090,06).
-  { cabinetId: 1, mp: 'wb', period: '2026-06', route: 'pnl', expected: 137467.63 },
+  // -> ТЕПЕРЬ 232 443,63 (Δ=+94 976,00) — двойной счёт рекламы WB убран
+  // (решение владельца 12.10.2026, docs/metrics-contract.md §19): оплата
+  // рекламы удержанием «WB Продвижение» (wb_cabinet_costs.cost_type=
+  // 'promotion', июнь-2026 Σ 94 976,00 ₽ сырым знаком) — та же реклама, что уже
+  // вычтена по кампаниям (ads 94 055,92 — расхождение 0,98 %), больше не входит
+  // в Σ cabinetCosts: 72 159,89 − 94 976,00 = −22 816,11 (возмещения/сторно
+  // отзывов перевешивают хранение/штрафы) ⇒ 353 895,81 − 94 055,92 − 50 212,37
+  // + 22 816,11 = 232 443,63. Остальные слагаемые не двигались; promotion
+  // остаётся справочно в cabinetCostsInfo.
+  { cabinetId: 1, mp: 'wb', period: '2026-06', route: 'pnl', expected: 232443.63 },
 ];
 
 // Строки плана с реальными данными (см. докстроку блока «plan/fact» ниже) —
@@ -462,6 +471,13 @@ async function runVerify() {
           `pnl.${mp}.cabinetCostsTotal`,
           pnlWas?.cabinetCostsTotal,
           round2(pnlCanon.cabinetCosts.reduce((a, x) => a + x.amount, 0))
+        ) && allOk;
+        // Справочные статьи (§19, 12.10.2026): роут отдаёт ровно канон, и
+        // promotion в прибыльной части (cabinetCosts) роута нет.
+        allOk = assertClose(
+          `pnl.${mp}.Σ cabinetCostsInfo`,
+          round2((pnlWas?.cabinetCostsInfo || []).reduce((a, x) => a + x.amount, 0)),
+          round2((pnlCanon.cabinetCostsInfo || []).reduce((a, x) => a + x.amount, 0))
         ) && allOk;
 
         // realized/payout — «реализовано» и «к перечислению», ТОЛЬКО у WB

@@ -661,7 +661,7 @@ export default function SummaryPage({ cabinetId }) {
       {/* Кабинетные расходы (№27) — то, что API МП НЕ привязывает к товару.
           По контракту НЕЛЬЗЯ размазывать по SKU (искажает маржу): показываем
           отдельной секцией под основной таблицей. Источник: /api/cabinet-costs. */}
-      {cab && cab.items && cab.items.length > 0 && (
+      {cab && ((cab.items?.length || 0) + (cab.info?.length || 0)) > 0 && (
         <div style={{ marginTop: 28 }}>
           <h2 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.ink }}>
             Кабинетные расходы (без привязки к товару)
@@ -725,6 +725,19 @@ export default function SummaryPage({ cabinetId }) {
               </tfoot>
             </table>
           </div>
+          {/* Справочно (cab.info): оплата рекламы удержанием WB — та же реклама,
+              что уже вычтена по кампаниям; вне «Итого» и вне прибыли
+              (docs/metrics-contract.md §19, решение владельца 12.10.2026). */}
+          {cab.info && cab.info.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12, color: C.muted }}>
+              Справочно, не входит в итог и прибыль:{" "}
+              {cab.info.map((it, i) => (
+                <span key={it.platform + "-" + it.cost_type}>
+                  {i > 0 ? " · " : ""}{it.label} {money(it.amount)}{it.note ? ` — ${it.note}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </main>

@@ -198,8 +198,13 @@ async function checkWb(cabinetId, taxMode) {
      WHERE cabinet_id = $1 AND date BETWEEN $2::date AND $3::date AND ad_spend IS NOT NULL`,
     [cabinetId, FROM, TO]
   );
+  // Без cost_type='promotion' — оплата рекламы удержанием WB («WB
+  // Продвижение») = та же реклама, что уже вычтена по кампаниям (ad_spend);
+  // решение владельца 12.10.2026, docs/metrics-contract.md §19. Литерал свой
+  // (не константа канона) — сверка независимая.
   const { rows: cabinetCostRows } = await roPool.query(
-    `SELECT COALESCE(SUM(amount),0) AS s
+    `SELECT COALESCE(SUM(amount) FILTER (WHERE cost_type <> 'promotion'),0) AS s,
+            COALESCE(SUM(amount) FILTER (WHERE cost_type = 'promotion'),0) AS promo
      FROM tenant.wb_cabinet_costs
      WHERE cabinet_id = $1 AND period_from <= $3::date AND period_to >= $2::date`,
     [cabinetId, FROM, TO]
@@ -220,8 +225,18 @@ async function checkWb(cabinetId, taxMode) {
   const indCabinetSignedSum = -num(cabinetCostRows[0].s); // WB: сырой знак ПРОТИВОПОЛОЖЕН — канон инвертирует (см. wbProfitCabinet)
   const indProfit = Math.round((indRawProfit - indAdSpend - indTax + indCabinetSignedSum) * 100) / 100;
 
+  const indPromo = -num(cabinetCostRows[0].promo);
+  const canonPromoInfo = (canon.cabinetCostsInfo || [])
+    .filter((c) => c.costType === 'promotion').reduce((a, c) => a + c.amount, 0);
+  const canonPromoInCosts = (canon.cabinetCosts || []).filter((c) => c.costType === 'promotion').length;
   verdict(
-    `WB кабинет ${cabinetId}: wbProfitCabinet.profit = независимый SQL (Σ order_costs.profit − ad_spend − налог + Σ cabinetCosts)`,
+    `WB кабинет ${cabinetId}: promotion (оплата рекламы удержанием) вне cabinetCosts/profit, в cabinetCostsInfo = независимый SQL`,
+    canonPromoInCosts === 0 && Math.abs(canonPromoInfo - indPromo) <= TOL,
+    `в cabinetCosts: ${canonPromoInCosts}; cabinetCostsInfo=${fmtRub(canonPromoInfo)}, независимо=${fmtRub(indPromo)}`
+  );
+
+  verdict(
+    `WB кабинет ${cabinetId}: wbProfitCabinet.profit = независимый SQL (Σ order_costs.profit − ad_spend − налог + Σ cabinetCosts без promotion)`,
     Math.abs(canon.profit - indProfit) <= TOL,
     `канон=${fmtRub(canon.profit)}, независимо=${fmtRub(indProfit)}, разница=${fmtRub(canon.profit - indProfit)} `
     + `[SUM(order_costs.profit)=${fmtRub(indRawProfit)}, ad_spend=${fmtRub(indAdSpend)}, налог=${fmtRub(indTax)} (база realized=${fmtRub(indRealized)}, расходы вкл. commission=${fmtRub(indCommission)}), ΣcabinetCosts=${fmtRub(indCabinetSignedSum)}]`

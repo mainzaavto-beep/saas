@@ -1,7 +1,7 @@
 import { DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { NextResponse } from "next/server";
-import { wbAdTotal, wbProfitProductBatch, wbRawProfitCabinetByDay } from "@/lib/wbMetrics.js";
+import { wbAdTotal, wbProfitProductBatch, wbRawProfitCabinetByDay, WB_COST_INFO_ONLY } from "@/lib/wbMetrics.js";
 import { ozProfitProductBatch, ozRawProfitCabinetByDay } from "@/lib/ozonMetrics.js";
 import { normalizeTaxMode } from "@/lib/tax.js";
 import { statusMap } from "@/lib/finItems.js";
@@ -450,13 +450,19 @@ async function unallocatedCabinetCosts(platform, from, to) {
   let sum = 0;
   if (platform !== "ozon") {
     try {
-      const r = await new DatabaseSync("wb", { readOnly: true }).prepare(
-        `SELECT COALESCE(SUM(amount),0) AS s FROM cabinet_costs
-         WHERE period_from <= ? AND period_to >= ?`
-      ).get(to, from);
+      const rows = await new DatabaseSync("wb", { readOnly: true }).prepare(
+        `SELECT cost_type, COALESCE(SUM(amount),0) AS s FROM cabinet_costs
+         WHERE period_from <= ? AND period_to >= ?
+         GROUP BY cost_type`
+      ).all(to, from);
       // WB amount — сырой знак (расход>0, возмещение<0); канон-знак = −amount
-      // (см. wbProfitCabinet, lib/wbMetrics.js).
-      sum += -((r && r.s) || 0);
+      // (см. wbProfitCabinet, lib/wbMetrics.js). Справочные статьи
+      // (WB_COST_INFO_ONLY — оплата рекламы удержанием, уже учтена в рекламе
+      // кампаний) в кабинетные не входят, как и в каноне (§19 контракта).
+      for (const r of rows) {
+        if (WB_COST_INFO_ONLY.has(r.cost_type)) continue;
+        sum += -(Number(r.s) || 0);
+      }
     } catch (e) { console.error('[products-summary] WB unallocatedCabinetCosts:', e.message); }
   }
   if (platform !== "wb") {

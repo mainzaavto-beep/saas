@@ -242,9 +242,11 @@ export default function PnlPage({ cabinetId }) {
           <div style={{ marginTop: 14, fontSize: 12, color: C.faint, lineHeight: 1.6 }}>
             Диапазон: {data.from} — {data.to}.
             Налоги: {data.taxLabel || "УСН по режиму магазина"} — УСН от выручки без НДС, НДС выделяется из цены. «% выр.» — доля строки от выручки, только без разбивки.
-            Кабинетные расходы (хранение/продвижение/подписки/штрафы/Premium/RFBS и др.) не привязаны к SKU —
+            Кабинетные расходы (хранение/подписки/штрафы/Premium/RFBS и др.) не привязаны к SKU —
             показаны одной строкой знаковой суммой (расход уменьшает прибыль, возмещение/доход — увеличивает);
             расшифровка по статьям — в блоке «Кабинетные расходы по статьям» ниже.
+            Реклама WB вычитается один раз — по кампаниям (строка «Реклама»); оплата той же рекламы удержанием WB
+            показана в блоке ниже справочно и в прибыль не входит.
             {data.total.unknownCostTypes > 0 && ` Не удалось сопоставить название для ${data.total.unknownCostTypes} стат. (показаны как «Прочее»).`}
           </div>
 
@@ -252,7 +254,7 @@ export default function PnlPage({ cabinetId }) {
               (ozProfitCabinet/wbProfitCabinet). Суммы знаковые: расход — красным
               со знаком «−», доход/возмещение — обычным цветом без знака. Технические
               ключи (accrual_N) сюда не попадают — label уже резолвлен на сервере. */}
-          {!hasSegments && data.total.cabinetCosts && data.total.cabinetCosts.length > 0 && (
+          {!hasSegments && ((data.total.cabinetCosts?.length || 0) + (data.total.cabinetCostsInfo?.length || 0)) > 0 && (
             <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18, marginTop: 18 }}>
               <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 700 }}>Кабинетные расходы по статьям</h3>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -263,7 +265,7 @@ export default function PnlPage({ cabinetId }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.total.cabinetCosts.map((c, i) => (
+                  {(data.total.cabinetCosts || []).map((c, i) => (
                     <tr key={`${c.label}-${i}`} style={{ borderTop: `1px solid ${soft("line", 33)}` }}>
                       <td style={{ padding: "8px 6px", color: C.ink }}>{c.label}</td>
                       <td style={{
@@ -276,6 +278,35 @@ export default function PnlPage({ cabinetId }) {
                   ))}
                 </tbody>
               </table>
+              {/* Справочные статьи (cabinetCostsInfo канона) — НЕ входят ни в
+                  «Кабинетные расходы», ни в чистую прибыль. WB: оплата рекламы
+                  удержанием «WB Продвижение» — та же реклама, что уже вычтена
+                  строкой «Реклама» по кампаниям (docs/metrics-contract.md §19,
+                  решение владельца 12.10.2026). */}
+              {data.total.cabinetCostsInfo && data.total.cabinetCostsInfo.length > 0 && (
+                <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px dashed ${C.line}` }}>
+                  <div style={{ fontSize: 12, color: C.faint, marginBottom: 6 }}>
+                    Справочно — не входит в прибыль:
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <tbody>
+                      {data.total.cabinetCostsInfo.map((c, i) => (
+                        <tr key={`info-${c.label}-${i}`}>
+                          <td style={{ padding: "6px 6px", color: C.muted }}>
+                            {c.label}{c.note ? ` — ${c.note}` : ""}
+                          </td>
+                          <td style={{
+                            padding: "6px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums",
+                            whiteSpace: "nowrap", color: C.muted,
+                          }}>
+                            {c.amount < 0 ? "−" : "+"}{money(Math.abs(c.amount))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 

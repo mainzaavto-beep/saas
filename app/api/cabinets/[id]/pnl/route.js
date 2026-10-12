@@ -53,6 +53,10 @@ function mpBlock(c, isWb, platform) {
     // ('wb'|'ozon') — помета площадки для фильтрации и группировки.
     cabinetCosts: c.cabinetCosts.map((x) => ({ label: x.label, amount: x.amount, platform })),
     cabinetCostsTotal: round2(c.cabinetCosts.reduce((acc, x) => acc + x.amount, 0)),
+    // cabinetCostsInfo — справочные статьи канона, НЕ входят ни в profit, ни
+    // в cabinetCostsTotal (WB: оплата рекламы удержанием — уже учтена в
+    // рекламе кампаний, docs/metrics-contract.md §19, решение 12.10.2026).
+    cabinetCostsInfo: (c.cabinetCostsInfo || []).map((x) => ({ label: x.label, amount: x.amount, note: x.note, platform })),
     unknownCostTypes: c.unknownCostTypes,
     profit: c.profit,
     // grossProfit — из канона (ozProfitCabinet/wbProfitCabinet наследуют
@@ -95,13 +99,16 @@ async function computePnl(from, to, mps, wbTax, ozonTax) {
   const total = {};
   for (const k of TOTAL_NUM_KEYS) total[k] = 0;
   const cabinetCosts = [];
+  const cabinetCostsInfo = [];
   for (const mp of [wb, ozon]) {
     if (!mp) continue;
     for (const k of TOTAL_NUM_KEYS) total[k] += mp[k] || 0;
     cabinetCosts.push(...mp.cabinetCosts);
+    cabinetCostsInfo.push(...mp.cabinetCostsInfo);
   }
   for (const k of TOTAL_NUM_KEYS) if (k !== "unknownCostTypes") total[k] = round2(total[k]);
   total.cabinetCosts = cabinetCosts;
+  total.cabinetCostsInfo = cabinetCostsInfo;
   total.margin = total.revenue > 0 ? round2((total.profit / total.revenue) * 10000) / 100 : 0;
   return { total, wb, ozon };
 }

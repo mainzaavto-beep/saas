@@ -46,12 +46,16 @@ const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
 async function collectWB(taxMode, from, to) {
   let cabinetCosts = [];
+  let cabinetCostsInfo = [];
   try {
     const db = new DatabaseSync("wb", { readOnly: true });
     const c = await wbProfitCabinet(db, taxMode, { from, to });
     cabinetCosts = c.cabinetCosts;
-  } catch {
+    cabinetCostsInfo = c.cabinetCostsInfo || [];
+  } catch (e) {
+    console.error("[cabinet-costs] WB wbProfitCabinet:", e?.message || e);
     cabinetCosts = [];
+    cabinetCostsInfo = [];
   }
   const sum = round2(cabinetCosts.reduce((acc, x) => acc + x.amount, 0));
   return {
@@ -60,6 +64,15 @@ async function collectWB(taxMode, from, to) {
       cost_type: x.costType,
       label: x.label,
       amount: x.amount, // уже канон-знак (расход<0, доход/возмещение>0)
+      platform: "wb",
+    })),
+    // Справочные статьи канона (оплата рекламы удержанием WB) — НЕ входят
+    // в sum/«Итого» и в прибыль, см. docs/metrics-contract.md §19.
+    info: cabinetCostsInfo.map((x) => ({
+      cost_type: x.costType,
+      label: x.label,
+      note: x.note,
+      amount: x.amount,
       platform: "wb",
     })),
   };
@@ -71,12 +84,14 @@ async function collectOzon(taxMode, from, to) {
     const db = new DatabaseSync("ozon", { readOnly: true });
     const c = await ozProfitCabinet(db, taxMode, { from, to });
     cabinetCosts = c.cabinetCosts;
-  } catch {
+  } catch (e) {
+    console.error("[cabinet-costs] Ozon ozProfitCabinet:", e?.message || e);
     cabinetCosts = [];
   }
   const sum = round2(cabinetCosts.reduce((acc, x) => acc + x.amount, 0));
   return {
     sum,
+    info: [],
     byType: cabinetCosts.map((x) => ({
       cost_type: x.costType,
       label: x.label,
@@ -125,8 +140,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     const wbTax = normalizeTaxMode(cabinet.shopTax?.wb);
     const ozonTax = normalizeTaxMode(cabinet.shopTax?.ozon);
 
-    let wb = { sum: 0, byType: [] };
-    let oz = { sum: 0, byType: [] };
+    let wb = { sum: 0, byType: [], info: [] };
+    let oz = { sum: 0, byType: [], info: [] };
     if (platform !== "ozon") wb = await collectWB(wbTax, from, to);
     if (platform !== "wb")  oz = await collectOzon(ozonTax, from, to);
 
@@ -152,10 +167,15 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       it.share = totalAbs ? Math.round(Math.abs(it.amount) / totalAbs * 1000) / 10 : null;
     }
 
+    // info — справочные статьи (WB: оплата рекламы удержанием, «уже учтена в
+    // рекламе»): вне items, вне долей и вне «Итого» (docs/metrics-contract.md §19).
+    const info = [...wb.info, ...oz.info].filter((x) => Math.abs(x.amount) > 0);
+
     return NextResponse.json({
       period: { from, to },
       totals: { wb: wb.sum, ozon: oz.sum, all: totalAll },
       items,
+      info,
       methodology: "Кабинетные расходы (№27): хранение/удержание/подписка/нераспределённая реклама и пр. — то, что API МП НЕ привязывает к товару. Не входят в маржу SKU, показываются отдельно.",
     });
   } catch (e) {

@@ -158,6 +158,10 @@
 //      Проверка берёт период с живой отрицательной (= доходной по сырому
 //      знаку) статьёй payout_other (кабинет 1, июль-2026, −68 774,48 ₽,
 //      «Выплаты WB (компенсации)» — см. память wb-cabinet-costs-fixed.md).
+//      С 12.10.2026 (решение владельца, docs/metrics-contract.md §19) Σ
+//      считается БЕЗ cost_type='promotion' (оплата рекламы удержанием WB —
+//      та же реклама, что уже вычтена по кампаниям). Проверка 3б: promotion
+//      нет в cabinetCosts, но он есть в cabinetCostsInfo = независимый SQL.
 //   4. cabinetCosts[].label — ни один НЕ равен сырому costType (весь набор
 //      cost_type у WB резолвится статичным словарём WB_COST_LABELS,
 //      unknownCostTypes должен быть 0 на живых данных).
@@ -814,6 +818,7 @@ async function runWbChecks() {
 
   console.log('wbProfitProduct (без nmId):', JSON.stringify(canon.profitProduct));
   console.log('wbProfitCabinet.cabinetCosts:', JSON.stringify(canon.profitCabinet.cabinetCosts));
+  console.log('wbProfitCabinet.cabinetCostsInfo:', JSON.stringify(canon.profitCabinet.cabinetCostsInfo));
   console.log(`wbProfitCabinet.unknownCostTypes: ${canon.profitCabinet.unknownCostTypes}`);
   console.log(`nm_id в периоде (nm_id NOT NULL): ${canon.nmCount}, строк с nm_id IS NULL: ${canon.nullNmRows}`);
   console.log('');
@@ -897,7 +902,17 @@ async function runWbChecks() {
   // cabinetCosts: сырой знак у WB инвертирован относительно Ozon (см.
   // докстроку wbProfitCabinet) — независимая сумма считает −amount_raw,
   // тот же контракт, что отдаёт канон.
-  const indCabinetSignedSum = cabinetCostRows.reduce((acc, r) => acc - num(r.s), 0);
+  // Решение владельца 12.10.2026 (docs/metrics-contract.md §19): оплата
+  // рекламы удержанием WB (cost_type='promotion', «WB Продвижение») — та же
+  // реклама, что уже вычтена по кампаниям (ad_spend), в прибыль НЕ входит.
+  // Литерал 'promotion' здесь НАРОЧНО свой, не WB_COST_INFO_ONLY канона —
+  // проверка независимая.
+  const indCabinetSignedSum = cabinetCostRows
+    .filter((r) => r.cost_type !== 'promotion')
+    .reduce((acc, r) => acc - num(r.s), 0);
+  const indPromotionSigned = cabinetCostRows
+    .filter((r) => r.cost_type === 'promotion')
+    .reduce((acc, r) => acc - num(r.s), 0);
   const negativeRawRows = cabinetCostRows.filter((r) => num(r.s) < 0);
 
   console.log('Независимый SQL (saas_ro):');
@@ -906,7 +921,8 @@ async function runWbChecks() {
   console.log(`  SUM(profit) сырой (все строки, без фильтра is_return) = ${fmtRub(indRawProfit)}`);
   console.log(`  ad_spend(кабинет) = ${fmtRub(indAdSpend)}, налог (calcTotalTax, база=realized, расходы=cogs+logistics+ads+commission) = ${fmtRub(indTax)}`);
   console.log(`  profit независимый = SUM(profit) − ad_spend − налог = ${fmtRub(indProfit)}`);
-  console.log(`  Σ cabinetCosts.amount (нормализованный знак, канон-контракт) = ${fmtRub(indCabinetSignedSum)}`);
+  console.log(`  Σ cabinetCosts.amount (нормализованный знак, канон-контракт, БЕЗ promotion) = ${fmtRub(indCabinetSignedSum)}`);
+  console.log(`  promotion (оплата рекламы удержанием WB, справочно, нормализованный знак) = ${fmtRub(indPromotionSigned)}`);
   if (negativeRawRows.length) {
     console.log(
       `  ⚠️ ${negativeRawRows.length} статья(и) с ОТРИЦАТЕЛЬНЫМ сырым знаком в БД (= доход/возмещение продавцу по докстроке wb_cabinet_costs.py, канон покажет их ПОЛОЖИТЕЛЬНЫМИ): `
@@ -974,6 +990,21 @@ async function runWbChecks() {
     'wbProfitCabinet.profit = wbProfitProduct.profit + Σ cabinetCosts[].amount (знак нормализован каноном)',
     Math.abs(canon.profitCabinet.profit - expectedCabinetProfit) <= TOL,
     `канон=${fmtRub(canon.profitCabinet.profit)}, ожидание=${fmtRub(expectedCabinetProfit)}`
+  );
+
+  // ── Проверка 3б (решение владельца 12.10.2026, §19): promotion НЕ в
+  // cabinetCosts (иначе реклама WB вычтена дважды), но присутствует
+  // справочно в cabinetCostsInfo с той же суммой, что независимый SQL. ──
+  const promoInCosts = canon.profitCabinet.cabinetCosts.filter((c) => c.costType === 'promotion');
+  const promoInfoSum = (canon.profitCabinet.cabinetCostsInfo || [])
+    .filter((c) => c.costType === 'promotion')
+    .reduce((acc, c) => acc + c.amount, 0);
+  const promoInfoPresent = indPromotionSigned === 0
+    || (canon.profitCabinet.cabinetCostsInfo || []).some((c) => c.costType === 'promotion');
+  verdict(
+    'promotion (оплата рекламы удержанием WB) НЕ входит в cabinetCosts/profit, но есть в cabinetCostsInfo = независимый SQL',
+    promoInCosts.length === 0 && promoInfoPresent && Math.abs(promoInfoSum - indPromotionSigned) <= TOL,
+    `в cabinetCosts: ${promoInCosts.length} строк; cabinetCostsInfo promotion=${fmtRub(promoInfoSum)}, независимо=${fmtRub(indPromotionSigned)}`
   );
 
   // ── Проверка 4: labels резолвлены (ни один не равен сырому cost_type, unknownCostTypes=0) ──
