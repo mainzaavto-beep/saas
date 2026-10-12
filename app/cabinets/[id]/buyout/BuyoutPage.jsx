@@ -18,6 +18,8 @@ const iso = (d) => d.toISOString().slice(0, 10);
 const defFrom = () => iso(new Date(Date.now() - 30 * 864e5));
 const defTo = () => iso(new Date(Date.now() - 864e5));
 
+const PLATFORMS = [{ v: "all", l: "Все" }, { v: "wb", l: "Wildberries" }, { v: "ozon", l: "Ozon" }];
+
 const COLS = [
   { key: "ordered", label: "Заказано", tip: "все заказы периода (по дате заказа)" },
   { key: "cancelledPre", label: "Отменено до отгрузки", tip: "отменены, товар к покупателю не ехал — в % не входят" },
@@ -57,18 +59,19 @@ export default function BuyoutPage({ cabinetId }) {
   const [from, setFrom] = useState(defFrom);
   const [to, setTo] = useState(defTo);
   const [q, setQ] = useState("");
+  const [platform, setPlatform] = useState("all");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(() => new Set());
-  const [selected, setSelected] = useState(null); // { nmId, name }
+  const [selected, setSelected] = useState(null); // { platform, nmId, name }
   const { sort, toggle, apply } = useSort("ordered", "desc");
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
     setError(null);
-    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}`)
+    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}&platform=${platform}`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
@@ -78,7 +81,7 @@ export default function BuyoutPage({ cabinetId }) {
       .catch((e) => { console.error("buyout load:", e); if (alive) setError(String(e.message || e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [cabinetId, from, to]);
+  }, [cabinetId, from, to, platform]);
 
   const rows = useMemo(() => {
     const items = data?.items || [];
@@ -87,20 +90,31 @@ export default function BuyoutPage({ cabinetId }) {
     return apply(f, Object.fromEntries(COLS.map((c) => [c.key, (r) => r[c.key]])));
   }, [data, q, apply]);
 
-  const toggleOpen = (nm) => setOpen((cur) => {
+  const rowKey = (it) => `${it.platform}:${it.nmId}`;
+
+  const toggleOpen = (key) => setOpen((cur) => {
     const n = new Set(cur);
-    n.has(nm) ? n.delete(nm) : n.add(nm);
+    n.has(key) ? n.delete(key) : n.add(key);
     return n;
   });
+
+  const changePlatform = (v) => {
+    setPlatform(v);
+    setSelected(null);
+    setOpen(new Set());
+  };
 
   const kpi = data?.kpi;
   return (
     <div style={{ padding: 24, fontFamily: FONT, color: C.ink }}>
       <h1 style={{ fontSize: 22, margin: "0 0 4px" }}>Процент выкупа</h1>
       <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, maxWidth: 900 }}>
-        Wildberries. Берём заказы, сделанные в периоде, и смотрим, чем закончился каждый. % выкупа =
+        Берём заказы, сделанные в периоде, и смотрим, чем закончился каждый. % выкупа =
         выкуплено / (выкуплено + невыкуп + возвраты); заказы в пути и отменённые до отгрузки не входят,
-        самовыкупы исключены. Свежие недели «дозревают» (⏳). Ozon — следующим этапом.
+        самовыкупы исключены. Свежие недели «дозревают» (⏳).
+        Ozon: каждое отправление — выкуп (доставлено), возврат (доставлено и сторнировано), невыкуп
+        (отменено с обратной логистикой) или отмена до отгрузки. Размеров у Ozon нет — каждый размер
+        отдельный товар.
         В юнит-экономике «% выкупа» — коэффициент модели логистики по событиям отчёта реализации
         за 30 дней, это другая величина (контракт метрик §18.4).
       </div>
@@ -108,6 +122,7 @@ export default function BuyoutPage({ cabinetId }) {
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
         <label style={{ fontSize: 13 }}>Заказы с <input type="date" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} /></label>
         <label style={{ fontSize: 13 }}>по <input type="date" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} /></label>
+        <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ padding: "6px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.surface, color: C.ink, minWidth: 240 }} />
         {loading ? <span style={{ fontSize: 13, color: C.muted }}>загрузка…</span> : null}
@@ -125,7 +140,8 @@ export default function BuyoutPage({ cabinetId }) {
         </div>
       ) : null}
 
-      <BuyoutChart cabinetId={cabinetId} nmId={selected?.nmId ?? null} name={selected?.name ?? null}
+      <BuyoutChart cabinetId={cabinetId} platform={selected ? selected.platform : platform}
+        nmId={selected?.nmId ?? null} name={selected?.name ?? null}
         onReset={() => setSelected(null)} />
 
       <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 }}>
@@ -142,25 +158,29 @@ export default function BuyoutPage({ cabinetId }) {
           </thead>
           <tbody>
             {rows.map((it) => {
-              const isOpen = open.has(it.nmId);
-              const isSel = selected?.nmId === it.nmId;
+              const key = rowKey(it);
+              const isOpen = open.has(key);
+              const isSel = selected?.platform === it.platform && selected?.nmId === it.nmId;
               return [
-                <tr key={it.nmId} style={{ background: isSel ? soft("accent", 10) : "transparent", cursor: "pointer" }}
-                  onClick={() => setSelected(isSel ? null : { nmId: it.nmId, name: it.name || it.article })}>
+                <tr key={key} style={{ background: isSel ? soft("accent", 10) : "transparent", cursor: "pointer" }}
+                  onClick={() => setSelected(isSel ? null : { platform: it.platform, nmId: it.nmId, name: it.name || it.article })}>
                   <td style={{ ...td, textAlign: "left", whiteSpace: "normal", minWidth: 240 }}>
                     {it.sizes.length ? (
-                      <span onClick={(e) => { e.stopPropagation(); toggleOpen(it.nmId); }}
+                      <span onClick={(e) => { e.stopPropagation(); toggleOpen(key); }}
                         style={{ display: "inline-block", width: 18, color: C.muted }}>{isOpen ? "▾" : "▸"}</span>
                     ) : <span style={{ display: "inline-block", width: 18 }} />}
                     <b>{it.name || "—"}</b>
-                    <div style={{ fontSize: 12, color: C.muted, marginLeft: 18 }}>{it.article || ""} · {it.nmId}</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginLeft: 18 }}>
+                      <span style={{ fontWeight: 600, color: C.accent }}>{it.platform === "ozon" ? "Ozon" : "WB"}</span>
+                      {" "}· {it.article || ""} · {it.nmId}
+                    </div>
                   </td>
                   {COLS.map((c) => (
                     <td key={c.key} style={td}>{c.key === "buyoutPct" ? <PctCell r={it} /> : num(it[c.key])}</td>
                   ))}
                 </tr>,
                 ...(isOpen ? it.sizes.map((s) => (
-                  <tr key={`${it.nmId}|${s.size}`} style={{ background: soft("line", 10) }}>
+                  <tr key={`${key}|${s.size}`} style={{ background: soft("line", 10) }}>
                     <td style={{ ...td, textAlign: "left", paddingLeft: 38, color: C.muted }}>размер <b style={{ color: C.ink }}>{s.size}</b></td>
                     {COLS.map((c) => (
                       <td key={c.key} style={td}>{c.key === "buyoutPct" ? <PctCell r={s} /> : num(s[c.key])}</td>
@@ -175,6 +195,20 @@ export default function BuyoutPage({ cabinetId }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function Segmented({ value, onChange, options }) {
+  return (
+    <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 7, overflow: "hidden" }}>
+      {options.map((o) => (
+        <button key={o.v} onClick={() => onChange(o.v)}
+          style={{ padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600, border: "none", borderRight: `1px solid ${C.line}`,
+            background: value === o.v ? C.accent : C.surface, color: value === o.v ? "var(--accentInk)" : C.muted }}>
+          {o.l}
+        </button>
+      ))}
     </div>
   );
 }
