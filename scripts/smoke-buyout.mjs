@@ -81,6 +81,17 @@ const checkSummary = async (label, platform, qs, byKeyMap, wantKpi) => {
 await checkSummary('all/default', 'all', '', byKey, kpi);
 await checkSummary('all/includeInactive=1', 'all', '&includeInactive=1', byKey, kpi);
 
+// WB отдельно (явная проверка, возвращена по финальному ревью 12.10.2026) — та же
+// проверка, что для platform=all, но только площадка WB (своё окно то же from..to);
+// ловит регрессию в WB-ветке, которую platform=all мог бы замаскировать суммой с Ozon.
+const bWb = await get(`buyout?platform=wb&from=${from}&to=${to}`);
+check('buyout platform=wb: HTTP 200 без error', bWb.status === 200 && !bWb.data.error, `${bWb.status} ${bWb.data.error || ''}`);
+const kpiWb = bWb.data.kpi;
+const byKeyWb = new Map((bWb.data.items || []).map((i) => [`${i.platform}:${Number(i.nmId)}`, i]));
+console.log(`      WB ${from}..${to}: заказов ${kpiWb?.ordered}, доехало ${kpiWb?.resolved}, выкуп ${kpiWb?.buyoutPct} %, в пути ${kpiWb?.pending}`);
+await checkSummary('wb/default', 'wb', '', byKeyWb, kpiWb);
+await checkSummary('wb/includeInactive=1', 'wb', '&includeInactive=1', byKeyWb, kpiWb);
+
 // Ozon отдельно (канон отправлений, задача 4 плана «Процент выкупа — Ozon», 12.10.2026) —
 // та же проверка, что выше, но только площадка Ozon (своё окно то же from..to).
 const bOz = await get(`buyout?platform=ozon&from=${from}&to=${to}`);
