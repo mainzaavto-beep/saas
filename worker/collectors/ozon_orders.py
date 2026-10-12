@@ -40,6 +40,8 @@ cancellation_initiator — есть и в FBO, и в FBS ответе (пров�
 """
 import os
 import sys
+import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,7 +49,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
-from ozon_client import OzonClient
+from ozon_client import OzonClient, REQUEST_PAUSE_SEC
 from ozon_accruals import resolve_window
 
 STALE_MAX_DAYS = 180  # потолок досбора незавершённых: старше — не переспрашиваем
@@ -150,7 +152,9 @@ def refresh_stale(cli, window_start, sku2pid, offer2pid, now=None):
     for scheme, pn2d in sorted(by_scheme.items()):
         want = set(pn2d)
         rows, found, statuses = [], set(), {}
-        for lo, hi in stale_windows(pn2d.values()):
+        for i, (lo, hi) in enumerate(stale_windows(pn2d.values())):
+            if i:
+                time.sleep(REQUEST_PAUSE_SEC)  # тот же лимит Ozon на частые подряд запросы
             since = datetime.combine(lo, datetime.min.time(), tzinfo=timezone.utc)
             to = datetime.combine(hi, datetime.max.time(), tzinfo=timezone.utc)
             it = cli.iter_postings(since, to) if scheme == "fbo" else cli.iter_fbs_postings(since, to)
@@ -162,10 +166,12 @@ def refresh_stale(cli, window_start, sku2pid, offer2pid, now=None):
                 statuses[p.get("status")] = statuses.get(p.get("status"), 0) + 1
                 rows.extend(_posting_rows(p, scheme, sku2pid, offer2pid))
         clean = [r for r in rows if r["product_id"] is not None]
+        n_orphans = len(rows) - len(clean)
         n = db_pg.upsert_ozon_orders_many(clean)
         written += n
         print(f"[ozon_orders] досбор незавершённых {scheme}: в БД {len(want)}, найдено в API {len(found)}, "
               f"статусы {statuses}, записано строк {n}"
+              + (f", пропущено(нет в каталоге) {n_orphans}" if n_orphans else "")
               + (f", не найдено {len(want - found)}" if want - found else ""), flush=True)
     return written
 
@@ -216,8 +222,19 @@ def collect(since=None, to=None):
     written = db_pg.upsert_ozon_orders_many(clean)
     print(f"[ozon_orders] отправлений fbo {n_postings['fbo']}, fbs {n_postings['fbs']}, записано {written}"
           + (f", пропущено(нет в каталоге) {n_orphans}" if n_orphans else ""), flush=True)
-    written += refresh_stale(cli, since, sku2pid, offer2pid)
+    # Досбор незавершённых — после того, как основное окно уже записано (upsert закоммичен):
+    # его сбой не должен ронять прогон в failed — это partial (exit 3, контракт оркестратора).
+    stale_ok = True
+    try:
+        written += refresh_stale(cli, since, sku2pid, offer2pid)
+    except Exception:
+        stale_ok = False
+        print("[ozon_orders] PARTIAL: досбор незавершённых упал, основное окно записано:", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
     print(f"##OBS rows={written} from={d_from.isoformat()} to={d_to.isoformat()}", flush=True)
+    if not stale_ok:
+        sys.exit(3)
     return written
 
 
