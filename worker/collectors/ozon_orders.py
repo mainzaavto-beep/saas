@@ -26,10 +26,21 @@ ozon_orders», .superpowers/sdd/2026-08-18-orders-vitrina/): /v3/posting/fbo/lis
 выпадали бы из окна) — берётся текущий момент `datetime.now(timezone.utc)`.
 Каждый плановый прогон переспрашивает и идемпотентно освежает status/
 cancel_dt/updated_at всех отправлений, созданных за последние 45 дней.
+
+⚠️ ДОСБОР «ЗАМЁРЗШИХ» (12.10.2026): статус может смениться и позже 45 дней (53 FBO-
+отправления 31.07–01.08 у нас висели в delivering, в API давно cancelled «Покупатель не
+забрал заказ»). После основного окна — refresh_stale(): незавершённые отправления в БД,
+созданные раньше окна, но не старше STALE_MAX_DAYS, переспрашиваются тем же /v3/posting/
+{fbo,fbs}/list узкими окнами вокруг их дат создания (±1 день, соседние дни сливаются).
+/v2/posting/fbo/get не годится — он не отдаёт объект cancellation (проба 12.10.2026).
+
+ПРИЧИНЫ ОТМЕН (миграция 066): cancellation.cancel_reason / cancellation_type /
+cancellation_initiator — есть и в FBO, и в FBS ответе (проверено живым API 12.10.2026);
+канон невыкупа по ним — lib/buyout.js classifyOzonPosting.
 """
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +49,8 @@ if _THIS_DIR not in sys.path:
 import db_pg
 from ozon_client import OzonClient
 from ozon_accruals import resolve_window
+
+STALE_MAX_DAYS = 180  # потолок досбора незавершённых: старше — не переспрашиваем
 
 
 def _resolve_pid(prod, sku2pid, offer2pid):
@@ -48,6 +61,113 @@ def _resolve_pid(prod, sku2pid, offer2pid):
         if pid:
             return pid
     return offer2pid.get(prod.get("offer_id"))
+
+
+def _posting_rows(p, scheme, sku2pid, offer2pid):
+    """Строки tenant.ozon_orders одного отправления (по строке на товар)."""
+    out = []
+    posting_number = p.get("posting_number")
+    status = p.get("status")
+    is_cancel = 1 if status == "cancelled" else 0
+    order_dt = p.get("in_process_at") or p.get("created_at")
+    last_change_dt = p.get("last_change_date") or p.get("shipment_date")
+    analytics = p.get("analytics_data") or {}
+    # FBO кладёт имя склада в warehouse_name (ключа `warehouse` там нет —
+    # из-за него склад был пуст во всех строках, баг вскрыт 27.08),
+    # а FBS — наоборот, в warehouse (проверено живым API 28.08).
+    warehouse = analytics.get("warehouse_name") or analytics.get("warehouse") or ""
+    region = analytics.get("region") or analytics.get("city", "")
+    # Причина отмены (066). У неотменённых Ozon отдаёт пустые строки/null — пишем NULL.
+    cx = p.get("cancellation") or {}
+    cancel_reason = (cx.get("cancel_reason") or None) if is_cancel else None
+    cancellation_type = (cx.get("cancellation_type") or None) if is_cancel else None
+    cancel_initiator = (cx.get("cancellation_initiator") or None) if is_cancel else None
+    products = p.get("products") or p.get("product") or []
+    for prod in products:
+        cancel_dt = last_change_dt if is_cancel else None
+        price_raw = prod.get("price")
+        if isinstance(price_raw, dict):
+            price_val = float(price_raw.get("amount", 0) or 0)
+        elif isinstance(price_raw, (int, float)):
+            price_val = float(price_raw)
+        else:
+            price_val = 0.0
+        qty = int(prod.get("quantity", 1) or 1)
+        out.append({
+            "posting_number": posting_number,
+            "product_id": _resolve_pid(prod, sku2pid, offer2pid),
+            "offer_id": prod.get("offer_id"),
+            "order_dt": order_dt,
+            "last_change_dt": last_change_dt,
+            "in_process_at": p.get("in_process_at"),
+            "status": status,
+            "is_cancel": is_cancel,
+            "cancel_dt": cancel_dt,
+            "qty": qty,
+            "price": price_val,
+            "total": price_val * qty,
+            "warehouse": warehouse,
+            "region": region,
+            "scheme": scheme,
+            "warehouse_id": analytics.get("warehouse_id"),
+            "delivery_type": analytics.get("delivery_type", ""),
+            "shipment_dt": p.get("shipment_date"),
+            "cancel_reason": cancel_reason,
+            "cancellation_type": cancellation_type,
+            "cancel_initiator": cancel_initiator,
+        })
+    return out
+
+
+def stale_windows(dates):
+    """Даты создания (date) → слитые окна [(from_date, to_date)] с запасом ±1 день
+    (order_dt = in_process_at, а фильтр API — по created_at; они могут разойтись)."""
+    days = sorted({d for d in dates})
+    out = []
+    for d in days:
+        lo, hi = d - timedelta(days=1), d + timedelta(days=1)
+        if out and lo <= out[-1][1] + timedelta(days=1):
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def refresh_stale(cli, window_start, sku2pid, offer2pid, now=None):
+    """Досбор незавершённых отправлений старше основного окна (см. шапку модуля).
+    window_start — начало основного окна (datetime UTC). Возвращает число записанных строк."""
+    now = now or datetime.now(timezone.utc)
+    floor = now - timedelta(days=STALE_MAX_DAYS)
+    stale = db_pg.ozon_orders_stale(window_start, floor)
+    if not stale:
+        print("[ozon_orders] досбор незавершённых: нет", flush=True)
+        return 0
+    by_scheme = {}
+    for r in stale:
+        d = datetime.fromisoformat(str(r["order_dt"]).replace("Z", "+00:00")).date()
+        by_scheme.setdefault(r["scheme"], {})[r["posting_number"]] = d
+    written = 0
+    for scheme, pn2d in sorted(by_scheme.items()):
+        want = set(pn2d)
+        rows, found, statuses = [], set(), {}
+        for lo, hi in stale_windows(pn2d.values()):
+            since = datetime.combine(lo, datetime.min.time(), tzinfo=timezone.utc)
+            to = datetime.combine(hi, datetime.max.time(), tzinfo=timezone.utc)
+            it = cli.iter_postings(since, to) if scheme == "fbo" else cli.iter_fbs_postings(since, to)
+            for p in it:
+                pn = p.get("posting_number")
+                if pn not in want:
+                    continue
+                found.add(pn)
+                statuses[p.get("status")] = statuses.get(p.get("status"), 0) + 1
+                rows.extend(_posting_rows(p, scheme, sku2pid, offer2pid))
+        clean = [r for r in rows if r["product_id"] is not None]
+        n = db_pg.upsert_ozon_orders_many(clean)
+        written += n
+        print(f"[ozon_orders] досбор незавершённых {scheme}: в БД {len(want)}, найдено в API {len(found)}, "
+              f"статусы {statuses}, записано строк {n}"
+              + (f", не найдено {len(want - found)}" if want - found else ""), flush=True)
+    return written
 
 
 def collect(since=None, to=None):
@@ -89,54 +209,14 @@ def collect(since=None, to=None):
     for scheme, postings in sources:
         for p in postings:
             n_postings[scheme] += 1
-            posting_number = p.get("posting_number")
-            status = p.get("status")
-            is_cancel = 1 if status == "cancelled" else 0
-            order_dt = p.get("in_process_at") or p.get("created_at")
-            last_change_dt = p.get("last_change_date") or p.get("shipment_date")
-            analytics = p.get("analytics_data") or {}
-            # FBO кладёт имя склада в warehouse_name (ключа `warehouse` там нет —
-            # из-за него склад был пуст во всех строках, баг вскрыт 27.08),
-            # а FBS — наоборот, в warehouse (проверено живым API 28.08).
-            warehouse = analytics.get("warehouse_name") or analytics.get("warehouse") or ""
-            region = analytics.get("region") or analytics.get("city", "")
-            products = p.get("products") or p.get("product") or []
-            for prod in products:
-                cancel_dt = last_change_dt if is_cancel else None
-                price_raw = prod.get("price")
-                if isinstance(price_raw, dict):
-                    price_val = float(price_raw.get("amount", 0) or 0)
-                elif isinstance(price_raw, (int, float)):
-                    price_val = float(price_raw)
-                else:
-                    price_val = 0.0
-                qty = int(prod.get("quantity", 1) or 1)
-                rows.append({
-                    "posting_number": posting_number,
-                    "product_id": _resolve_pid(prod, sku2pid, offer2pid),
-                    "offer_id": prod.get("offer_id"),
-                    "order_dt": order_dt,
-                    "last_change_dt": last_change_dt,
-                    "in_process_at": p.get("in_process_at"),
-                    "status": status,
-                    "is_cancel": is_cancel,
-                    "cancel_dt": cancel_dt,
-                    "qty": qty,
-                    "price": price_val,
-                    "total": price_val * qty,
-                    "warehouse": warehouse,
-                    "region": region,
-                    "scheme": scheme,
-                    "warehouse_id": analytics.get("warehouse_id"),
-                    "delivery_type": analytics.get("delivery_type", ""),
-                    "shipment_dt": p.get("shipment_date"),
-                })
+            rows.extend(_posting_rows(p, scheme, sku2pid, offer2pid))
 
     clean = [r for r in rows if r["product_id"] is not None]
     n_orphans = len(rows) - len(clean)
     written = db_pg.upsert_ozon_orders_many(clean)
     print(f"[ozon_orders] отправлений fbo {n_postings['fbo']}, fbs {n_postings['fbs']}, записано {written}"
           + (f", пропущено(нет в каталоге) {n_orphans}" if n_orphans else ""), flush=True)
+    written += refresh_stale(cli, since, sku2pid, offer2pid)
     print(f"##OBS rows={written} from={d_from.isoformat()} to={d_to.isoformat()}", flush=True)
     return written
 

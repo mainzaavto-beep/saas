@@ -940,6 +940,10 @@ _OZ_ORDERS_MAP = [
     # её заполняет update_ozon_delivered_dt() из начислений.
     ("scheme", "scheme"), ("warehouse_id", "warehouse_id"),
     ("delivery_type", "delivery_type"), ("shipment_dt", "shipment_dt"),
+    # причины отмен (066): cancellation.{cancel_reason, cancellation_type,
+    # cancellation_initiator} — FBO и FBS; канон невыкупа Ozon в lib/buyout.js.
+    ("cancel_reason", "cancel_reason"), ("cancellation_type", "cancellation_type"),
+    ("cancel_initiator", "cancel_initiator"),
 ]
 _OZ_SALES_MAP = [
     ("posting_number", "posting_number"), ("product_id", "product_id"),
@@ -953,6 +957,21 @@ _OZ_SALES_MAP = [
 
 def upsert_ozon_orders_many(rows):
     return _upsert_raw_multi_pk("ozon_orders", ["posting_number", "product_id"], _OZ_ORDERS_MAP, rows)
+
+
+def ozon_orders_stale(created_before, created_after):
+    """Незавершённые (не delivered/cancelled) отправления кабинета, созданные в
+    [created_after, created_before) — то, что основное окно ozon_orders (45 дн по дате
+    создания) больше не переспрашивает и что иначе замерзает (12.10.2026: 53 FBO-
+    отправления 31.07–01.08 висели в delivering, а в API давно cancelled).
+    Возвращает [{posting_number, scheme, order_dt}] — по одной строке на отправление."""
+    return query(
+        "SELECT posting_number, COALESCE(scheme, 'fbo') AS scheme, MIN(order_dt) AS order_dt "
+        "FROM tenant.ozon_orders "
+        "WHERE status NOT IN ('delivered', 'cancelled') "
+        "  AND order_dt::timestamptz < %s AND order_dt::timestamptz >= %s "
+        "GROUP BY posting_number, COALESCE(scheme, 'fbo')",
+        (created_before, created_after))
 
 
 def upsert_ozon_sales_many(rows):
