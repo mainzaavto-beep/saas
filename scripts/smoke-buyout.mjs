@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // scripts/smoke-buyout.mjs — смоук «Процента выкупа» (11.10.2026, доп. 12.10 — финальное
-// ревью). Только чтение. Проверяет:
+// ревью и канон Ozon, задача 4). Только чтение. Проверяет:
 //   1) /buyout 200; Σ размеров = товар по каждому счётчику; Σ товаров = KPI;
 //   2) % = sold/resolved на каждой строке; resolved = sold+refused+returned;
-//   3) WB-выкуп Сводки (platform=wb, то же окно) = выкуп страницы — по товарам и в итогах,
-//      И при дефолтном фильтре статуса (без includeInactive), И при includeInactive=1 —
-//      иначе баг «inactive без sold, но с отказами/возвратами когорты выпадает из
-//      дефолтной Сводки вместе со своими счётчиками выкупа» (нашли 12.10) мог бы
-//      вернуться незамеченным (были PASS только на includeInactive=1).
-//   4) недели: 13 штук, последняя — текущая неделя (по МСК, как asOf в API).
+//   3) выкуп Сводки (platform=all, то же окно) = выкуп страницы (platform=all) — по товарам
+//      (ключ `${platform}:${nmId}`) и в итогах, И при дефолтном фильтре статуса
+//      (без includeInactive), И при includeInactive=1 — иначе баг «inactive без sold, но
+//      с отказами/возвратами когорты выпадает из дефолтной Сводки вместе со своими
+//      счётчиками выкупа» (нашли 12.10) мог бы вернуться незамеченным (были PASS только
+//      на includeInactive=1);
+//   3б) то же самое отдельно для platform=ozon (страница ↔ Сводка, канон отправлений,
+//      задача 4 плана «Процент выкупа — Ozon»);
+//   4) недели (platform=all): 13 штук, последняя — текущая неделя (по МСК, как asOf в API).
 // Аутентификация — sealed-cookie, как scripts/smoke-purchase-need.mjs.
 // Запуск: node scripts/smoke-buyout.mjs [cabinetId=1] [baseUrl]
 import { readFileSync } from 'node:fs';
@@ -38,7 +41,7 @@ const get = async (path) => {
 const K = ['ordered', 'self', 'returned', 'sold', 'refused', 'cancelledPre', 'pending'];
 const r2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
 
-const b = await get('buyout');
+const b = await get('buyout?platform=all');
 check('buyout: HTTP 200 без error', b.status === 200 && !b.data.error, `${b.status} ${b.data.error || ''}`);
 const { from, to, kpi, items = [] } = b.data;
 console.log(`      окно ${from}..${to}: заказов ${kpi?.ordered}, доехало ${kpi?.resolved}, выкуп ${kpi?.buyoutPct} %, в пути ${kpi?.pending}`);
@@ -46,7 +49,7 @@ console.log(`      окно ${from}..${to}: заказов ${kpi?.ordered}, до
 const badSizes = [];
 for (const it of items) {
   if (!it.sizes.length) continue;
-  for (const k of K) if (it.sizes.reduce((a, s) => a + s[k], 0) !== it[k]) badSizes.push(`${it.nmId}.${k}`);
+  for (const k of K) if (it.sizes.reduce((a, s) => a + s[k], 0) !== it[k]) badSizes.push(`${it.platform}:${it.nmId}.${k}`);
 }
 check('Σ размеров = товар', badSizes.length === 0, badSizes);
 const badKpi = K.filter((k) => items.reduce((a, i) => a + i[k], 0) !== kpi[k]);
@@ -56,26 +59,39 @@ const badPct = [kpi, ...items, ...items.flatMap((i) => i.sizes)].filter((r) =>
   r.buyoutPct !== (r.resolved > 0 ? r2(100 * r.sold / r.resolved) : null));
 check('% = sold/resolved, resolved = sold+refused+returned', badPct.length === 0, badPct.map((r) => r.nmId ?? r.size ?? 'kpi'));
 
-const byNm = new Map(items.map((i) => [Number(i.nmId), i]));
-const checkSummary = async (label, qs) => {
-  const s = await get(`products-summary?platform=wb&from=${from}&to=${to}${qs}`);
-  check(`products-summary${qs}: HTTP 200`, s.status === 200 && !s.data.error, `${s.status} ${s.data.error || ''}`);
+// Ключ сравнения с Сводкой — platform:nmId (страница при platform=all несёт оба МП с
+// общим nmId-пространством, Сводка — тот же ключ `${it.platform}:${Number(it.nm)}`).
+const byKey = new Map(items.map((i) => [`${i.platform}:${Number(i.nmId)}`, i]));
+const checkSummary = async (label, platform, qs, byKeyMap, wantKpi) => {
+  const s = await get(`products-summary?platform=${platform}&from=${from}&to=${to}${qs}`);
+  check(`products-summary platform=${platform}${qs}: HTTP 200`, s.status === 200 && !s.data.error, `${s.status} ${s.data.error || ''}`);
   const diff = [];
   for (const it of s.data.items || []) {
-    const p = byNm.get(Number(it.nm));
+    const key = `${it.platform}:${Number(it.nm)}`;
+    const p = byKeyMap.get(key);
     const want = p ? p.buyoutPct : null;
-    if (it.buyoutPct !== want) diff.push(`${it.nm}: сводка ${it.buyoutPct} ≠ страница ${want}`);
+    if (it.buyoutPct !== want) diff.push(`${key}: сводка ${it.buyoutPct} ≠ страница ${want}`);
   }
   check(`выкуп по товарам: Сводка (${label}) = страница`, diff.length === 0, diff);
-  check(`выкуп итогов: Сводка (${label}) = страница`, s.data.totals?.buyoutPct === kpi.buyoutPct,
-    `${s.data.totals?.buyoutPct} ≠ ${kpi.buyoutPct}`);
+  check(`выкуп итогов: Сводка (${label}) = страница`, s.data.totals?.buyoutPct === wantKpi.buyoutPct,
+    `${s.data.totals?.buyoutPct} ≠ ${wantKpi.buyoutPct}`);
 };
 // Дефолтный фильтр статуса (без includeInactive) — ровно то, что видит владелец на
 // «Сводке по товарам» по умолчанию; именно здесь нашлась находка 1 финального ревью.
-await checkSummary('default', '');
-await checkSummary('includeInactive=1', '&includeInactive=1');
+await checkSummary('all/default', 'all', '', byKey, kpi);
+await checkSummary('all/includeInactive=1', 'all', '&includeInactive=1', byKey, kpi);
 
-const w = await get('buyout?series=1');
+// Ozon отдельно (канон отправлений, задача 4 плана «Процент выкупа — Ozon», 12.10.2026) —
+// та же проверка, что выше, но только площадка Ozon (своё окно то же from..to).
+const bOz = await get(`buyout?platform=ozon&from=${from}&to=${to}`);
+check('buyout platform=ozon: HTTP 200 без error', bOz.status === 200 && !bOz.data.error, `${bOz.status} ${bOz.data.error || ''}`);
+const kpiOz = bOz.data.kpi;
+const byKeyOz = new Map((bOz.data.items || []).map((i) => [`${i.platform}:${Number(i.nmId)}`, i]));
+console.log(`      Ozon ${from}..${to}: заказов ${kpiOz?.ordered}, доехало ${kpiOz?.resolved}, выкуп ${kpiOz?.buyoutPct} %, в пути ${kpiOz?.pending}`);
+await checkSummary('ozon/default', 'ozon', '', byKeyOz, kpiOz);
+await checkSummary('ozon/includeInactive=1', 'ozon', '&includeInactive=1', byKeyOz, kpiOz);
+
+const w = await get('buyout?series=1&platform=all');
 const monday = weekStart(todayMsk());
 check('недели: 13, последняя — текущая', w.data.weeks?.length === 13 && w.data.weeks[12].week === monday,
   `${w.data.weeks?.length} ${w.data.weeks?.[12]?.week} ≠ ${monday}`);

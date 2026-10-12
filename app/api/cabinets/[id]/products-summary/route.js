@@ -8,7 +8,7 @@ import { statusMap } from "@/lib/finItems.js";
 import { ZERO_PROFIT } from "@/lib/profitForms.js";
 import { defaultPeriod } from "@/lib/period.js";
 import { aggregateBuyout, todayMsk } from "@/lib/buyout.js";
-import { loadWbBuyoutRows } from "@/lib/buyoutData.js";
+import { loadWbBuyoutRows, loadOzonBuyoutRows } from "@/lib/buyoutData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -236,7 +236,7 @@ function round2(x) { return Math.round((x + Number.EPSILON) * 100) / 100; }
 function aggTotals(items) {
   const t = {
     ordered: 0, sold: 0, cancelled: 0, returns: 0, selfBuyout: 0,
-    buyoutSold: 0, buyoutResolved: 0, buyoutLegacy: false,
+    buyoutSold: 0, buyoutResolved: 0,
     orderRub: 0, salesRub: 0, costRub: 0, commission: 0, logistics: 0,
     acquiring: 0, loyalty: 0, tax: 0, profit: 0, adSpend: 0, stock: 0,
     returnLogistics: 0,
@@ -255,7 +255,6 @@ function aggTotals(items) {
     t.selfBuyout += i.selfBuyout || 0;
     t.buyoutSold += i.buyoutSold || 0;
     t.buyoutResolved += i.buyoutResolved || 0;
-    if (i.buyoutLegacy) t.buyoutLegacy = true;
     t.orderRub += i.orderRub || 0;
     t.salesRub += i.salesRub || 0;
     t.costRub += i.costRub || 0;
@@ -675,7 +674,6 @@ async function collectWB(from, toEnd, shopName, taxMode) {
       sold, returns, selfBuyout: r.selfBuyout || 0,
       buyoutSold: buyoutByNm.get(Number(nm))?.sold || 0,
       buyoutResolved: buyoutByNm.get(Number(nm))?.resolved || 0,
-      buyoutLegacy: false,
       orderRub: round2(orderRub), salesRub: f.revenue,
       // «Три цены» канона (спека 2026-09-06): salesRub = продажи по цене со
       // скидкой продавца, spp = скидка WB, realized = заплатил покупатель,
@@ -886,6 +884,13 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
   // Один batch-вызов на ВЕСЬ каталог вместо 2×N скалярных (задача 3 плана
   // «канон волна 2») — SQL-число теперь не растёт с числом товаров.
   const profitBatch = await ozProfitProductBatch(db, taxMode, { from, to });
+  // % выкупа Ozon — КАНОН lib/buyout.js (ведро на отправление, утверждён владельцем
+  // 12.10.2026, задача 4 плана): та же когорта и формула, что на странице «Процент
+  // выкупа», а не отдельное смешение популяций.
+  const asOf = todayMsk();
+  const ozBuyoutByPid = new Map(
+    aggregateBuyout(await loadOzonBuyoutRows(from, to), asOf).items.map((b) => [b.nmId, b])
+  );
   const out = [];
   for (const r of rows) {
     const nm = r.nm;
@@ -913,11 +918,8 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
       cat: r.grp || "", im_url: r.im_url || null, platform: "ozon", shop: shopName,
       ordered: o.ordered, cancelled: o.cancelled,
       sold, returns, selfBuyout: r.selfBuyout || 0,
-      // % выкупа Ozon — ПРЕЖНЯЯ формула sold/(sold+returns+cancelled) (смешение популяций,
-      // спека 2026-10-11 §2): перевод на когорту — отдельный этап (§8), до него флаг.
-      buyoutSold: r.sold || 0,
-      buyoutResolved: (r.sold || 0) + (r.returns || 0) + (o.cancelled || 0),
-      buyoutLegacy: true,
+      buyoutSold: ozBuyoutByPid.get(Number(nm))?.sold || 0,
+      buyoutResolved: ozBuyoutByPid.get(Number(nm))?.resolved || 0,
       orderRub: round2(o.orderRub), salesRub: f.revenue,
       // Симметрия формы с WB (lib/ozonMetrics.js:ozNetForm): spp = 0 (СПП у
       // Ozon нет), realized = revenue, payout = revenue − commission −
