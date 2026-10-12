@@ -69,7 +69,7 @@ const buildRows = (taxLabel, hasWb, hasOzon) => [
   // Кабинетные расходы — знаковая сумма статей (расход отрицателен, возмещение/
   // доход положителен), см. cabinetCosts[] ниже для расшифровки по статьям.
   { label: "Кабинетные расходы", field: "cabinetCostsTotal", kind: "sub", showPct: true },
-  { label: "ЧИСТАЯ ПРИБЫЛЬ", field: "profit", kind: "h0", showPct: false },
+  { label: "ОПЕРАЦИОННАЯ ПРИБЫЛЬ", field: "profit", kind: "h0", showPct: false },
 ];
 
 const valOf = (row, total) => {
@@ -142,7 +142,7 @@ export default function PnlPage({ cabinetId }) {
           {/* KPI-плашки по всему диапазону */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 18 }}>
             <Card label="Выручка" value={moneyShort(data.total.revenue)} />
-            <Card label="Чистая прибыль" value={moneyShort(data.total.profit)} tone={data.total.profit >= 0 ? C.pos : C.neg}
+            <Card label="Операционная прибыль" value={moneyShort(data.total.profit)} tone={data.total.profit >= 0 ? C.pos : C.neg}
               sub={data.total.revenue ? `рентабельность ${((data.total.profit / data.total.revenue) * 100).toFixed(1)}%` : null} />
             <Card label="Валовая прибыль" value={moneyShort(data.total.grossProfit)} tone={data.total.grossProfit >= 0 ? C.pos : C.neg} />
             {/* forPay — Σ по площадкам: у WB это ФАКТ (Σ cost_value_pay из
@@ -279,7 +279,7 @@ export default function PnlPage({ cabinetId }) {
                 </tbody>
               </table>
               {/* Справочные статьи (cabinetCostsInfo канона) — НЕ входят ни в
-                  «Кабинетные расходы», ни в чистую прибыль. WB: оплата рекламы
+                  «Кабинетные расходы», ни в операционную прибыль. WB: оплата рекламы
                   удержанием «WB Продвижение» — та же реклама, что уже вычтена
                   строкой «Реклама» по кампаниям (docs/metrics-contract.md §19,
                   решение владельца 12.10.2026). */}

@@ -293,7 +293,7 @@ function FinSections({ r }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 14 }}>
         <Kpi label="Выручка (мес.)" value={money(pnl.revenue)} accent />
         <Kpi label="Валовая прибыль" value={money(pnl.gross_profit)} pos={(pnl.gross_profit || 0) >= 0} />
-        <Kpi label="Чистая прибыль" value={money(pnl.net_profit)} pos={(pnl.net_profit || 0) >= 0} />
+        <Kpi label="Операционная прибыль" value={money(pnl.net_profit)} pos={(pnl.net_profit || 0) >= 0} />
         <Kpi label="Маржа" value={pct(m.margin_pct)} pos={(m.margin_pct || 0) >= 10} />
         <Kpi label="ДРР" value={pct(m.drr_pct)} pos={(m.drr_pct || 0) < 25} />
       </div>
