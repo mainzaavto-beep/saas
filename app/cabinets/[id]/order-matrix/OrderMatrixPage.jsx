@@ -117,7 +117,7 @@ export default function OrderMatrixPage({ cabinetId }) {
       </div>
 
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "auto", maxHeight: "calc(100vh - 260px)" }}>
-        <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 12.5, minWidth: "100%" }}>
+        <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 15, minWidth: "100%" }}>
           <thead>
             <tr>
               <SortTh colKey="name" sort={sort} toggle={toggle} style={{ ...thBase, ...stickyLeft, zIndex: 3, textAlign: "left", minWidth: 280 }}>Артикул</SortTh>
@@ -126,13 +126,13 @@ export default function OrderMatrixPage({ cabinetId }) {
                 const wd = dayOf(d);
                 return (
                   <SortTh key={d} colKey={`d:${d}`} sort={sort} toggle={toggle} title={d}
-                    style={{ ...thBase, textAlign: "center", minWidth: 44, background: wd === 0 || wd === 6 ? soft("warn", 8) : C.surface }}>
+                    style={{ ...thBase, textAlign: "center", minWidth: 54, background: wd === 0 || wd === 6 ? soft("warn", 8) : C.surface }}>
                     <div>{ddmm(d)}</div><div style={{ fontSize: 9.5, color: C.faint, fontWeight: 500 }}>{WD[wd]}</div>
                   </SortTh>
                 );
               })}
               <SortTh colKey="today" sort={sort} toggle={toggle} title={`${data.today} — день ещё идёт`}
-                style={{ ...thBase, textAlign: "center", minWidth: 52, borderLeft: `1px solid ${C.line}` }}>
+                style={{ ...thBase, textAlign: "center", minWidth: 64, borderLeft: `1px solid ${C.line}` }}>
                 <div>Сегодня</div><div style={{ fontSize: 9.5, color: C.faint, fontWeight: 500 }}>{ddmm(data.today)}</div>
               </SortTh>
             </tr>
@@ -149,7 +149,7 @@ export default function OrderMatrixPage({ cabinetId }) {
                       ? <img src={r.imUrl} alt="" style={{ width: 30, height: 30, objectFit: "cover", borderRadius: 5, flex: "none" }} />
                       : <div style={{ width: 30, height: 30, borderRadius: 5, background: soft("line", 50), flex: "none" }} />}
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ lineHeight: 1.2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.2, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
                       <div style={{ fontSize: 10.5, color: C.faint }}>
                         <span style={{ fontWeight: 700, color: r.platform === "wb" ? C.accent : C.pink }}>{r.platform === "wb" ? "WB" : "Ozon"}</span>
                         {" "}{r.sku}{r.article ? ` · ${r.article}` : ""}{r.inactive ? " · неактивен" : ""}
@@ -196,7 +196,7 @@ function Cell({ v, max, date }) {
   return (
     <td style={{ ...tdBase, textAlign: "center", background: soft("accent", pct), fontWeight: 600 }}
       title={`${date}: ${n} шт${v.c ? `, из них отменено ${v.c}` : ""}`}>
-      {n}{v.c ? <sup style={{ color: C.neg, fontSize: 8.5, marginLeft: 1 }}>{v.c}</sup> : null}
+      {n}{v.c ? <sup style={{ color: C.neg, fontSize: 10.5, marginLeft: 1 }}>{v.c}</sup> : null}
     </td>
   );
 }
@@ -244,5 +244,5 @@ const inputStyle = { padding: "6px 10px", borderRadius: 6, fontSize: 13, backgro
 const btnStyle = { padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, cursor: "pointer" };
 const stickyLeft = { position: "sticky", left: 0, background: C.surface, zIndex: 1, borderRight: `1px solid ${C.line}` };
 const thBase = { position: "sticky", top: 0, zIndex: 2, background: C.surface, padding: "8px 6px", fontWeight: 600, fontSize: 11, color: C.muted, borderBottom: `1px solid ${C.line}` };
-const tdBase = { padding: "5px 6px", borderTop: `1px solid ${soft("line", 60)}`, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
+const tdBase = { padding: "7px 8px", borderTop: `1px solid ${soft("line", 60)}`, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
 const tdFoot = { ...tdBase, position: "sticky", bottom: 0, background: C.surface, fontWeight: 800, borderTop: `1px solid ${C.line}` };
