@@ -26,6 +26,7 @@ const MENU = [
     items: [
       { href: "/rnp", label: "РНП (пульс)" },
       { href: "/summary", label: "По товарам" },
+      { href: "/order-matrix", label: "Матрица заказов" },
       { href: "/orders", label: "Заказы" },
       { href: "/geo", label: "География" },
       { href: "/timing", label: "Заказы по времени" },
