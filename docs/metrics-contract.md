@@ -2839,6 +2839,10 @@ API `app/api/cabinets/[id]/search/route.js`) — это заказы покуп�
 
 ## 18. Процент выкупа (с 2026-10-11)
 
+**Только FBO (решение владельца 14.10.2026):** в когорту берутся заказы со складов маркетплейса —
+WB `wb_orders.warehouse_type = 'Склад WB'`, Ozon `ozon_orders.scheme = 'fbo'`; FBS («Склад продавца» / `fbs`)
+в процент выкупа не входит ни на странице, ни в «Сводке по товарам» (`lib/buyoutData.js`).
+
 Спека `docs/superpowers/specs/2026-10-11-buyout-page-design.md`. Код `lib/buyout.js` (ядро),
 `lib/buyoutData.js` (данные), страница `/buyout`, Сводка `products-summary`.
 

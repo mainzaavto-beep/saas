@@ -383,7 +383,7 @@ Anthropic отвечает 403 «Request not allowed».
   `lib/bonus.js` (тесты `lib/__tests__/bonus.test.mjs`), данные `lib/bonusData.js`, миграция
   064. Менеджер видит только свою карточку (user_id из сессии), наблюдатель — 403.
   Смоук `node scripts/smoke-bonus.mjs 1`. Спека `docs/superpowers/specs/2026-10-08-managers-bonus-design.md`.
-- **Процент выкупа (с 2026-10-11)** — страница `/buyout` (меню «Товары»), API
+- **Процент выкупа (с 2026-10-11)** — **только FBO** (с 14.10.2026: WB `warehouse_type='Склад WB'`, Ozon `scheme='fbo'`; FBS не входит) — страница `/buyout` (меню «Товары»), API
   `/api/cabinets/[id]/buyout` (`?series=1[&nm=]` — 13 недель). WB когортно по дате заказа:
   судьба каждого `srid` (самовыкуп → возврат → выкуп → невыкуп по логистике «К клиенту при
   отмене» → отмена до отгрузки > 7 дн → в пути); `% = выкуп / (выкуп + невыкуп + возврат)`;
