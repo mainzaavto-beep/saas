@@ -765,11 +765,15 @@ async function collectOzon(from, toEnd, shopName, taxMode) {
   // Считаем orderRub = SUM(price * qty) из orders по order_dt. У Ozon цена хранится
   // в `price` (за единицу), `qty` — количество. Не все строки имеют order_dt в
   // периоде — фильтруем по substr(order_dt,1,10).
+  // «Заказано» (решение владельца 14.10.2026): ВСЕ заказы, включая отменённые, в штуках —
+  // как у WB выше (COUNT(*) без фильтра) и на «Матрице заказов» (ozOrdersAllByDay). До
+  // 14.10 у Ozon было «без отмен и в отправлениях» — та же колонка на двух площадках
+  // значила разное; orderRub и avgCheck = orderRub/ordered теперь на одной базе.
   const ord = {};
   for (const r of await db.prepare(
     `SELECT product_id,
-            SUM(CASE WHEN is_cancel=0 THEN 1 ELSE 0 END) AS ordered,
-            SUM(CASE WHEN is_cancel=1 THEN 1 ELSE 0 END) AS cancelled,
+            SUM(COALESCE(qty,1)) AS ordered,
+            SUM(CASE WHEN is_cancel=1 THEN COALESCE(qty,1) ELSE 0 END) AS cancelled,
             SUM(price * qty) AS orderRub
      FROM orders
      WHERE substr(order_dt,1,10)>=? AND substr(order_dt,1,10)<=?
