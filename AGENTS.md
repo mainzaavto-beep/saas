@@ -33,6 +33,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Дашборд показателей (KPI-плитки) | `lib/kpiDashboard.js`, `lib/kpiDashboardData.js`, `/kpi` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
+| Платёжный календарь / план поступлений | `lib/paymentCalendar.js`, `lib/paymentCalendarData.js`, `/fin-calendar`, `/fin-income`, миграция 070 |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
 | Запуск воркера (systemd) | `/etc/systemd/system/saas-*.service` + `worker/run_saas_*.sh` |
@@ -424,6 +425,24 @@ Anthropic отвечает 403 «Request not allowed».
   `node scripts/smoke-kpi.mjs 1` (сверка с `/pnl` и Сводкой). Остаток (Сводка и дашборд) — «доступно» на обеих
   площадках: WB `wb_daily_stock.quantity`, как `/stocks` (решение владельца 15.10.2026; до этого Сводка брала WB
   `quantity_full` с «в пути» — остаток и оборачиваемость WB были завышены).
+- **Платёжный календарь и план поступлений (с 2026-10-15)** — одна таблица `tenant.dds_movements`
+  (`planned`→`paid`, `source_kind` manual/recurring/purchase/mp_payout) + шаблоны повторов
+  `tenant.dds_recurring` (раскладка на 92 дня вперёд лениво при открытии календаря, идемпотентно по
+  `source_ref`). Партия закупки → до 4 платежей (предоплата/остаток/карго/ФФ, Σ = `calc_Z`; остаток
+  поставщику — по курсу ОПЛАТЫ `R×U`, решение владельца 15.10, а не `S=M×R`); синхронизация — в той же
+  транзакции, что сохранение партии (`syncPurchasePayments`/`archivePurchasePayments`), оплаченные и
+  сдвинутые руками (`date_locked`) строки не перезаписываются. Платежи партий из истории (созданных до
+  этой задачи) бэкфиллены со статусом `paid` (у партии `pay_status='paid'`, оплата по факту уже прошла).
+  Прогноз выплат — `wbCashPayoutByWeek` (неделя Пн–Вс, выплата в настраиваемый день след. недели,
+  дефолт среда) и `ozPayoutByDay` (окна 1–15/16–конец, выплата 20-го/5-го) в `lib/wbMetrics.js`/
+  `lib/ozonMetrics.js`, контракт §21; дни выплат — `auth.cabinets.settings.payouts`. Прогнозная строка с
+  датой выплаты в прошлом показывается «просрочено», пока не отмечена «получено» (тогда пишется факт в
+  `dds_movements`, `source_kind='mp_payout'`). Страницы `/fin-calendar` (расходы) и `/fin-income`
+  (поступления), общие вкладки `FinanceMoneyTabs`; старый «План платежей» (`payment-plan`,
+  `lib/calendarCalc.js`) удалён. Тесты `lib/__tests__/paymentCalendar{,Guard}.test.mjs`, смоук
+  `node scripts/smoke-payment-calendar.mjs 1`. ⚠️ Активная вкладка верхнего меню не подсвечивается на
+  `/fin-calendar`/`/fin-income` — старая проблема подсветки топ-меню, относится к проекту навигации
+  (разделы сверху/подразделы слева), не к этой задаче.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
