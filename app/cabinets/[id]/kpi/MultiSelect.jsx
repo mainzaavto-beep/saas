@@ -9,10 +9,11 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
   const ref = useRef(null);
   const btnRef = useRef(null);
   // Якорь выпадашки считается при открытии от реального положения кнопки (getBoundingClientRect) —
-  // на узком экране (~360-390px) кнопка может стоять посередине ряда фильтров, и left:0 от неё
-  // уводит список за правый край вьюпорта (горизонтальная прокрутка страницы). Если не помещается
-  // справа — якорим от правого края кнопки (right:0) и сужаем до доступной ширины.
-  const [dropStyle, setDropStyle] = useState({ left: 0, right: "auto", width: 300 });
+  // на узком экране (~360-390px) кнопка может стоять посередине ряда фильтров. Бинарный left:0/
+  // right:0 этого не чинит: right:0 от кнопки в середине ряда уводит ЛЕВЫЙ край списка за экран
+  // (clip слева). Поэтому offset — смещение относительно кнопки, которое держит сам список
+  // (не кнопку) в границах [16, vw-16].
+  const [dropStyle, setDropStyle] = useState({ left: 0, width: 300 });
   useEffect(() => {
     const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", close);
@@ -23,7 +24,8 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
       const rect = btnRef.current.getBoundingClientRect();
       const vw = window.innerWidth;
       const w = Math.min(300, vw - 32);
-      setDropStyle(rect.left + 300 > vw - 16 ? { left: "auto", right: 0, width: w } : { left: 0, right: "auto", width: w });
+      const left = Math.max(16, Math.min(rect.left, vw - w - 16));
+      setDropStyle({ left: left - rect.left, width: w });
     }
     setOpen((o) => !o);
   };
@@ -44,7 +46,7 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
       {open && (
         <div style={{
           position: "absolute", zIndex: 20, top: "calc(100% + 4px)", maxWidth: "90vw",
-          left: dropStyle.left, right: dropStyle.right, width: dropStyle.width,
+          left: dropStyle.left, width: dropStyle.width,
           background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 8,
           boxShadow: `0 8px 24px ${soft("ink", 15)}`,
         }}>
