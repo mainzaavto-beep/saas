@@ -132,17 +132,16 @@ export default function PurchasesPage({ cabinetId }) {
     reload();
   }
 
-  // Завершить закупку → переместить партию на склад/ФФ + скрыть из активных (archived).
+  // «✓ Доставлено» → партия уходит на страницу «Доставлено на склад» (ждёт приёмки ФФ).
   async function completeToStock(it) {
-    if (!confirm(`Завершить партию «${it.supplier_name || "#" + it.id}»?\n` +
-      `Товар (${num(it.qty)} шт) с себестоимостью ${money(it.unit_cost)} попадёт в «Остатки склад/ФФ»,\n` +
-      `а сама партия скроется из активных закупок.`)) return;
+    if (!confirm(`Партия «${it.supplier_name || "#" + it.id}» доставлена на склад?\n` +
+      `Она скроется из активных закупок и появится в «Доставлено на склад» — там отметите приёмку по артикулам.`)) return;
     const r = await fetch(`/api/cabinets/${cabinetId}/purchases`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "complete_to_stock", id: it.id }),
     });
     const d = await r.json();
-    if (!r.ok || d.error) { alert("Не завершилось: " + (d.error || "")); return; }
+    if (!r.ok || d.error) { alert("Не отметилось: " + (d.error || "")); return; }
     if (expanded === it.id) setExpanded(null);
     reload();
   }
@@ -408,7 +407,7 @@ function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reloa
       <td style={{ padding: "6px 8px", verticalAlign: "middle" }}>{renderPayStatus(it)}</td>
       <td style={tdRight}>
         {!it.archived && (
-          <button onClick={() => onComplete(it)} style={{ ...miniBtn, color: C.pos, marginRight: 4 }} title="Завершить → переместить на склад/ФФ">✓↧ склад</button>
+          <button onClick={() => onComplete(it)} style={{ ...miniBtn, color: C.pos, marginRight: 4 }} title="Доставлено на склад → ждёт приёмки ФФ">✓ Доставлено</button>
         )}
         <button onClick={() => onDel(it.id)} style={{ ...miniBtn, color: C.neg }} title="Удалить (мягкое)">🗑</button>
       </td>

@@ -41,7 +41,7 @@ const MENU = [
   {
     label: "Товары", icon: "🏷️", groupBase: "/items",
     items: [
-      { href: "/warehouses", label: "Склады" },
+      { href: "/deliveries", label: "Доставлено на склад" },
       { href: "/purchase-need", label: "Потребность" },
       { href: "/buyout", label: "Процент выкупа" },
       { href: "/items", label: "Себестоимость" },
