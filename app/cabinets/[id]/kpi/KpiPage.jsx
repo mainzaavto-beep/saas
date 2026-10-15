@@ -44,17 +44,23 @@ export default function KpiPage({ cabinetId }) {
     if (!f) return;
     const qs = toQuery(f);
     window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+    const ac = new AbortController();
     setLoading(true);
     setErr("");
-    fetch(`/api/cabinets/${cabinetId}/kpi?${qs}`)
+    fetch(`/api/cabinets/${cabinetId}/kpi?${qs}`, { signal: ac.signal })
       .then((r) => r.json())
       .then((d) => {
         if (d.error) throw new Error(d.error);
         setData(d);
         setLayout(d.layout);
       })
-      .catch((e) => { console.error("kpi load:", e); setErr(String(e.message || e)); })
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (e.name === "AbortError") return; // запрос отменён более свежим фильтром — не ошибка
+        console.error("kpi load:", e);
+        setErr(String(e.message || e));
+      })
+      .finally(() => { if (!ac.signal.aborted) setLoading(false); });
+    return () => ac.abort();
   }, [f, cabinetId]);
 
   const tiles = useMemo(() => (data && layout ? applyLayout(data.tiles, layout) : []), [data, layout]);

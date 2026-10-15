@@ -7,11 +7,26 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const ref = useRef(null);
+  const btnRef = useRef(null);
+  // Якорь выпадашки считается при открытии от реального положения кнопки (getBoundingClientRect) —
+  // на узком экране (~360-390px) кнопка может стоять посередине ряда фильтров, и left:0 от неё
+  // уводит список за правый край вьюпорта (горизонтальная прокрутка страницы). Если не помещается
+  // справа — якорим от правого края кнопки (right:0) и сужаем до доступной ширины.
+  const [dropStyle, setDropStyle] = useState({ left: 0, right: "auto", width: 300 });
   useEffect(() => {
     const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, []);
+  const toggleOpen = () => {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const w = Math.min(300, vw - 32);
+      setDropStyle(rect.left + 300 > vw - 16 ? { left: "auto", right: 0, width: w } : { left: 0, right: "auto", width: w });
+    }
+    setOpen((o) => !o);
+  };
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
     return s ? options.filter((o) => `${o.label} ${o.sub || ""}`.toLowerCase().includes(s)) : options;
@@ -20,7 +35,7 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
   const toggle = (v) => onChange(sel.has(v) ? value.filter((x) => x !== v) : [...value, v]);
   return (
     <div ref={ref} title={title} style={{ position: "relative" }}>
-      <button type="button" onClick={() => setOpen(!open)} style={{
+      <button ref={btnRef} type="button" onClick={toggleOpen} style={{
         padding: "7px 12px", borderRadius: 8, border: `1px solid ${value.length ? C.accent : C.line}`,
         background: value.length ? soft("accent", 12) : C.surface, color: C.ink, cursor: "pointer", fontSize: 13,
       }}>
@@ -28,7 +43,8 @@ export default function MultiSelect({ label, options, value, onChange, title }) 
       </button>
       {open && (
         <div style={{
-          position: "absolute", zIndex: 20, top: "calc(100% + 4px)", left: 0, width: 300, maxWidth: "90vw",
+          position: "absolute", zIndex: 20, top: "calc(100% + 4px)", maxWidth: "90vw",
+          left: dropStyle.left, right: dropStyle.right, width: dropStyle.width,
           background: C.surface, border: `1px solid ${C.line}`, borderRadius: 10, padding: 8,
           boxShadow: `0 8px 24px ${soft("ink", 15)}`,
         }}>
