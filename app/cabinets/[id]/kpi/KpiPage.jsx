@@ -2,7 +2,7 @@
 import { C, soft } from "@/lib/palette.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { applyLayout } from "@/lib/kpiDashboard.js";
-import { defaultPeriod } from "@/lib/period.js";
+import PeriodPicker from "../PeriodPicker.jsx";
 import KpiTile, { fmt } from "./KpiTile";
 import MultiSelect from "./MultiSelect";
 import WidgetSettings from "./WidgetSettings";
@@ -17,8 +17,9 @@ const ddmm = (d) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` :
 function readUrl() {
   const sp = new URLSearchParams(window.location.search);
   const list = (k) => (sp.get(k) || "").split(",").filter(Boolean);
-  const def = defaultPeriod(7); // 7 полных дней по вчера — тот же дефолт, что parseKpiQuery
-  return { from: sp.get("from") || def.from, to: sp.get("to") || def.to, shops: list("shops"), brands: list("brands"), cats: list("cats"), skus: list("skus") };
+  // Период из ссылки (если есть) сидирует PeriodPicker режимом «Интервал»; иначе пикер сам
+  // отдаст свой дефолт (месяц, как на Сводке) при монтировании.
+  return { from: sp.get("from") || "", to: sp.get("to") || "", urlPeriod: !!(sp.get("from") && sp.get("to")), shops: list("shops"), brands: list("brands"), cats: list("cats"), skus: list("skus") };
 }
 function toQuery(f) {
   const sp = new URLSearchParams();
@@ -46,7 +47,7 @@ export default function KpiPage({ cabinetId }) {
   // запросов). URL обновляется сразу (ссылкой можно поделиться без ожидания); сам fetch —
   // только если фильтр не поменялся снова за 400 мс.
   useEffect(() => {
-    if (!f) return;
+    if (!f || !f.from || !f.to) return; // ждём период от PeriodPicker (он отдаёт его при монтировании)
     const qs = toQuery(f);
     window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
     const ac = new AbortController();
@@ -96,9 +97,11 @@ export default function KpiPage({ cabinetId }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
         {f && (
           <>
-            <input type="date" value={f.from} onChange={(e) => set("from", e.target.value)} style={inputStyle} />
-            <span style={{ color: C.muted }}>—</span>
-            <input type="date" value={f.to} onChange={(e) => set("to", e.target.value)} style={inputStyle} />
+            <PeriodPicker
+              value={{ from: f.from, to: f.to }}
+              defaultGran={f.urlPeriod ? "custom" : "month"}
+              onChange={({ from, to }) => setF((x) => (x.from === from && x.to === to ? x : { ...x, from, to }))}
+            />
             <MultiSelect label="Магазины" value={f.shops} onChange={(v) => set("shops", v)}
               title="Данные хранятся по площадке: несколько юрлиц одной площадки не различаются"
               options={opt.shops.map((s) => ({ value: String(s.id), label: s.name, sub: s.platform === "wb" ? "WB" : "Ozon" }))} />
@@ -114,7 +117,7 @@ export default function KpiPage({ cabinetId }) {
 
       {data && (
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
-          Сравнение с {ddmm(data.prevPeriod.from)} — {ddmm(data.prevPeriod.to)}.
+          Период {ddmm(data.period.from)} — {ddmm(data.period.to)} (по вчера включительно), сравнение с {ddmm(data.prevPeriod.from)} — {ddmm(data.prevPeriod.to)}.
           {data.productFilter && " Фильтр по товарам: расходы кабинета (хранение, штрафы, удержания и т.п.) не делятся по товарам и не показываются; прибыль — сумма прибыли выбранных товаров."}
           {data.errors.length > 0 && <span style={{ color: C.neg }}> Часть данных не загрузилась — см. плитки «ошибка загрузки».</span>}
         </div>
