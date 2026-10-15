@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { computeExcel, balanceDueRub, numOr, round2 } from "@/lib/purchaseCalc.js";
+import { syncPurchasePayments, archivePurchasePayments } from "@/lib/paymentCalendarData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -116,7 +117,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       const placeholders = nmIds.map((_, i) => `?`).join(",");
       const metaRows = await db.prepare(`SELECT nm_id, name, im_url FROM articles WHERE nm_id IN (${placeholders})`).all(...nmIds);
       for (const m of metaRows) nmMeta[m.nm_id] = { name: m.name, im_url: m.im_url };
-    } catch {}
+    } catch (e) { console.error("[purchases] nm meta:", e); }
   }
 
   // Итоги: costTotal = Σ(Z), avgCost = взвешенная по qty себестоимость.
@@ -226,6 +227,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     if (sets.length === 0) return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     vals.push(Number(b.id));
     await tenantQuery(`UPDATE tenant.purchases SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
+    await syncPurchasePayments(Number(b.id));
     return NextResponse.json({ ok: true, id: Number(b.id), unit_cost: unitCost });
   }
 
@@ -252,6 +254,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     `INSERT INTO tenant.purchases (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING id`,
     vals
   );
+  await syncPurchasePayments(Number(rows[0].id));
   return NextResponse.json({ ok: true, id: rows[0]?.id, unit_cost: calc.unitCost });
 }, { requireRole: 'manager' });
 
@@ -260,5 +263,6 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await tenantQuery(`UPDATE tenant.purchases SET deleted_at = now() WHERE id = $1`, [Number(id)]);
+  await archivePurchasePayments(Number(id));
   return NextResponse.json({ ok: true });
 }, { requireRole: 'manager' });
