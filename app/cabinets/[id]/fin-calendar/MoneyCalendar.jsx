@@ -49,7 +49,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(null); // null | {mode:'new', date} | {mode:'edit', item}
-  const [dayList, setDayList] = useState(null); // null | {date, items}
+  const [dayListDate, setDayListDate] = useState(null); // null | 'YYYY-MM-DD' — items выводятся из data на каждый рендер
   const [receiveFor, setReceiveFor] = useState(null); // null | {mode:'mark'|'payout', item, value}
   const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1600));
 
@@ -83,6 +83,13 @@ export default function MoneyCalendar({ cabinetId, kind }) {
   useEffect(() => { load(); }, [load]);
 
   const catMap = useMemo(() => Object.fromEntries((data?.categories || []).map((c) => [c.key, c])), [data]);
+  // Карта дата → items текущего ответа — DayListModal читает её каждый рендер,
+  // чтобы после mark_paid/unmark/receive_payout внутри неё список не оставался устаревшим.
+  const itemsByDate = useMemo(() => {
+    const m = {};
+    for (const w of (data?.weeks || [])) for (const d of w.days) m[d.date] = d.items;
+    return m;
+  }, [data]);
 
   async function doAction(body) {
     setError(null);
@@ -117,7 +124,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
 
   function openDayList(day, e) {
     e.stopPropagation();
-    setDayList({ date: day.date, items: day.items });
+    setDayListDate(day.date);
   }
 
   function handleCellClick(date) {
@@ -183,10 +190,10 @@ export default function MoneyCalendar({ cabinetId, kind }) {
           initial={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
       )}
 
-      {dayList && (
-        <DayListModal date={dayList.date} items={dayList.items} today={today} catMap={catMap} kind={kind}
-          onClose={() => setDayList(null)}
-          onItemClick={(item, e) => { handleItemClick(item, e); setDayList(null); }}
+      {dayListDate && (
+        <DayListModal date={dayListDate} items={itemsByDate[dayListDate] || []} today={today} catMap={catMap} kind={kind}
+          onClose={() => setDayListDate(null)}
+          onItemClick={(item, e) => { handleItemClick(item, e); setDayListDate(null); }}
           onCircle={handleCircleClick} />
       )}
 
@@ -292,8 +299,19 @@ function GridTable({ weeks, today, catMap, kind, onCellClick, onItemClick, onCir
 }
 
 // ---------------- Список дней (мобильная адаптация) ----------------
+// Показываем только дни с платежами + сегодняшний день (даже пустой, чтобы можно было
+// сразу добавить запись) — иначе список из ~30 пустых дней только шумит.
 function MobileList({ weeks, today, catMap, kind, onCellClick, onItemClick, onCircle }) {
-  const days = weeks.flatMap((w) => w.days).filter((d) => d.inMonth);
+  const allDays = weeks.flatMap((w) => w.days).filter((d) => d.inMonth);
+  const hasAny = allDays.some((d) => d.items.length > 0);
+  if (!hasAny) {
+    return (
+      <div style={{ padding: 24, textAlign: "center", color: C.faint }}>
+        {kind === "income" ? "Поступлений в этом месяце нет" : "Платежей в этом месяце нет"}
+      </div>
+    );
+  }
+  const days = allDays.filter((d) => d.items.length > 0 || d.date === today);
   return (
     <div>
       {days.map((day) => (

@@ -15,6 +15,11 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
   const isEdit = initial.mode === "edit";
   const item = isEdit ? initial.item : null;
   const isPurchase = isEdit && item.source_kind === "purchase";
+  // Выплата МП уже получена (receive_payout пишет status='paid') — сумма зафиксирована
+  // фактом получения, updateMovement для mp_payout всё равно хранит только date/description
+  // (как у purchase), поэтому поля суммы/статьи/контрагента тоже read-only (фикс ревью, раунд 1).
+  const isPayout = isEdit && item.source_kind === "mp_payout";
+  const readOnlyFields = isPurchase || isPayout;
   const isRecurringRow = isEdit && typeof item.ref === "string" && item.ref.startsWith("recurring:");
   const templateId = isRecurringRow ? Number(item.ref.split(":")[1]) : null;
 
@@ -60,7 +65,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
   }
 
   function handleSave() {
-    if (isPurchase) {
+    if (readOnlyFields) {
       submit({ action: "update", id: item.id, date: form.date, description: form.description || null });
       return;
     }
@@ -106,11 +111,13 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
 
   const title = isPurchase
     ? "Платёж из закупки"
-    : isRecurringRow && view === "template"
-      ? "Шаблон повтора"
-      : isEdit
-        ? `Редактирование ${kind === "income" ? "поступления" : "платежа"}`
-        : kind === "income" ? "Новое поступление" : "Новый платёж";
+    : isPayout
+      ? "Выплата маркетплейса"
+      : isRecurringRow && view === "template"
+        ? "Шаблон повтора"
+        : isEdit
+          ? `Редактирование ${kind === "income" ? "поступления" : "платежа"}`
+          : kind === "income" ? "Новое поступление" : "Новый платёж";
 
   return (
     <div style={modalOverlay} onClick={onClose}>
@@ -130,6 +137,12 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
           </div>
         )}
 
+        {isPayout && (
+          <div style={{ ...alertStyle, marginBottom: 12 }}>
+            Сумма меняется снятием отметки «получено». Здесь можно поменять дату и комментарий.
+          </div>
+        )}
+
         {isRecurringRow && view === "row" && (
           <div style={{ ...alertStyle, marginBottom: 12 }}>
             Это повторяющийся платёж. Правка ниже меняет только эту дату — для изменения всего
@@ -140,7 +153,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
         {isRecurringRow && view === "template" ? (
           <TemplateForm form={tplForm} setForm={setTplForm} categories={categories} kind={kind} />
         ) : (
-          <RowForm form={form} setForm={setForm} categories={categories} readOnly={isPurchase} showPaidCheckbox={!isEdit} />
+          <RowForm form={form} setForm={setForm} categories={categories} readOnly={readOnlyFields} showPaidCheckbox={!isEdit} />
         )}
 
         {!isEdit && (
