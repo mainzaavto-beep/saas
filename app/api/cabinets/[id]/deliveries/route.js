@@ -101,20 +101,25 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   if (action === "line_update" || action === "line_delete") {
     const id = Number(b.id);
     if (!Number.isInteger(id) || id <= 0) return bad("id required");
-    const cur = (await tenantQuery(`SELECT ${LINE_COLS} FROM tenant.purchase_receipt_lines WHERE id = $1`, [id]))[0];
+    // Первое чтение — только чтобы узнать purchase_id и взять блокировку партии.
+    const cur = (await tenantQuery(`SELECT purchase_id FROM tenant.purchase_receipt_lines WHERE id = $1`, [id]))[0];
     if (!cur) return bad(`строка id=${id} не найдена`, 404);
     const p = await lockPurchase(cur.purchase_id);
     if (!p) return bad("партия не найдена", 404);
     if (p.receipt_done_at) return bad("партия закрыта, снимите отметку «Учтено по артикулам»");
+    // Повторное чтение строки ПОД БЛОКИРОВКОЙ (после lockPurchase) — иначе два
+    // параллельных line_update смешивают поля по устаревшему снимку (lost update).
+    const fresh = (await tenantQuery(`SELECT ${LINE_COLS} FROM tenant.purchase_receipt_lines WHERE id = $1 FOR UPDATE`, [id]))[0];
+    if (!fresh) return bad(`строка id=${id} не найдена`, 404);
     if (action === "line_delete") {
       await tenantQuery(`DELETE FROM tenant.purchase_receipt_lines WHERE id = $1`, [id]);
       return NextResponse.json({ ok: true });
     }
     const v = validateLine({
-      ...cur,
-      qty_accepted: b.qty_accepted !== undefined ? b.qty_accepted : cur.qty_accepted,
-      note: b.note !== undefined ? b.note : cur.note,
-      label: b.label !== undefined ? b.label : cur.label,
+      ...fresh,
+      qty_accepted: b.qty_accepted !== undefined ? b.qty_accepted : fresh.qty_accepted,
+      note: b.note !== undefined ? b.note : fresh.note,
+      label: b.label !== undefined ? b.label : fresh.label,
     });
     if (!v.ok) return bad(v.error);
     const upd = await tenantQuery(
