@@ -4,7 +4,6 @@
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
-import { applyMove } from "@/lib/stockLedger.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -213,74 +212,27 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   // Автор движения остатка (stock_moves.created_by).
   const userId = session?.user_id ?? null;
 
-  // Завершить закупку → скопировать партию в склад (ff_inventory) + archived=true.
-  // Маршрут: закупка → «Завершить → склад» → товар в остатках склада (скрыт из
-  // активных закупок). Себестоимость AA = «себест. до МП».
+  // «✓ Доставлено» (с 15.10.2026, спека 2026-10-15-delivered-to-stock-design.md): партия
+  // уходит из активных закупок на страницу «Доставлено на склад» и ждёт приёмки ФФ по
+  // артикулам. Конечная точка: в ff_inventory / журнал движений / себестоимость НЕ пишем
+  // (до 15.10 здесь создавалась позиция «Остатков склад/ФФ» и движение «in»).
   if (b.action === "complete_to_stock") {
     if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
     const cur = (await tenantQuery(
-      `SELECT id, supplier_name, qty, unit_cost, category, nm_id, delivery_dt, archived,
-              prepay_yuan, prepay_rate, unit_cost_yuan, exchange_rate,
-              logistics_yuan, logistics_rub, logistics_rub_per_unit
-       FROM tenant.purchases WHERE id = $1 AND deleted_at IS NULL`, [Number(b.id)]
+      `SELECT id, archived FROM tenant.purchases
+       WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [Number(b.id)]
     ))[0];
     if (!cur) return NextResponse.json({ error: `партия id=${b.id} не найдена` }, { status: 404 });
-    if (cur.archived) return NextResponse.json({ error: "партия уже завершена" }, { status: 400 });
+    if (cur.archived) return NextResponse.json({ error: "партия уже доставлена" }, { status: 400 });
 
-    const f = computeExcel(cur);
-    const unitCost = f.unitCost;
-    const completedAt = cur.delivery_dt || new Date().toISOString().slice(0, 10);
-
-    // (а) пометить закупку архивной
-    await tenantQuery(`UPDATE tenant.purchases SET archived = true WHERE id = $1`, [Number(b.id)]);
-    // (б) копировать в склад (idempotent: если уже есть строка с этим purchase_id — не дублируем)
-    const exists = await tenantQuery(
-      `SELECT id FROM tenant.ff_inventory WHERE purchase_id = $1 AND archived_at IS NULL`, [Number(b.id)]
+    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+    const upd = await tenantQuery(
+      `UPDATE tenant.purchases
+          SET archived = true,
+              delivered_at = COALESCE(CASE WHEN delivery_dt ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substr(delivery_dt,1,10)::date END, $2::date)
+        WHERE id = $1 RETURNING delivered_at::text AS delivered_at`, [Number(b.id), today]
     );
-    let invId;
-    if (exists.length) {
-      invId = exists[0].id;
-    } else {
-      // С 2026-07-18 НЕ пишем nm_id в ff_inventory (legacy-колонка, источник правды —
-      // ff_inventory_skus). Колонку оставили в INSERT ради back-compat, но значение null;
-      // привязку артикула создаём отдельным INSERT ниже (если есть nm_id закупки).
-      const ins = await tenantQuery(
-        `INSERT INTO tenant.ff_inventory
-           (cabinet_id, purchase_id, internal_name, qty, unit_cost, category, nm_id, completed_at)
-         VALUES (current_setting('app.cabinet_id')::bigint, $1, $2, 0, $3, $4, NULL, $5) RETURNING id`,
-        [Number(b.id), cur.supplier_name, unitCost, cur.category || null, completedAt]
-      );
-      invId = ins[0]?.id;
-    }
-    // (б2) количество приходит движением «in» из журнала (единственный путь к qty).
-    // Идемпотентно: повторное завершение той же закупки — duplicate, qty не удваивается.
-    const qtyIn = Math.round(Number(cur.qty) || 0);
-    if (invId && qtyIn > 0) {
-      await applyMove({ ffInventoryId: invId, kind: "in", qty: qtyIn, srcKind: "purchase",
-        srcRef: String(b.id), movedAt: completedAt, note: `закупка ${cur.supplier_name || ""}`.trim(), userId });
-    }
-    // (в) если у закупки был nm_id (WB) — создаём привязку в ff_inventory_skus
-    // (мультисвязка с 2026-07-18: именно эта таблица — источник правды для артикулов).
-    // Идемпотентно (ON CONFLICT) — повторное завершение не дублирует. Имя/фото тянем
-    // из каталога wb.articles, если карточка там есть; иначе привязка без кэша
-    // (имя/фото подтянутся при GET из того же каталога).
-    const nmId = cur.nm_id != null ? Number(cur.nm_id) : null;
-    if (invId && nmId && Number.isFinite(nmId) && nmId > 0) {
-      let skuName = null, imUrl = null;
-      try {
-        const db = new DatabaseSync("wb", { readOnly: true });
-        const m = await db.prepare(`SELECT name, im_url FROM articles WHERE nm_id = ?`).get(nmId);
-        if (m) { skuName = m.name; imUrl = m.im_url; }
-      } catch {}
-      await tenantQuery(
-        `INSERT INTO tenant.ff_inventory_skus
-           (cabinet_id, ff_inventory_id, platform, nm_id, sku_name, im_url)
-         VALUES (current_setting('app.cabinet_id')::bigint, $1, 'wb', $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
-        [invId, nmId, skuName, imUrl]
-      );
-    }
-    return NextResponse.json({ ok: true, inventory_id: invId, unit_cost: unitCost });
+    return NextResponse.json({ ok: true, delivered_at: upd[0]?.delivered_at || today });
   }
 
   if (b.id) {
