@@ -1,14 +1,19 @@
 #!/usr/bin/env node
-// scripts/smoke-kpi.mjs — смоук «Дашборда показателей» (15.10.2026). Проверяет «одна цифра везде»:
-//   1) /kpi отвечает 200 без errors, 24 базовые плитки на месте;
+// scripts/smoke-kpi.mjs — смоук «Дашборда показателей» (15.10.2026, финальное ревью). Проверяет
+// «одна цифра везде»: Δ ≤ 0,011 ₽ (near(), допуск на накопленное округление по SKU/дням).
+//   1) /kpi отвечает 200 без errors, 33 плитки (24 базовые + 9 каталога) на месте;
 //   2) без фильтра деньги = /pnl total (прибыль, выручка, реализация, себестоимость, комиссия,
-//      логистика, реклама, налог) за тот же период, Δ ≤ 0,01 ₽; маржа = /pnl margin;
+//      логистика, реклама, налог); маржа = /pnl margin;
 //   3) тождество статей: хранение + приёмка + штрафы + прочие − компенсации = −cabinetCostsTotal /pnl;
 //   4) прошлый период: plitka.prev прибыли = /pnl за prevPeriod;
-//   5) штуки = Сводка (includeInactive=1): заказы шт/₽, продано, % выкупа;
+//   5) штуки = Сводка (ПО УМОЛЧАНИЮ, БЕЗ includeInactive=1 — F1, финальное ревью: /kpi теперь
+//      видит ровно те же строки, что Сводка без флага): заказы шт/₽, продано, % выкупа;
+//      остатки (плитка «stock») = Σ items.stock Сводки — точное равенство, не near();
 //   6) магазин WB → прибыль = блок wb /pnl;
-//   7) фильтр по бренду: прибыль = Σ profit строк Сводки этого бренда; кабинетные плитки unavailable;
+//   7) фильтр по бренду: прибыль = Σ profit строк Сводки (без includeInactive=1) этого бренда;
+//      кабинетные плитки unavailable;
 //   8) save_layout → GET отдаёт тот же порядок; reset_layout → стандарт (пишет только кабинет #1).
+// Нет магазина WB / нет бренда у кабинета — соответствующие проверки печатают SKIP, не молчат.
 // Запуск: node scripts/smoke-kpi.mjs [cabinetId=1] [baseUrl]
 import { readFileSync } from 'node:fs';
 import { sealData } from 'iron-session';
@@ -62,25 +67,34 @@ for (const [from, to] of [['2026-09-01', '2026-09-30'], ['2026-10-01', '2026-10-
   const pp = (await get(`pnl?from=${d.prevPeriod.from}&to=${d.prevPeriod.to}`)).data.total;
   check(`${tag}: прошлый период прибыль = /pnl prev (${pp.profit})`, near(tile(d, 'profit').prev, pp.profit), tile(d, 'profit').prev);
 
-  const s = (await get(`products-summary?platform=all&from=${from}&to=${to}&includeInactive=1`)).data.totals;
+  // F1: БЕЗ includeInactive=1 — Сводка по умолчанию (active + товары с движением периода),
+  // та же видимость, что теперь строит /kpi (buildTotals(..., includeInactive=false, ...)).
+  const summary = (await get(`products-summary?platform=all&from=${from}&to=${to}`)).data;
+  const s = summary.totals;
   check(`${tag}: заказы шт = Сводка (${s.ordered})`, tile(d, 'orders').second.value === s.ordered, tile(d, 'orders').second.value);
   check(`${tag}: заказы ₽ = Сводка (${s.orderRub})`, near(tile(d, 'orders').value, s.orderRub, 0.05), tile(d, 'orders').value);
   check(`${tag}: продано шт = Сводка (${s.sold})`, tile(d, 'revenue').second.value === s.sold, tile(d, 'revenue').second.value);
   check(`${tag}: % выкупа = Сводка (${s.buyoutPct})`, near(tile(d, 'buyoutPct').value, s.buyoutPct), tile(d, 'buyoutPct').value);
+  const wantStock = summary.items.reduce((a, it) => a + (it.stock || 0), 0);
+  check(`${tag}: остатки шт = Σ items.stock Сводки, точное равенство (${wantStock})`, tile(d, 'stock').value === wantStock, tile(d, 'stock').value);
 
   const wbShop = d.options.shops.find((x) => x.platform === 'wb');
   if (wbShop) {
     const w = (await get(`kpi?from=${from}&to=${to}&shops=${wbShop.id}`)).data;
     check(`${tag}: магазин WB → прибыль = /pnl wb (${pnl.wb?.profit})`, near(tile(w, 'profit').value, pnl.wb?.profit), tile(w, 'profit').value);
+  } else {
+    console.log(`SKIP  ${tag}: магазин WB → прибыль = /pnl wb — нет магазина WB у кабинета`);
   }
 
   const brand = d.options.brands[0];
   if (brand) {
     const b = (await get(`kpi?from=${from}&to=${to}&brands=${encodeURIComponent(brand)}`)).data;
-    const items = (await get(`products-summary?platform=all&from=${from}&to=${to}&includeInactive=1`)).data.items.filter((it) => (it.brand || '') === brand);
+    const items = summary.items.filter((it) => (it.brand || '') === brand);
     const want = Math.round(items.reduce((a, it) => a + (it.profit || 0), 0) * 100) / 100;
     check(`${tag}: бренд «${brand}» прибыль = Σ строк Сводки (${want})`, near(tile(b, 'profit').value, want, 0.05), tile(b, 'profit').value);
     check(`${tag}: при товарном фильтре хранение недоступно`, tile(b, 'storage').unavailable === true && tile(b, 'storage').value === null);
+  } else {
+    console.log(`SKIP  ${tag}: фильтр по бренду — нет брендов у кабинета`);
   }
 }
 

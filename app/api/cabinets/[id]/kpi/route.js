@@ -16,7 +16,7 @@ export const GET = withCabinet(async (req, { cabinet, session }) => {
   try {
     const opts = parseKpiQuery(new URL(req.url).searchParams);
     const d = await loadKpiDashboard(cabinet, opts);
-    const tiles = buildTiles({ cur: d.cur, prev: d.prev, productFilter: d.productFilter, errors: d.errors });
+    const tiles = buildTiles({ cur: d.cur, prev: d.prev, productFilter: d.productFilter, errors: d.errors, opexUnavailable: d.platformScoped });
     const layout = await readLayout(cabinet.cabinet_id, session.user_id);
     return NextResponse.json({
       period: d.period, prevPeriod: d.prevPeriod, platforms: d.platforms, productFilter: d.productFilter,
