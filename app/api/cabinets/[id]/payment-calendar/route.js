@@ -45,7 +45,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
     `SELECT id, type, amount::float8 AS amount, category, counterparty, description, rule, rule_day, every_n,
             date_from::text AS date_from, date_to::text AS date_to
        FROM tenant.dds_recurring WHERE is_active AND type = $1 ORDER BY id`, [kind]);
-  return NextResponse.json({ month, kind, today, categories: CATEGORIES, weeks, totals: summarize(inMonth, { today }), recurring });
+  // canEdit — запись (POST) требует manager+; наблюдатель видит календарь только для чтения (§3.5).
+  const canEdit = cabinet.role === "owner" || cabinet.role === "manager";
+  return NextResponse.json({ month, kind, today, canEdit, categories: CATEGORIES, weeks, totals: summarize(inMonth, { today }), recurring });
 });
 
 export const POST = withCabinet(async (req) => {
@@ -58,8 +60,8 @@ export const POST = withCabinet(async (req) => {
       case "unmark": await unmarkPaid(Number(b.id)); break;
       case "delete": await archiveMovement(Number(b.id)); break;
       case "receive_payout": return NextResponse.json({ ok: true, id: await receivePayout(b) });
-      case "recurring_save": return NextResponse.json({ ok: true, id: await saveRecurring(b) });
-      case "recurring_delete": await deleteRecurring(Number(b.id)); break;
+      case "recurring_save": return NextResponse.json({ ok: true, id: await saveRecurring(b, mskToday()) });
+      case "recurring_delete": await deleteRecurring(Number(b.id), mskToday()); break;
       default: return NextResponse.json({ error: `неизвестное действие: ${b.action}` }, { status: 400 });
     }
     return NextResponse.json({ ok: true });

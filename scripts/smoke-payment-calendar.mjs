@@ -48,6 +48,7 @@ const month = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 7);
 for (const kind of ['expense', 'income']) {
   const r = await get(`payment-calendar?month=${month}&kind=${kind}`);
   check(`GET ${kind} 200`, r.status === 200, r.data);
+  check(`${kind}: canEdit=true для владельца`, r.data.canEdit === true, r.data.canEdit);
   const items = r.data.weeks.flatMap((w) => w.days).flatMap((d) => d.items).filter((x) => x.date.slice(0, 7) === month && x.id);
   const [{ s }] = await tq(`SELECT COALESCE(SUM(amount),0)::float8 AS s FROM tenant.dds_movements
      WHERE status <> 'archived' AND type = $1 AND substr(date,1,7) = $2`, [kind, month]);
@@ -126,6 +127,14 @@ if (CAB === 1) {
   check('recurring_delete', (await post({ action: 'recurring_delete', id: rcId })).status === 200);
   const r3 = await countRecurring();
   check('recurring: удаление архивирует будущие planned-строки', r3 === 0, r3);
+
+  // валидация (ничего не пишется): rule_day/every_n вне диапазона → 400, правка несуществующего
+  // шаблона → 404, выплата без даты YYYY-MM-DD → 400
+  check('recurring_save: rule_day 32 → 400', (await post({ action: 'recurring_save', type: 'expense', amount: 1, rule: 'monthly', rule_day: 32, date_from: today })).status === 400);
+  check('recurring_save: weekly rule_day 8 → 400', (await post({ action: 'recurring_save', type: 'expense', amount: 1, rule: 'weekly', rule_day: 8, date_from: today })).status === 400);
+  check('recurring_save: every_n 366 → 400', (await post({ action: 'recurring_save', type: 'expense', amount: 1, rule: 'every_n_days', every_n: 366, date_from: today })).status === 400);
+  check('recurring_save: неактивный шаблон → 404', (await post({ action: 'recurring_save', id: rcId, type: 'expense', amount: 1, rule: 'monthly', rule_day: 1, date_from: today })).status === 404);
+  check('receive_payout: дата не YYYY-MM-DD → 400', (await post({ action: 'receive_payout', ref: 'wb:smoke', platform: 'wb', date: 'x', amount: -5 })).status === 400);
 
   const c = await post({ action: 'create', type: 'expense', date: `${month}-28`, amount: 1.23, category: 'Прочее', description: 'smoke' });
   check('create', c.status === 200 && c.data.id, c.data);

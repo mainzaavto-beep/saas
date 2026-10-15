@@ -104,14 +104,19 @@ export default function MoneyCalendar({ cabinetId, kind }) {
     } catch (e) { setError(String(e)); return false; }
   }
 
+  // Наблюдатель (viewer) — только чтение (спека §3.5): API отдаёт canEdit=false, и ни плашка,
+  // ни кружок статуса, ни пустая ячейка не открывают модалку и не шлют POST.
+  const canEdit = data?.canEdit === true;
+
   function handleItemClick(item, e) {
     e.stopPropagation();
-    if (item.status === "forecast") return;
+    if (!canEdit || item.status === "forecast") return;
     setModal({ mode: "edit", item });
   }
 
   function handleCircleClick(item, e) {
     e.stopPropagation();
+    if (!canEdit) return;
     if (item.status === "planned") {
       if (kind === "income") setReceiveFor({ mode: "mark", item, value: String(item.amount) });
       else doAction({ action: "mark_paid", id: item.id });
@@ -128,13 +133,17 @@ export default function MoneyCalendar({ cabinetId, kind }) {
   }
 
   function handleCellClick(date) {
+    if (!canEdit) return;
     setModal({ mode: "new", date });
   }
 
   async function confirmReceive() {
     const amt = Number(receiveFor.value);
-    if (!(amt >= 0)) { setError("Сумма должна быть ≥ 0"); return; }
     const { item, mode } = receiveFor;
+    // выплата МП бывает отрицательной (окно Ozon с удержаниями больше начислений)
+    if (String(receiveFor.value).trim() === "" || !Number.isFinite(amt) || (mode === "mark" && amt < 0)) {
+      setError(mode === "mark" ? "Сумма должна быть ≥ 0" : "Введите сумму"); return;
+    }
     const ok = mode === "mark"
       ? await doAction({ action: "mark_paid", id: item.id, amount: amt })
       : await doAction({ action: "receive_payout", ref: item.ref, platform: item.platform, date: item.date, amount: amt, amount_planned: item.amount });
@@ -160,9 +169,11 @@ export default function MoneyCalendar({ cabinetId, kind }) {
           <button onClick={() => setMonth(shiftMonth(month || today.slice(0, 7), 1))} style={navBtn} title="Следующий месяц">→</button>
           <button onClick={goToday} style={resetBtnStyle}>Сегодня</button>
         </div>
-        <button onClick={() => setModal({ mode: "new", date: today })} style={addBtnStyle}>
-          + {kind === "income" ? "Поступление" : "Платёж"}
-        </button>
+        {canEdit && (
+          <button onClick={() => setModal({ mode: "new", date: today })} style={addBtnStyle}>
+            + {kind === "income" ? "Поступление" : "Платёж"}
+          </button>
+        )}
       </div>
 
       {error && <div style={{ color: C.neg, marginBottom: 12 }}>⚠ {error}</div>}
@@ -178,10 +189,10 @@ export default function MoneyCalendar({ cabinetId, kind }) {
       {loading && !data && <div style={{ padding: 24, textAlign: "center", color: C.faint }}>Загрузка…</div>}
 
       {data && (mobile ? (
-        <MobileList weeks={weeks} today={today} catMap={catMap} kind={kind}
+        <MobileList weeks={weeks} today={today} catMap={catMap} kind={kind} canEdit={canEdit}
           onCellClick={handleCellClick} onItemClick={handleItemClick} onCircle={handleCircleClick} />
       ) : (
-        <GridTable weeks={weeks} today={today} catMap={catMap} kind={kind}
+        <GridTable weeks={weeks} today={today} catMap={catMap} kind={kind} canEdit={canEdit}
           onCellClick={handleCellClick} onItemClick={handleItemClick} onCircle={handleCircleClick} onMore={openDayList} />
       ))}
 
@@ -191,7 +202,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
       )}
 
       {dayListDate && (
-        <DayListModal date={dayListDate} items={itemsByDate[dayListDate] || []} today={today} catMap={catMap} kind={kind}
+        <DayListModal date={dayListDate} items={itemsByDate[dayListDate] || []} today={today} catMap={catMap} kind={kind} canEdit={canEdit}
           onClose={() => setDayListDate(null)}
           onItemClick={(item, e) => { handleItemClick(item, e); setDayListDate(null); }}
           onCircle={handleCircleClick} />
@@ -206,7 +217,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
 }
 
 // ---------------- Плашка платежа ----------------
-function PaymentPill({ item, today, catMap, kind, onClick, onCircle }) {
+function PaymentPill({ item, today, catMap, kind, canEdit, onClick, onCircle }) {
   const overdue = item.status === "planned" && item.date < today;
   const paid = item.status === "paid";
   const forecast = item.status === "forecast";
@@ -221,13 +232,14 @@ function PaymentPill({ item, today, catMap, kind, onClick, onCircle }) {
         background: soft(cat.token, 14),
         border: overdue ? `1px solid ${C.neg}` : "1px solid transparent",
         borderLeft: `3px solid ${C[cat.token] || C.line}`,
-        cursor: forecast ? "default" : "pointer", fontSize: 11, marginBottom: 3, minWidth: 0,
+        cursor: forecast || !canEdit ? "default" : "pointer", fontSize: 11, marginBottom: 3, minWidth: 0,
       }}
     >
       <button onClick={(e) => { e.stopPropagation(); onCircle(item, e); }}
-        title={circleTitle}
+        disabled={!canEdit}
+        title={canEdit ? circleTitle : undefined}
         style={{
-          width: 14, height: 14, borderRadius: "50%", flexShrink: 0, cursor: "pointer", padding: 0,
+          width: 14, height: 14, borderRadius: "50%", flexShrink: 0, cursor: canEdit ? "pointer" : "default", padding: 0,
           border: `1.5px ${forecast ? "dashed" : "solid"} ${paid ? C.pos : (overdue ? C.neg : C.muted)}`,
           background: paid ? C.pos : "transparent", color: "#fff", fontSize: 9, lineHeight: "12px",
           display: "flex", alignItems: "center", justifyContent: "center",
@@ -247,7 +259,7 @@ function PaymentPill({ item, today, catMap, kind, onClick, onCircle }) {
 }
 
 // ---------------- Сетка месяца (десктоп) ----------------
-function GridTable({ weeks, today, catMap, kind, onCellClick, onItemClick, onCircle, onMore }) {
+function GridTable({ weeks, today, catMap, kind, canEdit, onCellClick, onItemClick, onCircle, onMore }) {
   return (
     <div style={{ border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
@@ -264,7 +276,7 @@ function GridTable({ weeks, today, catMap, kind, onCellClick, onItemClick, onCir
                 <td key={day.date} onClick={() => onCellClick(day.date)}
                   style={{
                     verticalAlign: "top", border: `1px solid ${C.line}`, padding: 6, height: 104,
-                    opacity: day.inMonth ? 1 : 0.45, cursor: "pointer", background: C.bg,
+                    opacity: day.inMonth ? 1 : 0.45, cursor: canEdit ? "pointer" : "default", background: C.bg,
                   }}>
                   <div style={{ marginBottom: 4 }}>
                     <span style={day.date === today
@@ -274,7 +286,7 @@ function GridTable({ weeks, today, catMap, kind, onCellClick, onItemClick, onCir
                     </span>
                   </div>
                   {day.items.slice(0, 3).map((it) => (
-                    <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} onClick={onItemClick} onCircle={onCircle} />
+                    <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} canEdit={canEdit} onClick={onItemClick} onCircle={onCircle} />
                   ))}
                   {day.items.length > 3 && (
                     <button onClick={(e) => onMore(day, e)} style={miniLink}>ещё {day.items.length - 3}</button>
@@ -301,7 +313,7 @@ function GridTable({ weeks, today, catMap, kind, onCellClick, onItemClick, onCir
 // ---------------- Список дней (мобильная адаптация) ----------------
 // Показываем только дни с платежами + сегодняшний день (даже пустой, чтобы можно было
 // сразу добавить запись) — иначе список из ~30 пустых дней только шумит.
-function MobileList({ weeks, today, catMap, kind, onCellClick, onItemClick, onCircle }) {
+function MobileList({ weeks, today, catMap, kind, canEdit, onCellClick, onItemClick, onCircle }) {
   const allDays = weeks.flatMap((w) => w.days).filter((d) => d.inMonth);
   const hasAny = allDays.some((d) => d.items.length > 0);
   if (!hasAny) {
@@ -317,7 +329,7 @@ function MobileList({ weeks, today, catMap, kind, onCellClick, onItemClick, onCi
       {days.map((day) => (
         <div key={day.date} onClick={() => onCellClick(day.date)}
           style={{
-            border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, marginBottom: 8, cursor: "pointer",
+            border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, marginBottom: 8, cursor: canEdit ? "pointer" : "default",
             background: day.date === today ? soft("accent", 10) : C.surface,
           }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: day.items.length ? 6 : 0 }}>
@@ -325,9 +337,9 @@ function MobileList({ weeks, today, catMap, kind, onCellClick, onItemClick, onCi
             {day.total > 0 && <span style={{ fontWeight: 700, color: C.muted, fontSize: 13 }}>{fmtK(day.total)}</span>}
           </div>
           {day.items.map((it) => (
-            <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} onClick={onItemClick} onCircle={onCircle} />
+            <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} canEdit={canEdit} onClick={onItemClick} onCircle={onCircle} />
           ))}
-          {!day.items.length && <div style={{ fontSize: 11, color: C.faint }}>+ добавить</div>}
+          {!day.items.length && canEdit && <div style={{ fontSize: 11, color: C.faint }}>+ добавить</div>}
         </div>
       ))}
     </div>
@@ -335,7 +347,7 @@ function MobileList({ weeks, today, catMap, kind, onCellClick, onItemClick, onCi
 }
 
 // ---------------- Модалка «ещё N» ----------------
-function DayListModal({ date, items, today, catMap, kind, onClose, onItemClick, onCircle }) {
+function DayListModal({ date, items, today, catMap, kind, canEdit, onClose, onItemClick, onCircle }) {
   return (
     <div style={modalOverlay} onClick={onClose}>
       <div style={{ ...modalBox, maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
@@ -344,7 +356,7 @@ function DayListModal({ date, items, today, catMap, kind, onClose, onItemClick, 
           <button onClick={onClose} style={miniBtn}>✕</button>
         </div>
         {items.map((it) => (
-          <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} onClick={onItemClick} onCircle={onCircle} />
+          <PaymentPill key={it.id ?? it.ref} item={it} today={today} catMap={catMap} kind={kind} canEdit={canEdit} onClick={onItemClick} onCircle={onCircle} />
         ))}
       </div>
     </div>

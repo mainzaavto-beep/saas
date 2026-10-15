@@ -182,7 +182,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
               )}
               {repeat === "every_n_days" && (
                 <Field label="Каждые N дней">
-                  <input type="number" min={1} value={everyN} onChange={(e) => setEveryN(e.target.value)} style={{ ...inputStyle, width: 70 }} />
+                  <input type="number" min={1} max={365} value={everyN} onChange={(e) => setEveryN(e.target.value)} style={{ ...inputStyle, width: 70 }} />
                 </Field>
               )}
               {repeat !== "none" && (
@@ -303,7 +303,7 @@ function TemplateForm({ form, setForm, categories, kind }) {
         )}
         {form.rule === "every_n_days" && (
           <Field label="Каждые N дней">
-            <input type="number" min={1} value={form.every_n} onChange={up("every_n")} style={{ ...inputStyle, width: 70 }} />
+            <input type="number" min={1} max={365} value={form.every_n} onChange={up("every_n")} style={{ ...inputStyle, width: 70 }} />
           </Field>
         )}
       </div>
