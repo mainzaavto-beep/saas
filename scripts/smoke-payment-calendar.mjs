@@ -3,11 +3,13 @@
 // Проверяет:
 //   1) GET expense/income 200; Σ строк API месяца = Σ dds_movements (не-архивных) за месяц в БД;
 //      недели по 7 дней, начинаются с понедельника;
-//   2) платежи партий закупок: ≤4 строк на партию; Σ платежей ПОЛНОСТЬЮ planned-партии = calc_Z
-//      (пропускаем партии с отрицательным остатком — лог «balance»-плечо туда не попадает по дизайну,
-//      см. lib/paymentCalendar.js purchasePayments: .filter(x => x.amount > 0));
-//   3) повторная раскладка повторов не плодит новых строк (идемпотентность по source_ref);
-//   4) (только кабинет #1, обратимо) create → mark_paid → unmark → delete.
+//   2) платежи партий закупок (активные + архивные, дедуп по id): ≤4 строк на партию; Σ платежей
+//      ПОЛНОСТЬЮ planned-партии = calc_Z (пропускаем партии с отрицательным остатком — лог
+//      «balance»-плечо туда не попадает по дизайну, см. lib/paymentCalendar.js purchasePayments:
+//      .filter(x => x.amount > 0));
+//   3) (только кабинет #1, обратимо) шаблон повтора: recurring_save → GET материализует 1..4
+//      planned-строки → повтор GET не плодит новых → recurring_delete архивирует будущие planned;
+//      create → mark_paid → unmark → delete.
 // Аутентификация — sealed-cookie, как scripts/smoke-deliveries.mjs.
 // Запуск: node scripts/smoke-payment-calendar.mjs [cabinetId=1] [baseUrl]
 import { readFileSync } from 'node:fs';
@@ -57,10 +59,12 @@ for (const kind of ['expense', 'income']) {
 // (партии с calc_balance_due < 0 пропускаем — лог «остаток» не создаётся вовсе, т.к.
 // purchasePayments отфильтровывает неположительные суммы по дизайну — сумма строк тогда
 // заведомо меньше Z, это не баг).
-// ?archived=1 — у кабинета #1 все партии завершены («Доставлено на склад», часть 1 модуля);
-// без этого параметра /purchases отдаёт пустой список и проверка вообще не выполняется.
-const pur = await get('purchases?archived=1');
-for (const p of pur.data.items.slice(0, 20)) {
+// Активные и архивные — ОБА списка: у кабинета #1 сейчас все партии архивны («Доставлено
+// на склад», часть 1 модуля), но без ?archived=1 активные партии других кабинетов/будущего
+// состояния пропали бы из проверки молча. Дедуп по id (партия не бывает в обоих списках).
+const [purActive, purArchived] = await Promise.all([get('purchases'), get('purchases?archived=1')]);
+const purById = new Map([...(purActive.data.items || []), ...(purArchived.data.items || [])].map((p) => [p.id, p]));
+for (const p of [...purById.values()].slice(0, 20)) {
   const rows = await tq(`SELECT amount::float8 AS a, status FROM tenant.dds_movements
      WHERE source_kind='purchase' AND source_ref LIKE $1 AND status <> 'archived'`, [`purchase:${p.id}:%`]);
   check(`партия ${p.id}: ≤4 платежей`, rows.length <= 4, rows.length);
@@ -70,13 +74,27 @@ for (const p of pur.data.items.slice(0, 20)) {
   }
 }
 
-// повторная раскладка не добавляет строк
-const cnt = async () => (await tq(`SELECT count(*)::int AS n FROM tenant.dds_movements WHERE source_kind='recurring' AND status<>'archived'`))[0].n;
-const n1 = await cnt(); await get(`payment-calendar?month=${month}&kind=expense`); const n2 = await cnt();
-check('повторы идемпотентны', n1 === n2, { n1, n2 });
-
-// (только #1, обратимо) create → mark_paid → unmark → delete
+// (только #1, обратимо) create → mark_paid → unmark → delete; шаблон повтора — реальная
+// идемпотентность (на #1 шаблонов 0, пустой count ничего бы не проверял) + отмена.
 if (CAB === 1) {
+  const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+  const rc = await post({ action: 'recurring_save', type: 'expense', amount: 1.11, category: 'Прочее',
+    description: 'smoke-recurring', rule: 'monthly', rule_day: 28, date_from: today });
+  check('recurring_save', rc.status === 200 && rc.data.id, rc.data);
+  const rcId = rc.data.id;
+  const countRecurring = async () => (await tq(
+    `SELECT count(*)::int AS n FROM tenant.dds_movements WHERE source_ref LIKE $1 AND status <> 'archived'`,
+    [`recurring:${rcId}:%`]))[0].n;
+  await get(`payment-calendar?month=${month}&kind=expense`); // материализует шаблон в dds_movements
+  const r1 = await countRecurring();
+  check('recurring: материализовано 1..4 строки', r1 >= 1 && r1 <= 4, r1);
+  await get(`payment-calendar?month=${month}&kind=expense`); // повтор — не плодит новых строк
+  const r2 = await countRecurring();
+  check('recurring: повторная раскладка не плодит строк', r1 === r2, { r1, r2 });
+  check('recurring_delete', (await post({ action: 'recurring_delete', id: rcId })).status === 200);
+  const r3 = await countRecurring();
+  check('recurring: удаление архивирует будущие planned-строки', r3 === 0, r3);
+
   const c = await post({ action: 'create', type: 'expense', date: `${month}-28`, amount: 1.23, category: 'Прочее', description: 'smoke' });
   check('create', c.status === 200 && c.data.id, c.data);
   check('mark_paid', (await post({ action: 'mark_paid', id: c.data.id })).status === 200);
