@@ -3,7 +3,6 @@ import { C, soft } from "@/lib/palette.js";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 
-const postToDds = async (opts) => { try { await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) }); } catch {} };
 
 // =====================================================================
 //  /finance/purchases — закупки = точная копия листа «Себес товара» (2026-06-24).
@@ -546,25 +545,6 @@ function PurchaseDetailPanel({ it, cabinetId, reload }) {
   const [payForm, setPayForm] = useState({ due_dt: "", amount: "", ratio: "", status: "planned", note: "" });
   const [savingPay, setSavingPay] = useState(false);
 
-  // ↧ Записать остаток к оплате партии в ДДС (фиксация планового расхода).
-  async function postPaymentToDds(p) {
-    const date = p.next_pay_dt || p.order_dt || new Date().toISOString().slice(0, 10);
-    const amount = p.calc_balance_due || 0;
-    if (!confirm(`Записать остаток к оплате партии #${p.id} (${money(amount)}) в ДДС на ${date}?`)) return;
-    try {
-      await postToDds({
-        date, type: "expense", amount,
-        category: "Закупка", source: "auto_purchase",
-        reference: `purchase:${p.id}`,
-        description: `Остаток оплаты партии #${p.id}` + (p.supplier_name ? ` (${p.supplier_name})` : ""),
-        counterparty: p.supplier_name, status: "planned",
-      });
-      alert("Записано в ДДС (статус: planned).");
-    } catch (e) {
-      alert("Не получилось: " + e.message);
-    }
-  }
-
   async function setStage(stage) {
     setAdvancing(true);
     const r = await fetch(`/api/cabinets/${cabinetId}/purchases`, {
@@ -686,7 +666,13 @@ function PurchaseDetailPanel({ it, cabinetId, reload }) {
           <PayKpi label="Остаток к оплате" value={money(it.calc_balance_due)} color={(it.calc_balance_due || 0) > 0.01 ? C.neg : C.faint} />
           <PayKpi label="След. платёж" value={it.next_pay_dt || "—"} />
           {(it.calc_balance_due || 0) > 0.01 && (
-            <button onClick={() => postPaymentToDds(it)} style={{ ...miniBtn, color: C.accent, alignSelf: "center" }} title="Записать остаток к оплате в ДДС">↧ В ДДС</button>
+            // Остаток поставщику уже в платёжном календаре автоматически (purchase:<id>:balance) —
+            // ручная запись в ДДС задваивала бы его; ведём на месяц даты остатка (как purchasePayments).
+            <a href={`/cabinets/${cabinetId}/fin-calendar?month=${(/^\d{4}-\d{2}/.test(String(it.ship_dt || "")) ? it.ship_dt
+                : /^\d{4}-\d{2}/.test(String(it.plan_ship_dt || "")) ? it.plan_ship_dt
+                : /^\d{4}-\d{2}/.test(String(it.date || "")) ? it.date : new Date().toISOString()).slice(0, 7)}`}
+              style={{ ...miniBtn, color: C.accent, alignSelf: "center", textDecoration: "none" }}
+              title="Остаток к оплате — в платёжном календаре">в календаре</a>
           )}
         </div>
         {showPay && (

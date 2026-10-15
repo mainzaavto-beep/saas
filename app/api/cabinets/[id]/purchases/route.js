@@ -4,60 +4,15 @@
 import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { computeExcel, balanceDueRub, numOr, round2 } from "@/lib/purchaseCalc.js";
+import { syncPurchasePayments, archivePurchasePayments } from "@/lib/paymentCalendarData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
-const numOr = (v) => {
-  if (v == null || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
 function sqlSafe(v, maxLen = 200) {
   if (!v) return "";
   return String(v).slice(0, maxLen).replace(/'/g, "''");
-}
-
-// =====================================================================
-//  Excel-формулы «Себес товара» (считаются НА СЕРВЕРЕ из вводных полей).
-//  Эталон: data-presenter/app/api/purchases/route.js:computeExcel
-//    N = L × M           (Сумма аванса ₽ = предоплата¥ × курс аванса)
-//    Q = O × P           (Сумма ¥ = кол-во × цена за ед ¥)
-//    R = Q − L           (Остаток оплаты ¥)
-//    S = M × R           (Остаток оплаты ₽ = курс АВАНСА × остаток¥)
-//    V = P × U           (Цена за ед ₽)
-//    W = R × U + N       (Сумма ₽ оплаченная)
-//    Z = W + (X + Y) × O (ИТОГО; X и Y — ₽ ЗА ЕДИНИЦУ, ×O = за партию)
-//    AA = Z / O          (Себестоимость за ед → unit_cost = W/O + X + Y)
-//  L=prepay_yuan, M=prepay_rate, O=qty, P=unit_cost_yuan, U=exchange_rate,
-//  X=logistics_rub_per_unit (Логист. до МСК, ₽/ед), Y=logistics_rub (Логист.
-//  МСК→ФФ, ₽/ед). Решение 2026-07-15: X и Y оба «за ед» (раньше код считал
-//  их «за партию» и не умножал на O → AA занижался на величину логистики).
-// =====================================================================
-function computeExcel(input) {
-  const L = numOr(input.prepay_yuan) || 0;
-  const M = numOr(input.prepay_rate) || 0;
-  const O = numOr(input.qty);
-  const P = numOr(input.unit_cost_yuan) || 0;
-  const U = numOr(input.exchange_rate) || 0;
-  const X = numOr(input.logistics_rub_per_unit) || 0;
-  const Y = numOr(input.logistics_rub) || 0;
-  const hasQty = O != null && O > 0;
-  const N = L * M;
-  const Q = hasQty ? O * P : null;
-  const R = hasQty ? (Q - L) : -L;
-  const S = M * R;
-  const V = hasQty ? P * U : null;
-  const W = R * U + N;
-  // X и Y — за единицу; за партию = (X+Y)×O.
-  const Z = hasQty ? W + (X + Y) * O : W + X + Y;
-  const unitCost = hasQty ? Z / O : null;
-  return {
-    N: round2(N), Q: hasQty ? round2(Q) : null, R: round2(R), S: round2(S),
-    V: hasQty ? round2(V) : null, W: round2(W), Z: round2(Z),
-    unitCost: unitCost != null ? round2(unitCost) : null,
-  };
 }
 
 // Эффективный lifecycle_status (NULL → arrived если есть delivery_dt, иначе planned).
@@ -162,7 +117,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
       const placeholders = nmIds.map((_, i) => `?`).join(",");
       const metaRows = await db.prepare(`SELECT nm_id, name, im_url FROM articles WHERE nm_id IN (${placeholders})`).all(...nmIds);
       for (const m of metaRows) nmMeta[m.nm_id] = { name: m.name, im_url: m.im_url };
-    } catch {}
+    } catch (e) { console.error("[purchases] nm meta:", e); }
   }
 
   // Итоги: costTotal = Σ(Z), avgCost = взвешенная по qty себестоимость.
@@ -190,7 +145,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   const enriched = items.map((it) => {
     const meta = it.nm_id != null ? (nmMeta[it.nm_id] || {}) : {};
     const f = computeExcel(it);
-    const balanceDue = it.pay_status === "paid" ? 0 : (f.S ?? 0);
+    const balanceDue = it.pay_status === "paid" ? 0 : balanceDueRub(f);
     return {
       ...it,
       // Перезаписываем unit_cost формульным значением (на случай рассинхрона).
@@ -272,6 +227,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     if (sets.length === 0) return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     vals.push(Number(b.id));
     await tenantQuery(`UPDATE tenant.purchases SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
+    await syncPurchasePayments(Number(b.id));
     return NextResponse.json({ ok: true, id: Number(b.id), unit_cost: unitCost });
   }
 
@@ -298,6 +254,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     `INSERT INTO tenant.purchases (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING id`,
     vals
   );
+  await syncPurchasePayments(Number(rows[0].id));
   return NextResponse.json({ ok: true, id: rows[0]?.id, unit_cost: calc.unitCost });
 }, { requireRole: 'manager' });
 
@@ -306,5 +263,6 @@ export const DELETE = withCabinet(async (req, { cabinet }) => {
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await tenantQuery(`UPDATE tenant.purchases SET deleted_at = now() WHERE id = $1`, [Number(id)]);
+  await archivePurchasePayments(Number(id));
   return NextResponse.json({ ok: true });
 }, { requireRole: 'manager' });

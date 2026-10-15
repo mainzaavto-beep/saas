@@ -33,6 +33,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Дашборд показателей (KPI-плитки) | `lib/kpiDashboard.js`, `lib/kpiDashboardData.js`, `/kpi` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
+| Платёжный календарь / план поступлений | `lib/paymentCalendar.js`, `lib/paymentCalendarData.js`, `/fin-calendar`, `/fin-income`, миграция 070 |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
 | Запуск воркера (systemd) | `/etc/systemd/system/saas-*.service` + `worker/run_saas_*.sh` |
@@ -424,6 +425,18 @@ Anthropic отвечает 403 «Request not allowed».
   `node scripts/smoke-kpi.mjs 1` (сверка с `/pnl` и Сводкой). Остаток (Сводка и дашборд) — «доступно» на обеих
   площадках: WB `wb_daily_stock.quantity`, как `/stocks` (решение владельца 15.10.2026; до этого Сводка брала WB
   `quantity_full` с «в пути» — остаток и оборачиваемость WB были завышены).
+- **Платёжный календарь и план поступлений (с 2026-10-15)** — одна таблица `tenant.dds_movements`
+  (`planned`→`paid`, `source_kind` manual/recurring/purchase/mp_payout) + шаблоны `tenant.dds_recurring`.
+  Партия закупки → до 4 платежей, Σ = `calc_Z`; остаток поставщику — по курсу ОПЛАТЫ `R×U` (не `S=M×R`,
+  решение владельца 15.10); оплаченные и сдвинутые руками (`date_locked`) строки не перезаписываются;
+  платежи партий из истории (созданных до этой задачи) бэкфиллены `paid` (у партии `pay_status='paid'`).
+  Прогноз выплат — `wbCashPayoutByWeek`/`ozPayoutByDay` (`lib/wbMetrics.js`/`lib/ozonMetrics.js`,
+  контракт §21), дни выплат — `auth.cabinets.settings.payouts`; прогнозная строка с датой в прошлом —
+  «просрочено», пока не отмечена «получено». Страницы `/fin-calendar`/`/fin-income`; старый «План
+  платежей» (`payment-plan`, `lib/calendarCalc.js`) удалён. Тесты
+  `lib/__tests__/paymentCalendar{,Guard}.test.mjs`, смоук `node scripts/smoke-payment-calendar.mjs 1`.
+  ⚠️ Подсветка активной вкладки верхнего меню на этих страницах не работает — старая проблема топ-меню,
+  проект навигации, не этой задачи.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
