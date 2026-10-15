@@ -7,6 +7,7 @@ import { MP_CONFIG, MAX_SHOPS_PER_CABINET } from "@/lib/mpConfig.js";
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const inputStyle = { padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.surfaceAlt, color: C.ink, fontSize: 14, fontFamily: "inherit" };
+const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]; // ISO: 1=Пн … 7=Вс
 
 export default function SettingsPage({ cabinetId }) {
   const [data, setData] = useState(null);
@@ -15,6 +16,8 @@ export default function SettingsPage({ cabinetId }) {
   const [msg, setMsg] = useState(null);
   const [supplyMsg, setSupplyMsg] = useState(null);
   const [savingSupply, setSavingSupply] = useState(false);
+  const [payoutsMsg, setPayoutsMsg] = useState(null);
+  const [savingPayouts, setSavingPayouts] = useState(false);
 
   useEffect(() => {
     fetch(`/api/cabinets/${cabinetId}/settings`).then(r => r.json()).then(d => d.error ? setError(d.error) : setData(d));
@@ -48,6 +51,26 @@ export default function SettingsPage({ cabinetId }) {
     const d = await r.json().catch(() => ({}));
     setSupplyMsg(r.ok ? "✅ Сохранено" : `❌ ${d.error || "Ошибка"}`);
     setSavingSupply(false);
+  };
+
+  // Дни выплат маркетплейсов (спека «Платёжный календарь» §21): используются только
+  // «Планом поступлений» для прогноза дат выплат WB/Ozon. WB — день недели 1..7
+  // (следующая неделя за отработанную Пн–Вс), Ozon — числа месяца 1..28.
+  const savePayouts = async () => {
+    setPayoutsMsg(null);
+    setSavingPayouts(true);
+    const r = await fetch(`/api/cabinets/${cabinetId}/settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        payouts: {
+          wb: { weekday: Number(data.payouts?.wb?.weekday) },
+          ozon: { day1: Number(data.payouts?.ozon?.day1), day2: Number(data.payouts?.ozon?.day2) },
+        },
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setPayoutsMsg(r.ok ? "✅ Сохранено" : `❌ ${d.error || "Ошибка"}`);
+    setSavingPayouts(false);
   };
 
   return (
@@ -92,6 +115,43 @@ export default function SettingsPage({ cabinetId }) {
             {savingSupply ? "Сохранение…" : "Сохранить"}
           </button>
           {supplyMsg && <span style={{ fontSize: 14, color: supplyMsg.startsWith("✅") ? C.pos : C.neg }}>{supplyMsg}</span>}
+        </div>
+      </div>
+
+      {/* Дни выплат маркетплейсов */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 12px" }}>Дни выплат маркетплейсов</h2>
+        <p style={{ color: C.muted, fontSize: 12, margin: "0 0 12px" }}>
+          Используются в «Плане поступлений» платёжного календаря для прогноза дат выплат WB/Ozon.
+        </p>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12, color: C.muted }}>WB: день недели
+            <select
+              value={data.payouts?.wb?.weekday ?? 3}
+              onChange={e => setData({ ...data, payouts: { ...data.payouts, wb: { weekday: Number(e.target.value) } } })}
+              style={{ ...inputStyle, width: "auto", marginTop: 4 }}
+            >
+              {WEEKDAYS.map((w, idx) => <option key={idx} value={idx + 1}>{w}</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 12, color: C.muted }}>Ozon: за 1–15 — число
+            <input type="number" min={1} max={28} step={1}
+              value={data.payouts?.ozon?.day1 ?? ""}
+              onChange={e => setData({ ...data, payouts: { ...data.payouts, ozon: { ...data.payouts?.ozon, day1: e.target.value } } })}
+              style={{ ...inputStyle, width: 100, marginTop: 4 }} />
+          </label>
+          <label style={{ fontSize: 12, color: C.muted }}>Ozon: за 16–конец — число след. месяца
+            <input type="number" min={1} max={28} step={1}
+              value={data.payouts?.ozon?.day2 ?? ""}
+              onChange={e => setData({ ...data, payouts: { ...data.payouts, ozon: { ...data.payouts?.ozon, day2: e.target.value } } })}
+              style={{ ...inputStyle, width: 100, marginTop: 4 }} />
+          </label>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+          <button onClick={savePayouts} disabled={savingPayouts} style={{ padding: "10px 24px", borderRadius: 8, background: C.accent, color: "var(--accentInk)", border: "none", cursor: "pointer", fontWeight: 600, fontFamily: "inherit" }}>
+            {savingPayouts ? "Сохранение…" : "Сохранить"}
+          </button>
+          {payoutsMsg && <span style={{ fontSize: 14, color: payoutsMsg.startsWith("✅") ? C.pos : C.neg }}>{payoutsMsg}</span>}
         </div>
       </div>
 
