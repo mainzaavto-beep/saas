@@ -32,6 +32,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Процент выкупа (когорта по заказам, размеры WB) | `lib/buyout.js`, `lib/buyoutData.js`, `/buyout`, контракт §18 |
 | Дашборд показателей (KPI-плитки) | `lib/kpiDashboard.js`, `lib/kpiDashboardData.js`, `/kpi` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
+| Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
 | Запуск воркера (systemd) | `/etc/systemd/system/saas-*.service` + `worker/run_saas_*.sh` |
@@ -481,6 +482,16 @@ LEFT JOIN LATERAL (
 использовать как есть.
 
 ### 🆕 Маршрут «Закупки → Склад/ФФ» (с 2026-07-15)
+
+> **С 2026-10-15 маршрут другой** (спека `docs/superpowers/specs/2026-10-15-delivered-to-stock-design.md`):
+> кнопка «✓ Доставлено» в «Закупках» (action `complete_to_stock`) только ставит `archived=true` и
+> `delivered_at` — партия уходит на страницу «Доставлено на склад» (`/deliveries`, меню «Товары» вместо
+> «Склады»), где фиксируется приёмка ФФ по артикулам (`tenant.purchase_receipt_lines`, миграция 069) и
+> отметка «Учтено по артикулам» (`purchases.receipt_done_at`; снять — только owner). Это КОНЕЧНАЯ точка:
+> в `ff_inventory`, журнал движений и `cost_overrides` не пишется (решение владельца). Описанное ниже —
+> история; позиции `ff_inventory`, созданные до 15.10, не тронуты. `/warehouses` убран из меню, но роут жив
+> (ссылки сигналов главной). Тесты `lib/__tests__/deliveries.test.mjs`, гард `deliveriesGuard.test.mjs`,
+> смоук `node scripts/smoke-deliveries.mjs 1`.
 
 Рабочий процесс движения товара: партия закупки → завершить → остаток склада/ФФ →
 привязка артикула МП → себестоимость течёт в расчёты.
