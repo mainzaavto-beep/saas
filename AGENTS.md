@@ -30,6 +30,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Юнит-экономику | `lib/unit.js` (calcWB / calcOzon, налоги в отдельных колонках) |
 | Премия менеджеров / роли | `lib/bonus.js`, `lib/bonusData.js`, `app/api/cabinets/[id]/bonus/route.js` |
 | Процент выкупа (когорта по заказам, размеры WB) | `lib/buyout.js`, `lib/buyoutData.js`, `/buyout`, контракт §18 |
+| Дашборд показателей (KPI-плитки) | `lib/kpiDashboard.js`, `lib/kpiDashboardData.js`, `/kpi` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
@@ -408,6 +409,18 @@ Anthropic отвечает 403 «Request not allowed».
   на юнитку/сводку/потребность НЕ влияет. «Заказано» на Сводке с 14.10 считается так же на обеих площадках
   (Ozon раньше — без отмен), контракт §13. Смоук `node scripts/smoke-order-matrix.mjs 1` сверяет итог с
   прямым подсчётом по `orders` и со Сводкой.
+- **Дашборд показателей (с 2026-10-15)** — страница `/kpi` (пункт меню после «Главной»), API
+  `/api/cabinets/[id]/kpi?from&to&shops&brands&cats&skus`: 24 плитки + каталог «+ Метрика» (9), прошлый
+  период той же длины, дельта, цвет (расходы — по ДОЛЕ в выручке, порог 1 %), раскрытие по клику. Своих
+  формул нет: без товарного фильтра деньги = `wbProfitCabinet`/`ozProfitCabinet` (как `/pnl`), штуки/выкуп/
+  остатки — строки «Сводки» (`buildTotals`, вынесен в `lib/productsSummaryData.js` 15.10); с фильтром по
+  бренду/категории/артикулам — суммы строк Сводки, кабинетные статьи (хранение, приёмка, штрафы, прочие
+  удержания, компенсации, opex) → «—». Статьи кабинета → плитки — `costTileOf` (`lib/kpiDashboard.js`; Ozon
+  по `accrual_<id>`). Опер. расходы (`tenant.opex`, business, не в себестоимости) — справочно, в прибыль не
+  входят. Фильтр «Магазины» = площадка (tenant-данные без `shop_id`). Личный вид — `tenant.kpi_dashboard_prefs`
+  (миграция 068), user_id из сессии, роль не нужна. Тесты `lib/__tests__/kpiDashboard.test.mjs`, смоук
+  `node scripts/smoke-kpi.mjs 1` (сверка с `/pnl` и Сводкой). Открыто: остаток WB в Сводке — `quantity_full`
+  (с «в пути»), у Ozon и `/stocks` — «доступно»; решение по канону — владельца.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
