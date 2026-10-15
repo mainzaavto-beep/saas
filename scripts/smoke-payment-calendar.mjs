@@ -8,7 +8,9 @@
 //      «balance»-плечо туда не попадает по дизайну, см. lib/paymentCalendar.js purchasePayments:
 //      .filter(x => x.amount > 0));
 //   3) (только кабинет #1, обратимо) шаблон повтора: recurring_save → GET материализует 1..4
-//      planned-строки → повтор GET не плодит новых → recurring_delete архивирует будущие planned;
+//      planned-строки → повтор GET не плодит новых → удалённая дата не возвращается, правленная
+//      «только эту» не дублируется, правка шаблона пересоздаёт неправленные строки → recurring_delete
+//      архивирует будущие planned;
 //      create → mark_paid → unmark → delete.
 // Аутентификация — sealed-cookie, как scripts/smoke-deliveries.mjs.
 // Запуск: node scripts/smoke-payment-calendar.mjs [cabinetId=1] [baseUrl]
@@ -91,6 +93,36 @@ if (CAB === 1) {
   await get(`payment-calendar?month=${month}&kind=expense`); // повтор — не плодит новых строк
   const r2 = await countRecurring();
   check('recurring: повторная раскладка не плодит строк', r1 === r2, { r1, r2 });
+
+  // C1: удалённая дата не возвращается, «изменить только этот» не дублирует, правка шаблона
+  // пересоздаёт неправленные строки по новому правилу и не трогает правленную.
+  const occ = await tq(`SELECT id::int AS id, date, source_ref FROM tenant.dds_movements
+     WHERE source_ref LIKE $1 AND status <> 'archived' ORDER BY date`, [`recurring:${rcId}:%`]);
+  const refRows = (ref) => tq(`SELECT status, source_kind FROM tenant.dds_movements WHERE source_ref = $1`, [ref]);
+  if (occ.length >= 2) {
+    const [A, B] = occ;
+    check('recurring: delete одной даты', (await post({ action: 'delete', id: A.id })).status === 200);
+    await get(`payment-calendar?month=${A.date.slice(0, 7)}&kind=expense`);
+    const ra = await refRows(A.source_ref);
+    check('recurring: удалённая дата не вернулась после GET', ra.length === 1 && ra[0].status === 'archived', ra);
+    check('recurring: update одной даты (сумма)', (await post({ action: 'update', id: B.id, amount: 2.22 })).status === 200);
+    await get(`payment-calendar?month=${B.date.slice(0, 7)}&kind=expense`);
+    const rb = (await refRows(B.source_ref)).filter((x) => x.status !== 'archived');
+    check('recurring: правленная дата — ровно одна строка', rb.length === 1 && rb[0].source_kind === 'manual', rb);
+    // правка шаблона: день 28 → 27
+    const sv = await post({ action: 'recurring_save', id: rcId, type: 'expense', amount: 1.11, category: 'Прочее',
+      description: 'smoke-recurring', rule: 'monthly', rule_day: 27, date_from: today });
+    check('recurring_save (правка шаблона)', sv.status === 200, sv.data);
+    await get(`payment-calendar?month=${month}&kind=expense`);
+    const regen = await tq(`SELECT date, source_kind FROM tenant.dds_movements
+       WHERE source_ref LIKE $1 AND status <> 'archived'`, [`recurring:${rcId}:%`]);
+    const gen = regen.filter((x) => x.source_kind === 'recurring');
+    check('recurring: правка шаблона пересоздала строки по новому правилу',
+      gen.length >= 1 && gen.every((x) => x.date.slice(8) === '27'), regen);
+    check('recurring: правленная строка пережила правку шаблона',
+      (await refRows(B.source_ref)).filter((x) => x.status !== 'archived').length === 1);
+    check('cleanup: delete правленной строки', (await post({ action: 'delete', id: B.id })).status === 200);
+  } else check('recurring: ≥2 строк для проверки delete/update', false, occ.length);
   check('recurring_delete', (await post({ action: 'recurring_delete', id: rcId })).status === 200);
   const r3 = await countRecurring();
   check('recurring: удаление архивирует будущие planned-строки', r3 === 0, r3);
