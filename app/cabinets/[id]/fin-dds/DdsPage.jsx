@@ -1,6 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { defaultMonthPeriod } from "@/lib/period.js";
+import FinanceMoneyTabs from "../fin-calendar/FinanceMoneyTabs.jsx";
 
 import { useEffect, useState, useCallback } from "react";
 
@@ -184,6 +185,7 @@ export default function DdsPage({ cabinetId }) {
 
   return (
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px", maxWidth: 1400, margin: "0 auto" }}>
+      <FinanceMoneyTabs cabinetId={cabinetId} active="dds" />
       <Header />
 
       <div style={{ ...alertStyle, marginBottom: 16 }}>
