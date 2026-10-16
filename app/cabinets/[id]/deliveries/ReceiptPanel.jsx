@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 // Панель приёмки партии: строки «артикул → принято, шт», выбор артикула из каталога WB/Ozon
 // или вручную, итог и отметка «Учтено по артикулам». У закрытой — только чтение.
+// Архив «до 16.10» (миграция 071) — тоже только чтение, кнопки правки не показываем.
 
 const nf0 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 const inp = { padding: "5px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.surface, color: C.ink, fontSize: 13 };
@@ -11,6 +12,8 @@ const btn = { padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.line}
 
 export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
   const done = item.status === "done";
+  const legacy = item.status === "legacy";
+  const readOnly = done || legacy;
   const [busy, setBusy] = useState(false);
   const [pick, setPick] = useState(null); // { platform, nm_id|product_id, label } | { platform: null }
   const [qty, setQty] = useState("");
@@ -20,7 +23,7 @@ export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
   const [found, setFound] = useState([]);
 
   useEffect(() => {
-    if (done || search.trim().length < 2) { setFound([]); return; }
+    if (readOnly || search.trim().length < 2) { setFound([]); return; }
     const t = setTimeout(async () => {
       try {
         const r = await fetch(`/api/cabinets/${cabinetId}/deliveries?catalog=1&q=${encodeURIComponent(search.trim())}`);
@@ -29,7 +32,7 @@ export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
       } catch (e) { console.error("deliveries catalog", e); setFound([]); }
     }, 250);
     return () => clearTimeout(t);
-  }, [cabinetId, search, done]);
+  }, [cabinetId, search, readOnly]);
 
   async function post(body) {
     setBusy(true);
@@ -87,12 +90,12 @@ export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
                   </span>
                 </td>
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>
-                  {done ? nf0.format(l.qty_accepted)
+                  {readOnly ? nf0.format(l.qty_accepted)
                     : <button style={btn} disabled={busy} onClick={() => editQty(l)}>{nf0.format(l.qty_accepted)} ✏️</button>}
                 </td>
                 <td style={{ padding: "4px 8px", color: C.muted }}>{l.note || ""}</td>
                 <td style={{ padding: "4px 8px" }}>
-                  {!done && <button style={{ ...btn, color: C.neg }} disabled={busy}
+                  {!readOnly && <button style={{ ...btn, color: C.neg }} disabled={busy}
                     onClick={() => confirm(`Удалить строку «${l.label}»?`) && post({ action: "line_delete", id: l.id })}>✕</button>}
                 </td>
               </tr>
@@ -110,7 +113,13 @@ export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
         )}
       </div>
 
-      {!done && (
+      {legacy && (
+        <div style={{ color: C.muted, marginBottom: 12 }}>
+          Партия в архиве (до 16.10) — правка недоступна.
+        </div>
+      )}
+
+      {!readOnly && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 12 }}>
           <div style={{ position: "relative" }}>
             {pick ? (
@@ -150,8 +159,8 @@ export default function ReceiptPanel({ cabinetId, item, role, onChanged }) {
       )}
 
       <div style={{ display: "flex", gap: 8 }}>
-        {!done && <button style={{ ...btn, borderColor: C.pos, color: C.pos }} disabled={busy || !item.lines.length} onClick={markDone}>✓ Учтено по артикулам</button>}
-        {!done && !item.lines.length && <button style={btn} disabled={busy}
+        {!readOnly && <button style={{ ...btn, borderColor: C.pos, color: C.pos }} disabled={busy || !item.lines.length} onClick={markDone}>✓ Учтено по артикулам</button>}
+        {!readOnly && !item.lines.length && <button style={btn} disabled={busy}
           onClick={() => confirm("Вернуть партию в активные закупки?") && post({ action: "return_to_purchases", purchase_id: item.id })}>↩ Вернуть в закупки</button>}
         {done && role === "owner" && <button style={btn} disabled={busy}
           onClick={() => confirm("Снять отметку «Учтено по артикулам»? Строки снова можно будет править.") && post({ action: "undone", purchase_id: item.id })}>Снять отметку</button>}

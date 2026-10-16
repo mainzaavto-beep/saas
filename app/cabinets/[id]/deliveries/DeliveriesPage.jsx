@@ -10,7 +10,12 @@ import ReceiptPanel from "./ReceiptPanel";
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const nf0 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 const ddmmyyyy = (d) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "—");
-const FILTERS = [{ v: "waiting", l: "Ждут приёмки" }, { v: "done", l: "Учтено" }, { v: "all", l: "Все" }];
+const FILTERS = [
+  { v: "waiting", l: "Ждут приёмки" },
+  { v: "done", l: "Учтено" },
+  { v: "all", l: "Все" },
+  { v: "legacy", l: "Архив (до 16.10)" },
+];
 
 export default function DeliveriesPage({ cabinetId }) {
   const [status, setStatus] = useState("waiting");
@@ -31,7 +36,7 @@ export default function DeliveriesPage({ cabinetId }) {
   useEffect(() => { reload(); }, [reload]);
 
   const items = data?.items || [];
-  const totals = data?.totals || { waiting: 0, done: 0 };
+  const totals = data?.totals || { waiting: 0, done: 0, legacy: 0 };
 
   return (
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px" }}>
@@ -46,7 +51,7 @@ export default function DeliveriesPage({ cabinetId }) {
             style={{ padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontSize: 13,
               border: `1px solid ${status === f.v ? C.accent : C.line}`,
               background: status === f.v ? soft("accent", 15) : "transparent", color: C.ink }}>
-            {f.l}{f.v === "waiting" ? ` · ${totals.waiting}` : f.v === "done" ? ` · ${totals.done}` : ""}
+            {f.l}{f.v === "waiting" ? ` · ${totals.waiting}` : f.v === "done" ? ` · ${totals.done}` : f.v === "legacy" ? ` · ${totals.legacy}` : ""}
           </button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Поиск по партии или артикулу"
@@ -84,10 +89,11 @@ export default function DeliveriesPage({ cabinetId }) {
 
 function Row({ it, open, onToggle, cabinetId, role, onChanged }) {
   const done = it.status === "done";
+  const legacy = it.status === "legacy";
   return (
     <>
       <tr onClick={onToggle} style={{ cursor: "pointer", borderBottom: `1px solid ${soft("line", 50)}`,
-        background: open ? soft("accent", 6) : "transparent" }}>
+        background: open ? soft("accent", 6) : "transparent", opacity: legacy ? 0.75 : 1 }}>
         <td style={{ padding: 8 }}>
           {it.photo ? <img src={it.photo} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 6 }} /> : null}
         </td>
@@ -100,10 +106,17 @@ function Row({ it, open, onToggle, cabinetId, role, onChanged }) {
           {it.lines.length ? (it.diff > 0 ? "+" : "") + nf0.format(it.diff) : "—"}
         </td>
         <td style={{ padding: 8 }}>
-          <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 12,
-            background: soft(done ? "pos" : "warn", 18), color: done ? C.pos : C.warn }}>
-            {done ? "✓ Учтено по артикулам" : "Ждёт приёмки"}
-          </span>
+          {legacy ? (
+            <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 12,
+              background: soft("muted", 18), color: C.muted }}>
+              архив до 16.10
+            </span>
+          ) : (
+            <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 12,
+              background: soft(done ? "pos" : "warn", 18), color: done ? C.pos : C.warn }}>
+              {done ? "✓ Учтено по артикулам" : "Ждёт приёмки"}
+            </span>
+          )}
         </td>
       </tr>
       {open && (
