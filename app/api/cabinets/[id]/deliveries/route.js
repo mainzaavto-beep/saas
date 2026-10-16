@@ -5,6 +5,8 @@
 // GET ?catalog=1&q= → { catalog } — поиск артикула WB/Ozon для строки приёмки.
 // POST (manager): line_add | line_update | line_delete | done | undone (owner) | return_to_purchases.
 // Конечная точка: в остатки, журнал движений и себестоимость НЕ пишем.
+// Архив «до 16.10» (решение владельца 16.10.2026, миграция 071): партии с legacy_at — только
+// чтение, любая правка приёмки отклоняется 400 ДО записи.
 import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { tenantQuery } from "@/lib/db.js";
@@ -36,7 +38,7 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   }
   const purchases = await tenantQuery(
     `SELECT p.id, p.supplier_name, p.category, p.qty, p.photo_url, a.im_url,
-            p.delivered_at::text AS delivered_at, p.receipt_done_at
+            p.delivered_at::text AS delivered_at, p.receipt_done_at, p.legacy_at::text AS legacy_at
      FROM tenant.purchases p
      LEFT JOIN tenant.wb_articles a ON a.cabinet_id = p.cabinet_id AND a.nm_id = p.nm_id
      WHERE p.archived AND p.deleted_at IS NULL
@@ -58,9 +60,11 @@ async function lockPurchase(id) {
   const n = Number(id);
   if (!Number.isInteger(n) || n <= 0) return null;
   return (await tenantQuery(
-    `SELECT id, archived, receipt_done_at FROM tenant.purchases
+    `SELECT id, archived, receipt_done_at, legacy_at FROM tenant.purchases
      WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [n]))[0] || null;
 }
+
+const LEGACY_ERROR = "партия в архиве (до 16.10), правка недоступна";
 
 async function catalogLabel(line) {
   if (line.platform === "wb") {
@@ -83,6 +87,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   if (action === "line_add") {
     const p = await lockPurchase(b.purchase_id);
     if (!p || !p.archived) return bad("партия не найдена среди доставленных", 404);
+    if (p.legacy_at) return bad(LEGACY_ERROR);
     if (p.receipt_done_at) return bad("партия закрыта, снимите отметку «Учтено по артикулам»");
     const raw = { ...b };
     if (raw.platform && !String(raw.label || "").trim()) raw.label = await catalogLabel(raw) || "";
@@ -106,6 +111,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     if (!cur) return bad(`строка id=${id} не найдена`, 404);
     const p = await lockPurchase(cur.purchase_id);
     if (!p) return bad("партия не найдена", 404);
+    if (p.legacy_at) return bad(LEGACY_ERROR);
     if (p.receipt_done_at) return bad("партия закрыта, снимите отметку «Учтено по артикулам»");
     // Повторное чтение строки ПОД БЛОКИРОВКОЙ (после lockPurchase) — иначе два
     // параллельных line_update смешивают поля по устаревшему снимку (lost update).
@@ -131,6 +137,7 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
   if (action === "done" || action === "undone" || action === "return_to_purchases") {
     const p = await lockPurchase(b.purchase_id);
     if (!p || !p.archived) return bad("партия не найдена среди доставленных", 404);
+    if (p.legacy_at) return bad(LEGACY_ERROR);
     const [{ n }] = await tenantQuery(
       `SELECT count(*)::int AS n FROM tenant.purchase_receipt_lines WHERE purchase_id = $1`, [p.id]);
     if (action === "done") {
