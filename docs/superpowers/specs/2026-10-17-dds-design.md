@@ -87,20 +87,34 @@ RLS + `panel_local_ro_cab1`, гранты `saas_app`, как у `dds_recurring` 
 Ключи `supplier…other`, `mp` — те же, что `CATEGORIES` календаря (`lib/paymentCalendar.js`), цвета
 сохраняются.
 
+⚠️ **`mp` — только поступления** (`direction=income`). У расходных строк старая метка «Возврат МП»
+означает возврат поставщику/покупателю, а не выплату маркетплейса, и при переносе (§2.3) уходит в
+`other`, а не в `mp` — иначе расход задвоил бы смысл системной статьи поступлений.
+
 ### 2.3 `tenant.dds_movements` — новые колонки
 - `account_id BIGINT` — счёт (у перевода — откуда);
 - `account_to_id BIGINT` — счёт назначения, только у перевода;
 - `article_key TEXT` — статья;
-- `type` дополняется значением `transfer` (CHECK `type IN ('income','expense','transfer')`).
+- `type` дополняется значением `transfer`, колонка получает CHECK `dds_movements_type_chk`
+  (`type IN ('income','expense','transfer')`).
+
+`tenant.dds_recurring` получает ту же колонку `article_key TEXT` (без CHECK типа — тип шаблона
+остаётся `income`/`expense`, переводов по расписанию нет) — иначе повтор с пользовательской статьёй
+терял бы её при материализации в `dds_movements`.
 
 CHECK `dds_movements_transfer_chk`:
 `(type='transfer' AND article_key IS NULL AND account_id IS NOT NULL AND account_to_id IS NOT NULL AND account_id <> account_to_id)
  OR (type<>'transfer' AND account_to_id IS NULL)`.
 
-Перенос (в миграции, идемпотентно, `WHERE article_key IS NULL`): `category` → `article_key` по правилу
-`categoryOf` (`Закупка`→`supplier`, `ЗП`→`salary`, `Возврат МП`→`mp`, метки `CATEGORIES`→их ключи, иначе
-`other`); у `source_kind='mp_payout'` — `mp_wb`/`mp_ozon` по `platform`; доходные строки с неизвестной
-меткой → `other_in`. `account_from/account_to` у каб. #1 пусты — не переносятся.
+Перенос (в миграции, идемпотентно, `WHERE article_key IS NULL`), раздельно по `type`:
+- **`income`**: `source_kind='mp_payout'` и `platform='wb'`/`'ozon'` → `mp_wb`/`mp_ozon`; метка
+  `category IN ('Выплата МП','Возврат МП')` → `mp`; иначе → `other_in`.
+- **`expense`**: метки `CATEGORIES` (`lib/paymentCalendar.js`) → их ключи (`Закупка`/`Поставщик`→
+  `supplier`, `ЗП`/`Зарплата`→`salary`, и т.д.); «Возврат МП» среди расходных меток отдельно не
+  распознаётся → уходит в `other` (см. предупреждение выше); неизвестная/пустая метка → `other`.
+- `dds_recurring` — то же правило, без ветки `mp_payout` (шаблоны не бывают выплатой МП).
+
+`account_from/account_to` у каб. #1 пусты — не переносятся.
 
 Устаревшие колонки `category, income_type, account_from, account_to, source, platform, nm_id` остаются;
 код их больше не читает (кроме `platform` у выплат МП, которую пишет `receivePayout`) — пометка в
@@ -186,7 +200,10 @@ API не отдаёт `opening_balance`/остатки/строки «на на�
 **Отчёт.** Колонки — месяцы (дефолт последние 6 по текущий) + «Итого»; переключатель «по неделям».
 Строки: Остаток на начало (owner); группы Операционная / Инвестиционная / Финансовая — поступления по
 статьям, выбытия по статьям, сальдо группы (сворачиваются, пустые статьи скрыты); Чистый денежный
-поток; Остаток на конец (owner); разрез «по счетам» (owner, включая «Счёт не указан»). Клик по ячейке →
+поток; **Изменение остатков вне статей** (owner) = `конец − начало − netFlow` колонки — ненулевая,
+когда в колонке стартует счёт (его `opening_balance` входит в остаток, но не в поток статей) или есть
+операции до `opening_date` счёта (входят в остаток по правилу §2.5, но отфильтрованы из потока статей);
+Остаток на конец (owner); разрез «по счетам» (owner, включая «Счёт не указан»). Клик по ячейке →
 «Операции» с фильтром статья × период. Текущий месяц — по сегодня, пометка «месяц идёт».
 
 **Счета (owner).** Имя · тип · стартовый остаток на дату · текущий остаток · архив; добавить/править/
