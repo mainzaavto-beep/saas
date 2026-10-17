@@ -53,7 +53,10 @@ export default function OperationModal({ cabinetId, refs, row, onClose, onSaved 
 
   async function submit() {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) { setErr("дата обязательна (ГГГГ-ММ-ДД)"); return; }
-    if (!(Number(form.amount) > 0)) { setErr("сумма должна быть больше 0"); return; }
+    // Валидируем сумму только когда её можно править (создание или rules.amount) — у выплаты
+    // МП (mp_payout) сумма read-only и бывает ≤ 0 (окно Ozon с удержаниями больше начислений);
+    // без этого условия правка даты/счёта/комментария такой строки не сохранялась бы.
+    if ((!isEdit || rules.amount) && !(Number(form.amount) > 0)) { setErr("сумма должна быть больше 0"); return; }
     if (isTransfer) {
       if (!form.account_id || !form.account_to_id) { setErr("у перевода нужны оба счёта"); return; }
       if (form.account_id === form.account_to_id) { setErr("счета перевода совпадают"); return; }

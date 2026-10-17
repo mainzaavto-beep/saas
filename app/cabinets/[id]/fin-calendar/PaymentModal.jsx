@@ -23,9 +23,11 @@ export default function PaymentModal({ cabinetId, kind, categories, accounts, re
   const isRecurringRow = isEdit && typeof item.ref === "string" && item.ref.startsWith("recurring:");
   const templateId = isRecurringRow ? Number(item.ref.split(":")[1]) : null;
 
+  // Статья по умолчанию — системный фолбэк своего направления, не «—» (иначе NULL уходит на
+  // сервер и расходится с отчётом/фильтром журнала, см. articleKeyOf(null, type) в lib/dds.js).
   const [form, setForm] = useState(() => (isEdit
-    ? { date: item.date, amount: String(item.amount), article_key: item.cat || "", counterparty: item.counterparty || "", description: item.description || "", paid: item.status === "paid", account_id: item.account_id ?? "" }
-    : { date: initial.date, amount: "", article_key: kind === "income" ? "other_in" : "", counterparty: "", description: "", paid: false, account_id: "" }));
+    ? { date: item.date, amount: String(item.amount), article_key: item.cat || (kind === "income" ? "other_in" : "other"), counterparty: item.counterparty || "", description: item.description || "", paid: item.status === "paid", account_id: item.account_id ?? "" }
+    : { date: initial.date, amount: "", article_key: kind === "income" ? "other_in" : "other", counterparty: "", description: "", paid: false, account_id: "" }));
 
   // «Повторять» — только для новой записи.
   const [repeat, setRepeat] = useState("none");
@@ -57,7 +59,7 @@ export default function PaymentModal({ cabinetId, kind, categories, accounts, re
     const t = recurring.find((x) => x.id === templateId);
     if (!t) { setErr("Шаблон не найден — возможно, уже удалён."); return; }
     setTplForm({
-      amount: String(t.amount), article_key: t.article_key || "", counterparty: t.counterparty || "", description: t.description || "",
+      amount: String(t.amount), article_key: t.article_key || (kind === "income" ? "other_in" : "other"), counterparty: t.counterparty || "", description: t.description || "",
       rule: t.rule, rule_day: t.rule_day ?? 1, every_n: t.every_n ?? 7, date_from: t.date_from, date_to: t.date_to || "",
     });
     setErr(null);
@@ -234,7 +236,6 @@ function RowForm({ form, setForm, categories, accounts, readOnly, showPaidCheckb
         </Field>
         <Field label="Статья">
           <select value={form.article_key} onChange={up("article_key")} disabled={readOnly} style={{ ...inputStyle, opacity: readOnly ? 0.6 : 1 }}>
-            <option value="">—</option>
             {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </Field>
@@ -274,7 +275,6 @@ function TemplateForm({ form, setForm, categories, kind }) {
         </Field>
         <Field label="Статья">
           <select value={form.article_key} onChange={up("article_key")} style={inputStyle}>
-            <option value="">—</option>
             {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </Field>

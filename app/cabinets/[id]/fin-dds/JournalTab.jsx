@@ -7,7 +7,7 @@ import { C, soft } from "@/lib/palette.js";
 import { ACTIVITIES } from "@/lib/dds.js";
 import PeriodPicker from "../PeriodPicker.jsx";
 import OperationModal from "./OperationModal.jsx";
-import { api, money, signed, ruDate, S, Kpi, Field } from "./ddsUi.js";
+import { api, money, signed, ruDate, mskToday, S, Kpi, Field } from "./ddsUi.js";
 
 const SOURCES = [
   ["manual", "ручные"],
@@ -31,7 +31,9 @@ function sourceBadge(it, cabinetId) {
 }
 
 export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
-  const seedCustom = !!(initial.from && initial.to);
+  // seedCustom — состояние (не константа из initial): «Назначить» переключает PeriodPicker на
+  // «Интервал» программно, не только при заходе по ссылке с датами в URL.
+  const [seedCustom, setSeedCustom] = useState(() => !!(initial.from && initial.to));
   const [filters, setFilters] = useState(() => ({
     from: initial.from || "", to: initial.to || "",
     account: initial.account || "", article: initial.article || "",
@@ -46,6 +48,9 @@ export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
   const [checkedIds, setCheckedIds] = useState({});
   const [assignAcc, setAssignAcc] = useState("");
   const [assignErr, setAssignErr] = useState(null);
+  // Счётчик пересоздаёт PeriodPicker (key) при «Назначить» — его customFrom/customTo
+  // сидируются из value только при монтировании, обычная смена filters.from/to его не трогает.
+  const [pickerSeed, setPickerSeed] = useState(0);
 
   const setF = (patch) => setFilters((f) => ({ ...f, ...patch, page: patch.page != null ? patch.page : 1 }));
 
@@ -72,10 +77,28 @@ export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
   const items = data?.items || [];
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
 
+  const eligibleIds = items.filter((it) => it.account_id == null && it.type !== "transfer").map((it) => it.id);
+  const allEligibleChecked = eligibleIds.length > 0 && eligibleIds.every((id) => checkedIds[id]);
+  function toggleSelectAllPage(checked) {
+    setCheckedIds((c) => { const next = { ...c }; for (const id of eligibleIds) next[id] = checked; return next; });
+  }
+
   async function doDelete(it) {
     if (!confirm("Удалить операцию?")) return;
     try { await api(`/api/cabinets/${cabinetId}/dds`, { action: "delete", id: it.id }); load(); onChanged && onChanged(); }
     catch (e) { console.error("dds delete", e); alert("Не удалилось: " + e.message); }
+  }
+
+  // Плашка «N операций без счёта» считает по ВСЕМУ времени, а журнал — по текущей странице
+  // периода (часто пустой). «Назначить» переключает фильтр на широкий интервал (счёт не
+  // указан), чтобы операции сразу попали в таблицу ниже (ревью финального прогона 17.10.2026).
+  function startAssign() {
+    setSeedCustom(true);
+    setPickerSeed((n) => n + 1);
+    setFilters((f) => ({ ...f, account: "none", from: "2000-01-01", to: mskToday(), page: 1 }));
+    setAssignMode(true);
+    setCheckedIds({});
+    setAssignErr(null);
   }
 
   async function applyAssign() {
@@ -96,6 +119,7 @@ export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
     <div>
       <div style={{ marginBottom: 14 }}>
         <PeriodPicker
+          key={pickerSeed}
           value={{ from: filters.from, to: filters.to }}
           onChange={({ from, to }) => setF({ from, to })}
           defaultGran={seedCustom ? "custom" : "month"}
@@ -156,10 +180,14 @@ export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
         <div style={{ ...S.card, marginBottom: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderColor: "var(--warn)" }}>
           <span style={{ color: C.warn, fontWeight: 600 }}>⚠ {data.noAccountCount} операций без счёта</span>
           {!assignMode ? (
-            <button onClick={() => setAssignMode(true)} style={S.btn}>Назначить</button>
+            <button onClick={startAssign} style={S.btn}>Назначить</button>
           ) : (
             <>
               <span style={{ color: C.muted, fontSize: 12 }}>Отметьте строки в таблице ниже:</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: C.muted, cursor: "pointer" }}>
+                <input type="checkbox" checked={allEligibleChecked} onChange={(e) => toggleSelectAllPage(e.target.checked)} />
+                выбрать все на странице
+              </label>
               <select value={assignAcc} onChange={(e) => setAssignAcc(e.target.value)} style={S.input}>
                 <option value="">— счёт —</option>
                 {accountsByArticle.filter((a) => !a.is_archived).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}

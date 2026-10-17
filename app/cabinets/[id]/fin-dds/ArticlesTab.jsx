@@ -78,7 +78,10 @@ export default function ArticlesTab({ cabinetId, refs, onChanged }) {
                         {canEdit && (
                           <>
                             <button onClick={() => startEdit(a)} style={S.btn}>✎</button>
-                            <button onClick={() => toggleArchive(a)} style={{ ...S.btn, marginLeft: 4 }}>{a.is_archived ? "Показать" : "Скрыть"}</button>
+                            {/* other/other_in — фолбэк операций без статьи, скрыть нельзя (lib/ddsData.js archiveArticle) */}
+                            {a.key !== "other" && a.key !== "other_in" && (
+                              <button onClick={() => toggleArchive(a)} style={{ ...S.btn, marginLeft: 4 }}>{a.is_archived ? "Показать" : "Скрыть"}</button>
+                            )}
                           </>
                         )}
                       </div>

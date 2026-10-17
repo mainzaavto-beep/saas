@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // scripts/smoke-dds.mjs — смоук ДДС (журнал, отчёт, счета, статьи) (17.10.2026).
 // Проверяет:
-//   1) отчёт и журнал прошлого месяца сходятся (поступления/списания);
+//   1) отчёт и журнал месяца с фактом (последний месяц с paid-строками, не обязательно текущий —
+//      на кабинете #1 сентябрь/октябрь бывают пустыми, сверка 0=0 ничего не доказывает) сходятся
+//      (поступления/списания);
 //   2) конец периода N = начало N+1; начало + поток + adjust = конец;
 //   3) Σ остатков на сегодня = Σ стартов счетов + Σ движения (прямым SQL, с правилом opening_date);
-//   4) оплаченные расходы текущего месяца в платёжном календаре = выбытия отчёта за месяц;
+//   4) оплаченные расходы месяца с фактом в платёжном календаре = выбытия отчёта за тот же месяц;
 //   5) у каждой paid-строки есть статья, либо это перевод;
 //   6) (только кабинет #1, обратимо) перевод и попытка операции с чужой статьёй: create → в журнале → delete.
 // Аутентификация — sealed-cookie, как scripts/smoke-payment-calendar.mjs.
@@ -36,23 +38,31 @@ const get = async (path) => {
 };
 
 const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
-const month = today.slice(0, 7);
-const prevMonth = (() => { const [y, m] = month.split('-').map(Number); return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7); })();
 const lastOf = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
+const nextOf = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7); };
 const r2 = (x) => Math.round(x * 100) / 100;
 
-// 1) отчёт и журнал за прошлый месяц сходятся
-const rep = await get(`dds?view=report&from=${prevMonth}-01&to=${lastOf(month)}&grain=month`);
+// Месяц с фактом: на кабинете #1 сентябрь/октябрь бывают без paid-строк (проверка 0=0 ничего не
+// доказывала, ревью 17.10.2026) — берём последний месяц, где paid-строки реально есть.
+const [{ m: lastPaidMonth }] = await tq(`SELECT max(substr(date,1,7)) AS m FROM tenant.dds_movements WHERE status = 'paid'`);
+check('есть месяц с оплаченными строками', !!lastPaidMonth, { lastPaidMonth });
+const month = lastPaidMonth || today.slice(0, 7);
+const nextMonth = nextOf(month);
+console.log(`месяц с фактом: ${month}`);
+
+// 1) отчёт и журнал месяца с фактом сходятся (report охватывает month+nextMonth — второй столбец
+// нужен ниже проверке 2 для «конец N = начало N+1»)
+const rep = await get(`dds?view=report&from=${month}-01&to=${lastOf(nextMonth)}&grain=month`);
 check('report 200', rep.status === 200, rep.data);
-const jr = await get(`dds?view=journal&from=${prevMonth}-01&to=${lastOf(prevMonth)}`);
+const jr = await get(`dds?view=journal&from=${month}-01&to=${lastOf(month)}`);
 check('journal 200', jr.status === 200, jr.data);
 const inc = r2(rep.data.groups.reduce((s, g) => s + g.incomeTotal[0], 0));
 const exp = r2(rep.data.groups.reduce((s, g) => s + g.expenseTotal[0], 0));
-check('журнал прошлого месяца = колонка отчёта (поступления)', Math.abs(inc - jr.data.totals.income) < 0.01, { inc, j: jr.data.totals.income });
-check('журнал прошлого месяца = колонка отчёта (списания)', Math.abs(exp - jr.data.totals.expense) < 0.01, { exp, j: jr.data.totals.expense });
+check('журнал месяца с фактом = колонка отчёта (поступления)', Math.abs(inc - jr.data.totals.income) < 0.01, { inc, j: jr.data.totals.income });
+check('журнал месяца с фактом = колонка отчёта (списания)', Math.abs(exp - jr.data.totals.expense) < 0.01, { exp, j: jr.data.totals.expense });
 
 // 2) конец N = начало N+1; начало + поток + вне статей = конец
-check('конец прошлого = начало текущего', Math.abs(rep.data.closing[0] - rep.data.opening[1]) < 0.01, rep.data);
+check('конец месяца с фактом = начало следующего', Math.abs(rep.data.closing[0] - rep.data.opening[1]) < 0.01, rep.data);
 check('начало + поток + adjust = конец', rep.data.columns.every((_, i) =>
   Math.abs(rep.data.opening[i] + rep.data.netFlow[i] + rep.data.adjust[i] - rep.data.closing[i]) < 0.01));
 
@@ -68,9 +78,9 @@ const [{ s }] = await tq(`
         + (SELECT COALESCE(SUM(e.d),0) FROM e LEFT JOIN a ON a.id = e.acc WHERE e.date <= $1 AND (a.id IS NULL OR e.date >= a.od)))::float8 AS s`, [today]);
 check('Σ остатков = Σ стартов + Σ движения', Math.abs(sumBal - s) < 0.01, { sumBal, s });
 
-// 4) оплаченные расходы текущего месяца в календаре = выбытия отчёта
+// 4) оплаченные расходы месяца с фактом в календаре = выбытия отчёта за тот же месяц
 const cal = await get(`payment-calendar?month=${month}&kind=expense`);
-check('календарь: оплачено = выбытия отчёта за месяц', Math.abs(cal.data.totals.paid - r2(rep.data.groups.reduce((s, g) => s + g.expenseTotal[1], 0))) < 0.01,
+check('календарь: оплачено = выбытия отчёта месяца с фактом', Math.abs(cal.data.totals.paid - r2(rep.data.groups.reduce((s, g) => s + g.expenseTotal[0], 0))) < 0.01,
   { cal: cal.data.totals.paid });
 
 // 5) у каждой paid-строки есть статья либо это перевод
