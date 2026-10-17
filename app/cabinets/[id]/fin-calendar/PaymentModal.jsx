@@ -11,7 +11,7 @@ import { C, soft } from "@/lib/palette.js";
 
 const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
-export default function PaymentModal({ cabinetId, kind, categories, recurring, initial, onClose, onSaved }) {
+export default function PaymentModal({ cabinetId, kind, categories, accounts, recurring, initial, onClose, onSaved }) {
   const isEdit = initial.mode === "edit";
   const item = isEdit ? initial.item : null;
   const isPurchase = isEdit && item.source_kind === "purchase";
@@ -24,8 +24,8 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
   const templateId = isRecurringRow ? Number(item.ref.split(":")[1]) : null;
 
   const [form, setForm] = useState(() => (isEdit
-    ? { date: item.date, amount: String(item.amount), category: item.category || "", counterparty: item.counterparty || "", description: item.description || "", paid: item.status === "paid" }
-    : { date: initial.date, amount: "", category: kind === "income" ? "Прочее" : "", counterparty: "", description: "", paid: false }));
+    ? { date: item.date, amount: String(item.amount), article_key: item.cat || "", counterparty: item.counterparty || "", description: item.description || "", paid: item.status === "paid", account_id: item.account_id ?? "" }
+    : { date: initial.date, amount: "", article_key: kind === "income" ? "other_in" : "", counterparty: "", description: "", paid: false, account_id: "" }));
 
   // «Повторять» — только для новой записи.
   const [repeat, setRepeat] = useState("none");
@@ -57,7 +57,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
     const t = recurring.find((x) => x.id === templateId);
     if (!t) { setErr("Шаблон не найден — возможно, уже удалён."); return; }
     setTplForm({
-      amount: String(t.amount), category: t.category || "", counterparty: t.counterparty || "", description: t.description || "",
+      amount: String(t.amount), article_key: t.article_key || "", counterparty: t.counterparty || "", description: t.description || "",
       rule: t.rule, rule_day: t.rule_day ?? 1, every_n: t.every_n ?? 7, date_from: t.date_from, date_to: t.date_to || "",
     });
     setErr(null);
@@ -66,7 +66,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
 
   function handleSave() {
     if (readOnlyFields) {
-      submit({ action: "update", id: item.id, date: form.date, description: form.description || null });
+      submit({ action: "update", id: item.id, date: form.date, description: form.description || null, account_id: form.account_id || null });
       return;
     }
     if (isRecurringRow && view === "template") {
@@ -74,7 +74,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
       if (!tplForm.date_from) { setErr("Дата начала обязательна"); return; }
       submit({
         action: "recurring_save", id: templateId, type: kind === "income" ? "income" : "expense",
-        amount: Number(tplForm.amount), category: tplForm.category || null, counterparty: tplForm.counterparty || null,
+        amount: Number(tplForm.amount), article_key: tplForm.article_key || null, counterparty: tplForm.counterparty || null,
         description: tplForm.description || null, rule: tplForm.rule,
         rule_day: tplForm.rule === "every_n_days" ? null : Number(tplForm.rule_day),
         every_n: tplForm.rule === "every_n_days" ? Number(tplForm.every_n) : null,
@@ -85,18 +85,18 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
     if (!form.date || !/^\d{4}-\d{2}-\d{2}$/.test(form.date)) { setErr("Дата обязательна (ГГГГ-ММ-ДД)"); return; }
     if (!(Number(form.amount) > 0)) { setErr("Сумма должна быть больше 0"); return; }
     if (isEdit) {
-      submit({ action: "update", id: item.id, date: form.date, amount: Number(form.amount), category: form.category || null, counterparty: form.counterparty || null, description: form.description || null });
+      submit({ action: "update", id: item.id, date: form.date, amount: Number(form.amount), article_key: form.article_key || null, counterparty: form.counterparty || null, description: form.description || null, account_id: form.account_id || null });
       return;
     }
     if (repeat !== "none") {
       submit({
         action: "recurring_save", type: kind === "income" ? "income" : "expense", amount: Number(form.amount),
-        category: form.category || null, counterparty: form.counterparty || null, description: form.description || null,
+        article_key: form.article_key || null, counterparty: form.counterparty || null, description: form.description || null,
         rule: repeat, rule_day: repeat === "every_n_days" ? null : Number(ruleDay),
         every_n: repeat === "every_n_days" ? Number(everyN) : null, date_from: form.date, date_to: dateTo || null,
       });
     } else {
-      submit({ action: "create", type: kind === "income" ? "income" : "expense", date: form.date, amount: Number(form.amount), category: form.category || null, counterparty: form.counterparty || null, description: form.description || null, paid: form.paid });
+      submit({ action: "create", type: kind === "income" ? "income" : "expense", date: form.date, amount: Number(form.amount), article_key: form.article_key || null, counterparty: form.counterparty || null, description: form.description || null, paid: form.paid, account_id: form.account_id || null });
     }
   }
 
@@ -153,7 +153,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
         {isRecurringRow && view === "template" ? (
           <TemplateForm form={tplForm} setForm={setTplForm} categories={categories} kind={kind} />
         ) : (
-          <RowForm form={form} setForm={setForm} categories={categories} readOnly={readOnlyFields} showPaidCheckbox={!isEdit} />
+          <RowForm form={form} setForm={setForm} categories={categories} accounts={accounts} readOnly={readOnlyFields} showPaidCheckbox={!isEdit} />
         )}
 
         {!isEdit && (
@@ -196,7 +196,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, gap: 8, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {isEdit && !isPurchase && view === "row" && (
+            {isEdit && !isPurchase && !isPayout && view === "row" && (
               <button onClick={handleDelete} disabled={saving} style={dangerBtnStyle}>Удалить</button>
             )}
             {isRecurringRow && view === "row" && (
@@ -221,7 +221,7 @@ export default function PaymentModal({ cabinetId, kind, categories, recurring, i
   );
 }
 
-function RowForm({ form, setForm, categories, readOnly, showPaidCheckbox }) {
+function RowForm({ form, setForm, categories, accounts, readOnly, showPaidCheckbox }) {
   const up = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -233,9 +233,9 @@ function RowForm({ form, setForm, categories, readOnly, showPaidCheckbox }) {
           <input type="number" step="any" value={form.amount} onChange={up("amount")} disabled={readOnly} style={{ ...inputStyle, width: 130, opacity: readOnly ? 0.6 : 1 }} />
         </Field>
         <Field label="Статья">
-          <select value={form.category} onChange={up("category")} disabled={readOnly} style={{ ...inputStyle, opacity: readOnly ? 0.6 : 1 }}>
+          <select value={form.article_key} onChange={up("article_key")} disabled={readOnly} style={{ ...inputStyle, opacity: readOnly ? 0.6 : 1 }}>
             <option value="">—</option>
-            {categories.map((c) => <option key={c.key} value={c.label}>{c.label}</option>)}
+            {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </Field>
       </div>
@@ -245,6 +245,12 @@ function RowForm({ form, setForm, categories, readOnly, showPaidCheckbox }) {
         </Field>
         <Field label="Комментарий">
           <input value={form.description} onChange={up("description")} style={{ ...inputStyle, width: 220 }} />
+        </Field>
+        <Field label="Счёт">
+          <select value={form.account_id} onChange={up("account_id")} style={inputStyle}>
+            <option value="">по умолчанию</option>
+            {(accounts || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
         </Field>
       </div>
       {showPaidCheckbox && (
@@ -267,9 +273,9 @@ function TemplateForm({ form, setForm, categories, kind }) {
           <input type="number" step="any" value={form.amount} onChange={up("amount")} style={{ ...inputStyle, width: 130 }} />
         </Field>
         <Field label="Статья">
-          <select value={form.category} onChange={up("category")} style={inputStyle}>
+          <select value={form.article_key} onChange={up("article_key")} style={inputStyle}>
             <option value="">—</option>
-            {categories.map((c) => <option key={c.key} value={c.label}>{c.label}</option>)}
+            {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
           </select>
         </Field>
       </div>

@@ -118,12 +118,12 @@ export default function MoneyCalendar({ cabinetId, kind }) {
     e.stopPropagation();
     if (!canEdit) return;
     if (item.status === "planned") {
-      if (kind === "income") setReceiveFor({ mode: "mark", item, value: String(item.amount) });
+      if (kind === "income") setReceiveFor({ mode: "mark", item, value: String(item.amount), account: "" });
       else doAction({ action: "mark_paid", id: item.id });
     } else if (item.status === "paid") {
       doAction({ action: "unmark", id: item.id });
     } else if (item.status === "forecast") {
-      setReceiveFor({ mode: "payout", item, value: String(item.amount) });
+      setReceiveFor({ mode: "payout", item, value: String(item.amount), account: "" });
     }
   }
 
@@ -145,8 +145,8 @@ export default function MoneyCalendar({ cabinetId, kind }) {
       setError(mode === "mark" ? "Сумма должна быть ≥ 0" : "Введите сумму"); return;
     }
     const ok = mode === "mark"
-      ? await doAction({ action: "mark_paid", id: item.id, amount: amt })
-      : await doAction({ action: "receive_payout", ref: item.ref, platform: item.platform, date: item.date, amount: amt, amount_planned: item.amount });
+      ? await doAction({ action: "mark_paid", id: item.id, amount: amt, account_id: receiveFor.account || null })
+      : await doAction({ action: "receive_payout", ref: item.ref, platform: item.platform, date: item.date, amount: amt, amount_planned: item.amount, account_id: receiveFor.account || null });
     if (ok) setReceiveFor(null);
   }
 
@@ -197,7 +197,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
       ))}
 
       {modal && (
-        <PaymentModal cabinetId={cabinetId} kind={kind} categories={data?.categories || []} recurring={data?.recurring || []}
+        <PaymentModal cabinetId={cabinetId} kind={kind} categories={data?.categories || []} accounts={data?.accounts || []} recurring={data?.recurring || []}
           initial={modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
       )}
 
@@ -209,7 +209,7 @@ export default function MoneyCalendar({ cabinetId, kind }) {
       )}
 
       {receiveFor && (
-        <ReceivePopover state={receiveFor} setState={setReceiveFor} kind={kind}
+        <ReceivePopover state={receiveFor} setState={setReceiveFor} kind={kind} accounts={data?.accounts || []}
           onConfirm={confirmReceive} onClose={() => setReceiveFor(null)} />
       )}
     </div>
@@ -364,7 +364,7 @@ function DayListModal({ date, items, today, catMap, kind, canEdit, onClose, onIt
 }
 
 // ---------------- Поповер «фактическая сумма» (вместо window.prompt) ----------------
-function ReceivePopover({ state, setState, kind, onConfirm, onClose }) {
+function ReceivePopover({ state, setState, kind, accounts, onConfirm, onClose }) {
   return (
     <div style={modalOverlay} onClick={onClose}>
       <div style={{ ...modalBox, maxWidth: 300 }} onClick={(e) => e.stopPropagation()}>
@@ -375,6 +375,11 @@ function ReceivePopover({ state, setState, kind, onConfirm, onClose }) {
           onChange={(e) => setState({ ...state, value: e.target.value })}
           onKeyDown={(e) => { if (e.key === "Enter") onConfirm(); }}
           style={{ ...inputStyle, width: "100%", marginBottom: 12, boxSizing: "border-box" }} />
+        <select value={state.account || ""} onChange={(e) => setState({ ...state, account: e.target.value })}
+          style={{ ...inputStyle, width: "100%", marginBottom: 12, boxSizing: "border-box" }}>
+          <option value="">Счёт: по умолчанию</option>
+          {(accounts || []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onClose} style={resetBtnStyle}>Отмена</button>
           <button onClick={onConfirm} style={addBtnStyle}>Подтвердить</button>

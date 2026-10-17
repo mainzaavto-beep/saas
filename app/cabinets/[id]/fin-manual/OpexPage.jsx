@@ -75,16 +75,6 @@ function dayLabel(iso) {
 // Тема (совпадает с соседними страницами кабинета).
 
 // Запись OPEX-строки в ДДС (фиксация движения денег). Паттерн из соседних страниц.
-const postToDds = async (opts) => {
-  try {
-    await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(opts),
-    });
-  } catch {}
-};
-
 const DOMAIN_FILTERS = ["all", ...DOMAINS]; // «Все» + 3 домена
 const PIE_PALETTE = SERIES;
 
@@ -354,24 +344,6 @@ export default function OpexPage({ cabinetId }) {
       return;
     }
     reload();
-  }
-
-  // ↧ Записать эту OPEX-строку в ДДС (фиксация движения). Только для business.
-  async function postToDdsRecord(it) {
-    const date = it.op_date || (period + "-01");
-    if (!confirm(`Записать OPEX «${it.category}» ${money(it.amount)} от ${date} в ДДС?`)) return;
-    try {
-      await postToDds({
-        date, type: "expense", amount: it.amount,
-        category: it.category, source: "auto_opex",
-        reference: `opex:${it.id}`,
-        description: it.note || `OPEX ${it.category}`,
-        counterparty: it.counterparty, status: "planned",
-      });
-      alert("Записано в ДДС (статус: planned).");
-    } catch (e) {
-      alert("Не получилось: " + e.message);
-    }
   }
 
   // Данные для графиков (на основе загруженных items — уже отфильтрованы по домену).
@@ -702,9 +674,6 @@ export default function OpexPage({ cabinetId }) {
                     <td style={{ padding: "8px 10px", color: C.muted }}>{it.note || "—"}</td>
                     <td style={tdRight}>
                       <button onClick={() => startEdit(it)} style={miniBtn} title="Править">✎</button>
-                      {it.domain !== "business" ? null : (
-                        <button onClick={() => postToDdsRecord(it)} style={{ ...miniBtn, color: C.accent, marginLeft: 4 }} title="Записать в ДДС">↧</button>
-                      )}
                       <button onClick={() => delRecord(it.id)} style={{ ...miniBtn, color: C.neg, marginLeft: 4 }} title="Удалить">🗑</button>
                     </td>
                   </>
