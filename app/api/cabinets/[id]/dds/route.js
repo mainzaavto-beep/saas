@@ -1,108 +1,54 @@
-// /api/cabinets/[id]/dds — CRUD движений денежных средств.
-// GET ?date_from=&date_to=&type=&category=  список + totals + по категориям.
-// POST {id?, date, type, amount, ...}  upsert.
-// DELETE ?id=N  мягкое удаление (status='archived').
+// /api/cabinets/[id]/dds — ДДС: журнал фактических операций и отчёт (17.10.2026, спека
+// docs/superpowers/specs/2026-10-17-dds-design.md §4). Запись — через lib/paymentCalendarData.js.
+// Остатки (endBalance, opening/closing/byAccount отчёта) — только владельцу (redactReport).
 import { NextResponse } from "next/server";
-import { tenantQuery } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
+import { editRules, redactReport } from "@/lib/dds.js";
+import { loadJournal, loadReport, loadEndBalance } from "@/lib/ddsData.js";
+import { createMovement, updateMovement, archiveMovement, assignAccount } from "@/lib/paymentCalendarData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ALLOWED_TYPE = ["income", "expense"];
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const mskToday = () => new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+const monthsBack = (today, n) => { const [y, m] = today.split("-").map(Number); const d = new Date(Date.UTC(y, m - 1 - n, 1)); return d.toISOString().slice(0, 10); };
 
 export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
-  const dateFrom = url.searchParams.get("date_from") || "";
-  const dateTo = url.searchParams.get("date_to") || "";
-  const type = url.searchParams.get("type") || "";
-  const category = url.searchParams.get("category") || "";
-
-  const conds = ["status != 'archived'"];
-  const params = [];
-  if (dateFrom) { conds.push("date >= $" + (params.length + 1)); params.push(dateFrom); }
-  if (dateTo) { conds.push("date <= $" + (params.length + 1)); params.push(dateTo); }
-  if (type && ALLOWED_TYPE.includes(type)) { conds.push("type = $" + (params.length + 1)); params.push(type); }
-  if (category) { conds.push("category = $" + (params.length + 1)); params.push(category); }
-  const where = conds.join(" AND ");
-
-  const items = await tenantQuery(
-    `SELECT id, date, type, amount, category, counterparty, description, status,
-            platform, nm_id, income_type, account_from, account_to, source, reference
-     FROM tenant.dds_movements WHERE ${where} ORDER BY date DESC, id DESC LIMIT 500`,
-    params
-  );
-  const incomeRows = await tenantQuery(
-    `SELECT COALESCE(SUM(amount),0) AS t FROM tenant.dds_movements WHERE type='income' AND ${where}`, params
-  );
-  const expenseRows = await tenantQuery(
-    `SELECT COALESCE(SUM(amount),0) AS t FROM tenant.dds_movements WHERE type='expense' AND ${where}`, params
-  );
-  const byCat = await tenantQuery(
-    `SELECT category, type, COALESCE(SUM(amount),0) AS total
-     FROM tenant.dds_movements WHERE ${where}
-     GROUP BY category, type ORDER BY type, total DESC`, params
-  );
-  const facets = await tenantQuery(
-    `SELECT COALESCE(category,'') AS category, COUNT(*) AS n
-     FROM tenant.dds_movements WHERE status != 'archived' GROUP BY category ORDER BY n DESC`
-  );
-
-  return NextResponse.json({
-    items, totals: {
-      income: Math.round((incomeRows[0]?.t || 0) * 100) / 100,
-      expense: Math.round((expenseRows[0]?.t || 0) * 100) / 100,
-      net: Math.round(((incomeRows[0]?.t || 0) - (expenseRows[0]?.t || 0)) * 100) / 100,
-    },
-    byCategory: byCat,
-    facets: { categories: facets },
-  });
+  const sp = (k) => url.searchParams.get(k) || "";
+  const today = mskToday();
+  const isOwner = cabinet.role === "owner";
+  const canEdit = isOwner || cabinet.role === "manager";
+  if (sp("view") === "report") {
+    const to = ISO.test(sp("to")) ? sp("to") : today;
+    const from = ISO.test(sp("from")) ? sp("from") : monthsBack(today, 5);
+    if (from > to) return NextResponse.json({ error: "from > to" }, { status: 400 });
+    const report = await loadReport({ from, to, grain: sp("grain"), today });
+    return NextResponse.json({ ...redactReport(report, isOwner), from, to, today, canEdit, isOwner });
+  }
+  const f = { from: sp("from"), to: sp("to"), account: sp("account"), article: sp("article"), type: sp("type"),
+    source: sp("source"), q: sp("q"), page: sp("page") };
+  const j = await loadJournal(f);
+  const items = j.items.map((it) => ({ ...it, rules: editRules(it) }));
+  const out = { ...j, items, canEdit, isOwner, today };
+  if (isOwner) out.endBalance = await loadEndBalance(ISO.test(f.to) ? f.to : today);
+  return NextResponse.json(out);
 });
 
-export const POST = withCabinet(async (req, { cabinet }) => {
+export const POST = withCabinet(async (req) => {
   const b = await req.json();
-  const { id, date, type, amount, category, counterparty, description, status,
-          platform, nm_id, income_type, account_from, account_to, source } = b;
-  if (!date || !type || amount == null) return NextResponse.json({ error: "date + type + amount required" }, { status: 400 });
-  if (!ALLOWED_TYPE.includes(type)) return NextResponse.json({ error: "type must be income|expense" }, { status: 400 });
-
-  const vals = [
-    date, type, Number(amount), category || null, counterparty || null,
-    description || null, status || "paid", platform || null,
-    nm_id ? Number(nm_id) : null, income_type || null,
-    account_from || null, account_to || null, source || "manual",
-  ];
-
-  if (id) {
-    // Update
-    await tenantQuery(
-      `UPDATE tenant.dds_movements SET
-        date=$1, type=$2, amount=$3, category=$4, counterparty=$5,
-        description=$6, status=$7, platform=$8, nm_id=$9, income_type=$10,
-        account_from=$11, account_to=$12, source=$13, updated_at=now()
-       WHERE id=$14`,
-      [...vals, Number(id)]
-    );
-    return NextResponse.json({ ok: true, id: Number(id) });
+  try {
+    switch (b.action) {
+      case "create": return NextResponse.json({ ok: true, id: await createMovement(b) });
+      case "update": await updateMovement(Number(b.id), b); break;
+      case "delete": await archiveMovement(Number(b.id)); break;
+      case "assign_account": return NextResponse.json({ ok: true, n: await assignAccount(b.ids, b.account_id) });
+      default: return NextResponse.json({ error: `неизвестное действие: ${b.action}` }, { status: 400 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    if (e.status) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e; // 500 → withCabinet откатывает транзакцию
   }
-  // Insert
-  const rows = await tenantQuery(
-    `INSERT INTO tenant.dds_movements (cabinet_id, date, type, amount, category, counterparty,
-       description, status, platform, nm_id, income_type, account_from, account_to, source)
-     VALUES (current_setting('app.cabinet_id')::bigint,
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-    vals
-  );
-  return NextResponse.json({ ok: true, id: rows[0]?.id });
-}, { requireRole: 'manager' });
-
-export const DELETE = withCabinet(async (req, { cabinet }) => {
-  const url = new URL(req.url);
-  const id = url.searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  await tenantQuery(
-    `UPDATE tenant.dds_movements SET status='archived', updated_at=now() WHERE id=$1`,
-    [Number(id)]
-  );
-  return NextResponse.json({ ok: true });
-}, { requireRole: 'manager' });
+}, { requireRole: "manager" });
