@@ -30,7 +30,7 @@ function sourceBadge(it, cabinetId) {
   return null;
 }
 
-export default function JournalTab({ cabinetId, refs, initial }) {
+export default function JournalTab({ cabinetId, refs, initial, onChanged }) {
   const seedCustom = !!(initial.from && initial.to);
   const [filters, setFilters] = useState(() => ({
     from: initial.from || "", to: initial.to || "",
@@ -74,7 +74,7 @@ export default function JournalTab({ cabinetId, refs, initial }) {
 
   async function doDelete(it) {
     if (!confirm("Удалить операцию?")) return;
-    try { await api(`/api/cabinets/${cabinetId}/dds`, { action: "delete", id: it.id }); load(); }
+    try { await api(`/api/cabinets/${cabinetId}/dds`, { action: "delete", id: it.id }); load(); onChanged && onChanged(); }
     catch (e) { console.error("dds delete", e); alert("Не удалилось: " + e.message); }
   }
 
@@ -86,7 +86,7 @@ export default function JournalTab({ cabinetId, refs, initial }) {
     try {
       await api(`/api/cabinets/${cabinetId}/dds`, { action: "assign_account", ids, account_id: Number(assignAcc) });
       setAssignMode(false); setCheckedIds({}); setAssignAcc("");
-      load();
+      load(); onChanged && onChanged();
     } catch (e) { console.error("assign_account", e); setAssignErr(e.message); }
   }
 
@@ -252,7 +252,7 @@ export default function JournalTab({ cabinetId, refs, initial }) {
         <OperationModal
           cabinetId={cabinetId} refs={refs} row={modal.row}
           onClose={() => setModal(null)}
-          onSaved={() => { setModal(null); load(); }}
+          onSaved={() => { setModal(null); load(); onChanged && onChanged(); }}
         />
       )}
     </div>

@@ -75,13 +75,8 @@ export default function ReportTab({ cabinetId, refs, onDrill }) {
     else onDrill({ article: key, from: cols[i].from, to: cols[i].to });
   };
 
-  if (err) return <div style={{ color: C.neg }}>⚠ {err}</div>;
-  if (!data && loading) return <div style={{ color: C.faint, padding: 20 }}>Загрузка…</div>;
-  if (!data) return null;
-
-  const { columns, groups, netFlow, netFlowTotal } = data;
-  const nCols = columns.length;
-  const hasAdjust = data.adjust && data.adjust.some((v) => v !== 0);
+  const nCols = data ? data.columns.length : 0;
+  const hasAdjust = data?.adjust && data.adjust.some((v) => v !== 0);
 
   return (
     <div>
@@ -100,48 +95,53 @@ export default function ReportTab({ cabinetId, refs, onDrill }) {
             }}>{l}</button>
           ))}
         </div>
-        {data.isOwner && (
+        {data?.isOwner && (
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.muted, cursor: "pointer" }}>
             <input type="checkbox" checked={byAccount} onChange={(e) => setByAccount(e.target.checked)} /> По счетам
           </label>
         )}
       </div>
 
-      <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 200 + nCols * 110 }}>
-          <thead>
-            <tr style={{ background: C.surface }}>
-              <th style={{ ...S.th, ...sticky, background: C.surface }}>Статья</th>
-              {columns.map((c) => (
-                <th key={c.key} style={{ ...S.th, textAlign: "right" }}>{c.label}{c.partial ? " · идёт" : ""}</th>
+      {err && <div style={{ color: C.neg, marginBottom: 12 }}>⚠ {err}</div>}
+      {!data && loading && <div style={{ color: C.faint, padding: 20 }}>Загрузка…</div>}
+
+      {data && (
+        <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", minWidth: 200 + nCols * 110 }}>
+            <thead>
+              <tr style={{ background: C.surface }}>
+                <th style={{ ...S.th, ...sticky, background: C.surface }}>Статья</th>
+                {data.columns.map((c) => (
+                  <th key={c.key} style={{ ...S.th, textAlign: "right" }}>{c.label}{c.partial ? " · идёт" : ""}</th>
+                ))}
+                <th style={{ ...S.th, textAlign: "right" }}>Итого</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.isOwner && (
+                <Row label="Остаток на начало" cells={data.opening} total={data.openingTotal} bold />
+              )}
+
+              {data.groups.map((g) => (
+                <GroupBlock key={g.activity} g={g} collapsed={!!collapsed[g.activity]} onToggle={() => toggle(g.activity)} onDrill={drillArticle} columns={data.columns} />
               ))}
-              <th style={{ ...S.th, textAlign: "right" }}>Итого</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.isOwner && (
-              <Row label="Остаток на начало" cells={data.opening} total={data.openingTotal} bold />
-            )}
 
-            {groups.map((g) => (
-              <GroupBlock key={g.activity} g={g} collapsed={!!collapsed[g.activity]} onToggle={() => toggle(g.activity)} onDrill={drillArticle} columns={columns} />
-            ))}
+              <Row label="Чистый денежный поток" cells={data.netFlow} total={data.netFlowTotal} bold />
 
-            <Row label="Чистый денежный поток" cells={netFlow} total={netFlowTotal} bold />
-
-            {data.isOwner && hasAdjust && (
-              <Row label="Изменение остатков вне статей" cells={data.adjust} total={data.adjustTotal} sub
-                title="Старт счёта или операции до даты старта счёта — входят в остаток, но не в поток статей" />
-            )}
-            {data.isOwner && (
-              <Row label="Остаток на конец" cells={data.closing} total={data.closingTotal} bold />
-            )}
-            {data.isOwner && byAccount && (data.byAccount || []).map((a) => (
-              <Row key={a.id} label={a.name} cells={a.closing} total={a.closing[a.closing.length - 1] ?? 0} indent={1} sub />
-            ))}
-          </tbody>
-        </table>
-      </div>
+              {data.isOwner && hasAdjust && (
+                <Row label="Изменение остатков вне статей" cells={data.adjust} total={data.adjustTotal} sub
+                  title="Старт счёта или операции до даты старта счёта — входят в остаток, но не в поток статей" />
+              )}
+              {data.isOwner && (
+                <Row label="Остаток на конец" cells={data.closing} total={data.closingTotal} bold />
+              )}
+              {data.isOwner && byAccount && (data.byAccount || []).map((a) => (
+                <Row key={a.id} label={a.name} cells={a.closing} total={a.closing[a.closing.length - 1] ?? 0} indent={1} sub />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

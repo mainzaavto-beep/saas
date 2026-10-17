@@ -4,10 +4,10 @@
 import { useState } from "react";
 import { C, soft } from "@/lib/palette.js";
 import { ACCOUNT_KINDS } from "@/lib/dds.js";
-import { api, money, S, Field } from "./ddsUi.js";
+import { api, money, mskToday, S, Field } from "./ddsUi.js";
 
 function emptyForm(sort) {
-  return { name: "", kind: "bank_ip", opening_balance: "0", opening_date: new Date().toISOString().slice(0, 10), sort };
+  return { name: "", kind: "bank_ip", opening_balance: "0", opening_date: mskToday(), sort };
 }
 
 export default function AccountsTab({ cabinetId, refs, onChanged }) {

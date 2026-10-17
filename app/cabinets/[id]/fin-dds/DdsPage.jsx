@@ -37,7 +37,7 @@ export default function DdsPage({ cabinetId }) {
         ))}
       </div>
       {err && <div style={{ color: C.neg, marginBottom: 12 }}>⚠ {err}</div>}
-      {refs && tab === "journal" && <JournalTab cabinetId={cabinetId} refs={refs} initial={Object.fromEntries(sp.entries())} />}
+      {refs && tab === "journal" && <JournalTab cabinetId={cabinetId} refs={refs} initial={Object.fromEntries(sp.entries())} onChanged={loadRefs} />}
       {refs && tab === "report" && <ReportTab cabinetId={cabinetId} refs={refs} onDrill={(f) => go("journal", f)} />}
       {refs && tab === "accounts" && refs.isOwner && <AccountsTab cabinetId={cabinetId} refs={refs} onChanged={loadRefs} />}
       {refs && tab === "articles" && <ArticlesTab cabinetId={cabinetId} refs={refs} onChanged={loadRefs} />}
