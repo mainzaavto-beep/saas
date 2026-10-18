@@ -34,6 +34,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
 | Платёжный календарь / план поступлений | `lib/paymentCalendar.js`, `lib/paymentCalendarData.js`, `/fin-calendar`, `/fin-income`, миграция 070 |
+| ДДС (журнал факта, отчёт по видам деятельности, счета, статьи) | `lib/dds.js`, `lib/ddsData.js`, `/fin-dds`, миграция 072 |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
 | Запуск воркера (systemd) | `/etc/systemd/system/saas-*.service` + `worker/run_saas_*.sh` |
@@ -437,6 +438,15 @@ Anthropic отвечает 403 «Request not allowed».
   `lib/__tests__/paymentCalendar{,Guard}.test.mjs`, смоук `node scripts/smoke-payment-calendar.mjs 1`.
   ⚠️ Подсветка активной вкладки верхнего меню на этих страницах не работает — старая проблема топ-меню,
   проект навигации, не этой задачи.
+- **ДДС (с 2026-10-17)** — `/fin-dds` (подвкладки Операции · Отчёт · Счета (owner) · Статьи). Факт = `dds_movements.status='paid'`
+  (план — в календаре). Счета — `tenant.dds_accounts` (старт: сумма на начало дня `opening_date`; операции раньше неё в остаток
+  не входят), статьи — `tenant.dds_articles` (системные заводятся лениво `ensureArticles`, ключи = бывшие `CATEGORIES` календаря +
+  поступления/инвест/финансовые), перевод — одна строка `type='transfer'` (вне статей). Запись `dds_movements` — ТОЛЬКО
+  `lib/paymentCalendarData.js` (матрица правил `editRules` в `lib/dds.js`: у партий и выплат МП — только дата/счёт/комментарий).
+  Остатки/счета/настройки — только owner, API режет (`redactAccounts`/`redactReport`). Счёт по умолчанию и счета выплат —
+  `auth.cabinets.settings.dds`. `postToDds` в «Балансе»/OPEX удалён. Отчёт: строка «Изменение остатков вне статей» = конец −
+  начало − поток (старт счёта внутри периода). Тесты `lib/__tests__/dds{,Guard}.test.mjs`, смоук `node scripts/smoke-dds.mjs 1`.
+  Спека `docs/superpowers/specs/2026-10-17-dds-design.md`.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.

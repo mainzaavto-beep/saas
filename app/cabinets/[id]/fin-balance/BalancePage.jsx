@@ -5,9 +5,6 @@ import { useEffect, useState, useCallback } from "react";
 
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
-// postToDds заглушён — будет запись в ДДС после сохранения баланса (отдельная задача).
-const postToDds = async (opts) => { try { await fetch(`/api/cabinets/${opts.cabinetId || ""}/dds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) }); } catch {} };
-
 // =====================================================================
 //  /finance/balance — бухгалтерский баланс актив/пассив (заявка №38).
 //
@@ -127,25 +124,6 @@ export default function BalancePage({ cabinetId }) {
 
   useEffect(() => { loadSnapshot(date); }, [date, loadSnapshot]);
   useEffect(() => { loadHistory(); }, [loadHistory]);
-
-  // ↧ Записать Δ денег (cash_on_hand) между снапшотами в ДДС.
-  // delta>0 = деньги пришли (income), delta<0 = ушли (expense).
-  async function postDeltaToDds(snap, delta) {
-    const type = delta >= 0 ? "income" : "expense";
-    if (!confirm(`Записать в ДДС: ${type === "income" ? "поступление" : "списание"} ${money(Math.abs(delta))} на ${snap.as_of_date} (Δ денег между снапшотами)?`)) return;
-    try {
-      await postToDds({
-        date: snap.as_of_date, type, amount: Math.abs(delta),
-        category: "Корректировка баланса", source: "auto_balance",
-        reference: `balance:${snap.as_of_date}`,
-        description: `Δ cash_on_hand (корректировка баланса на ${snap.as_of_date})`,
-        status: "planned",
-      });
-      alert("Записано в ДДС (статус: planned).");
-    } catch (e) {
-      alert("Не получилось: " + e.message);
-    }
-  }
 
   // cash_on_hand (live preview) = сумма всех введённых счетов.
   // stock_value (live preview) = авто-себестоимость остатков МП из stockBr (read-only).
@@ -391,11 +369,7 @@ export default function BalancePage({ cabinetId }) {
                       <strong style={{ color: delta >= 0 ? C.pos : C.neg }}>{delta >= 0 ? "+" : ""}{money(delta)}</strong>
                     )}
                   </td>
-                  <td style={{ padding: "6px 8px" }} onClick={(e) => e.stopPropagation()}>
-                    {delta != null && Math.abs(delta) > 0.01 && (
-                      <button onClick={() => postDeltaToDds(h, delta)} style={{ ...miniBtnStyle, color: C.accent }} title="Записать Δ денег в ДДС">↧ В ДДС</button>
-                    )}
-                  </td>
+                  <td style={{ padding: "6px 8px" }} onClick={(e) => e.stopPropagation()}></td>
                 </tr>
                 );
               })}
