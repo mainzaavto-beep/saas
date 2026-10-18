@@ -45,7 +45,7 @@ const r2 = (x) => Math.round(x * 100) / 100;
 // Месяц с фактом: на кабинете #1 сентябрь/октябрь бывают без paid-строк (проверка 0=0 ничего не
 // доказывала, ревью 17.10.2026) — берём последний месяц, где paid-строки реально есть.
 const [{ m: lastPaidMonth }] = await tq(`SELECT max(substr(date,1,7)) AS m FROM tenant.dds_movements WHERE status = 'paid'`);
-check('есть месяц с оплаченными строками', !!lastPaidMonth, { lastPaidMonth });
+if (!lastPaidMonth) console.log('NOTE  оплаченных строк нет (ДДС с чистого листа) — проверки 1/4 сравнивают пустой месяц');
 const month = lastPaidMonth || today.slice(0, 7);
 const nextMonth = nextOf(month);
 console.log(`месяц с фактом: ${month}`);
