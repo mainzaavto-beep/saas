@@ -20,6 +20,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 |---|---|
 | Добавить/изменить API-эндпоинт | `app/api/cabinets/[id]/<name>/route.js` |
 | Страницу дашборда (UI) | `app/cabinets/[id]/<name>/page.js` + `*Page.jsx` |
+| Меню кабинета (разделы сверху / подразделы слева / вкладки) | `lib/cabinetNav.js` (дерево `NAV`, `ALIASES`, `OUTSIDE`) + `app/cabinets/[id]/CabinetFrame.jsx`; новая страница обязана попасть в одно из трёх — гард `lib/__tests__/cabinetNav.test.mjs` |
 | Схему БД / миграции | `db/migrations/0NN_*.sql` (пронумерованы, идемпотентны) |
 | Журнал прогонов сборщиков | jobs.collector_runs (пишет orchestrator; ok/partial/failed/timeout/no_token/skipped; ретеншн 90 дн) |
 | Здоровье данных | /health (доступ: SAAS_OPS_USER_IDS в .env.local) + OnFailure=saas-failure@%n во всех юнитах |
@@ -436,8 +437,9 @@ Anthropic отвечает 403 «Request not allowed».
   «просрочено», пока не отмечена «получено». Страницы `/fin-calendar`/`/fin-income`; старый «План
   платежей» (`payment-plan`, `lib/calendarCalc.js`) удалён. Тесты
   `lib/__tests__/paymentCalendar{,Guard}.test.mjs`, смоук `node scripts/smoke-payment-calendar.mjs 1`.
-  ⚠️ Подсветка активной вкладки верхнего меню на этих страницах не работает — старая проблема топ-меню,
-  проект навигации, не этой задачи.
+  Подсветка меню на этих страницах починена 18.10.2026 навигацией «разделы сверху, подразделы слева»
+  (`CabinetFrame` считает активный пункт по `usePathname`, вкладки ДДС/План поступлений/Календарь — общие
+  из `lib/cabinetNav.js`, свой `FinanceMoneyTabs` удалён).
 - **ДДС (с 2026-10-17)** — `/fin-dds` (подвкладки Операции · Отчёт · Счета (owner) · Статьи). Факт = `dds_movements.status='paid'`
   (план — в календаре). Счета — `tenant.dds_accounts` (старт: сумма на начало дня `opening_date`; операции раньше неё в остаток
   не входят), статьи — `tenant.dds_articles` (системные заводятся лениво `ensureArticles`, ключи = бывшие `CATEGORIES` календаря +

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { C } from "@/lib/palette.js";
-import FinanceMoneyTabs from "../fin-calendar/FinanceMoneyTabs.jsx";
 import JournalTab from "./JournalTab.jsx";
 import ReportTab from "./ReportTab.jsx";
 import AccountsTab from "./AccountsTab.jsx";
@@ -27,7 +26,6 @@ export default function DdsPage({ cabinetId }) {
   const tabs = [["journal", "Операции"], ["report", "Отчёт"], ...(refs?.isOwner ? [["accounts", "Счета"]] : []), ["articles", "Статьи"]];
   return (
     <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif", color: C.ink, padding: "20px 16px", maxWidth: 1400, margin: "0 auto" }}>
-      <FinanceMoneyTabs cabinetId={cabinetId} active="dds" />
       <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800 }}>ДДС — движение денежных средств</h1>
       <p style={{ margin: "0 0 14px", color: C.muted, fontSize: 13 }}>Фактические поступления и списания по счетам. Плановые платежи — в «Платёжном календаре».</p>
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>

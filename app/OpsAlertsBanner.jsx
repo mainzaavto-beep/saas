@@ -5,11 +5,25 @@
 // но тело получает только ops (allowlist в /api/ops/alerts): для остальных
 // роут отвечает 401/403, и баннер рендерит null — обычный пользователь его
 // не видит.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C, soft } from '@/lib/palette.js';
 
 export default function OpsAlertsBanner() {
   const [alerts, setAlerts] = useState([]);
+  const ref = useRef(null);
+
+  // Высота баннера → CSS-переменная --ops-h: липкие шапка и левая панель кабинета
+  // (CabinetFrame) отступают на неё, иначе баннер срезает низ панели.
+  useEffect(() => {
+    const root = document.documentElement;
+    const el = ref.current;
+    if (!el) { root.style.removeProperty('--ops-h'); return; }
+    const set = () => root.style.setProperty('--ops-h', `${el.offsetHeight}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => { ro.disconnect(); root.style.removeProperty('--ops-h'); };
+  }, [alerts.length]);
 
   useEffect(() => {
     let alive = true;
@@ -29,7 +43,7 @@ export default function OpsAlertsBanner() {
   const isRed = alerts.some((a) => a.level === 'red');
 
   return (
-    <div style={{
+    <div ref={ref} style={{
       position: 'sticky', top: 0, zIndex: 1000,
       padding: '8px 16px', fontSize: 13,
       background: isRed ? soft('neg', 12) : soft('warn', 12),

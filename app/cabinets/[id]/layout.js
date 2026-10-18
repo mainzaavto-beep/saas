@@ -1,4 +1,5 @@
-// app/cabinets/[id]/layout.js — верхняя горизонтальная навигация + проверка доступа.
+// app/cabinets/[id]/layout.js — проверка доступа, баннеры и каркас навигации (CabinetFrame:
+// разделы сверху, подразделы слева, вкладки над страницей; меню — lib/cabinetNav.js).
 import { getSession } from "@/lib/session.js";
 import { query } from "@/lib/db.js";
 import { redirect } from "next/navigation";
@@ -9,69 +10,11 @@ import { soft } from "@/lib/palette.js";
 import { cabinetAccess } from "@/lib/billing.js";
 import { classifyOnboarding } from "@/lib/onboardingStatus.js";
 import LoadingBanner from "./LoadingBanner.jsx";
+import CabinetFrame from "./CabinetFrame.jsx";
+import { NAV, navForRole } from "@/lib/cabinetNav.js";
 import "./cabinet.css";
 
 export const dynamic = "force-dynamic";
-
-// Навигация с группами (как в эталоне data-presenter/Nav.jsx).
-// Группа = { label, icon, items: [{href, label}] } — рендерится как dropdown.
-// Пункт = { href, label, icon } — плоский.
-// Настройки и Команда перенесены в профиль (/settings).
-const MENU = [
-  { href: "", label: "Главная", icon: "📊" },
-  { href: "/kpi", label: "Дашборд показателей", icon: "📈" },
-  // «Брифинг» убран из меню 14.10.2026 (решение владельца): брифинги старой системы не пишутся с 10.07,
-  // цифры в них не из канона панели. Роут /briefings открыт только владельцу кабинета #1.
-  {
-    label: "Сводка по товарам", icon: "📦", groupBase: "/summary",
-    items: [
-      { href: "/rnp", label: "РНП (пульс)" },
-      { href: "/summary", label: "По товарам" },
-      { href: "/order-matrix", label: "Матрица заказов" },
-      { href: "/orders", label: "Заказы" },
-      { href: "/geo", label: "География" },
-      { href: "/timing", label: "Заказы по времени" },
-      { href: "/search", label: "Поиск и запросы" },
-      { href: "/abc", label: "ABC анализ" },
-      { href: "/stocks", label: "Склады и индексы" },
-    ],
-  },
-  { href: "/pnl", label: "Сводка по прибыли", icon: "💰" },
-  { href: "/reviews", label: "Отзывы", icon: "⭐" },
-  {
-    label: "Товары", icon: "🏷️", groupBase: "/items",
-    items: [
-      { href: "/deliveries", label: "Доставлено на склад" },
-      { href: "/purchase-need", label: "Потребность" },
-      { href: "/buyout", label: "Процент выкупа" },
-      { href: "/items", label: "Себестоимость" },
-      { href: "/mp-stock", label: "Остатки на МП" },
-      { href: "/inventory", label: "Остатки склад/ФФ" },
-      { href: "/shipments", label: "Отгрузки" },
-      { href: "/move", label: "Перемещение" },
-    ],
-  },
-  {
-    label: "Финансы", icon: "📐", groupBase: "/unit",
-    items: [
-      { href: "/unit", label: "Юнит-экономика" },
-      { href: "/fin-plan", label: "План продаж" },
-      { href: "/fin-manual", label: "Сопутств. расходы" },
-      { href: "/fin-purchases", label: "Закупки" },
-      { href: "/fin-balance", label: "Баланс", roles: ["owner"] },
-      { href: "/bonus", label: "Премия", roles: ["owner", "manager"] },
-      { href: "/fin-self-buyouts", label: "Самовыкупы" },
-      { href: "/fin-dds", label: "ДДС" },
-      { href: "/fin-income", label: "План поступлений" },
-      { href: "/fin-calendar", label: "Платёжный календарь" },
-      { href: "/fin-purchase-plan", label: "План закупок" },
-    ],
-  },
-  { href: "/alerts", label: "Оповещения", icon: "🔔" },
-  { href: "/whats-new", label: "Что нового", icon: "✨" },
-  { href: "/support", label: "Поддержка", icon: "💬" },
-  { href: "/billing", label: "Подписка", icon: "💳" },
-];
 
 export default async function CabinetLayout({ children, params }) {
   const cabinetId = Number(params.id);
@@ -91,10 +34,8 @@ export default async function CabinetLayout({ children, params }) {
   const cab = mem[0];
   const basePath = `/cabinets/${cabinetId}`;
 
-  // Видимость пунктов меню по роли (поле roles у пункта; нет поля — видят все).
-  // Только витрина: доступ режет сервер (requireRole в роутах).
-  const canSee = (x) => !x.roles || x.roles.includes(cab.role);
-  const menu = MENU.filter(canSee).map((x) => (x.items ? { ...x, items: x.items.filter(canSee) } : x));
+  // Видимость пунктов меню по роли — только витрина: доступ режет сервер (requireRole в роутах).
+  const nav = navForRole(NAV, cab.role);
 
   // Магазины со сломанными ключами: данные по ним не собираются, и клиент
   // должен узнать об этом сам, а не по устаревшим цифрам в отчётах.
@@ -172,8 +113,8 @@ export default async function CabinetLayout({ children, params }) {
     [session.user_id]
   );
 
-  // Текущий путь — для подсветки активного пункта меню (приходит из
-  // middleware.js: x-invoke-path — внутренний заголовок Next, наружу не идёт).
+  // Текущий путь — для редиректа заблокированного кабинета на оплату (приходит из
+  // middleware.js). Подсветку меню считает CabinetFrame по usePathname на клиенте.
   const h = await headers();
   const pathname = h.get("x-pathname") || "";
   const current = pathname.startsWith(basePath) ? pathname.slice(basePath.length) : "";
@@ -280,98 +221,59 @@ export default async function CabinetLayout({ children, params }) {
     banners.push({ tone: "warn", text: `Подтвердите почту — мы отправили письмо на ${session.email}.`, link: { href: "/settings", label: "Выслать ещё раз" } });
   }
 
-  return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <div className="topbar-brand">
-            <span className="brand-mark">📊</span>
-            <span className="brand-text">SySell</span>
-          </div>
-
-          <nav className="topnav" id="topnav-groups">
-            {menu.map((item) => {
-              if (item.items) {
-                const groupActive = item.items.some((sub) => current === sub.href);
-                return (
-                  <div key={item.label} className="topnav-group">
-                    <button
-                      className={"topnav-link" + (groupActive ? " active" : "")}
-                      title={item.label}
-                    >
-                      <span className="topnav-icon">{item.icon}</span>
-                      <span className="topnav-label">{item.label}</span>
-                      <span style={{ fontSize: 9, opacity: 0.6 }}>▼</span>
-                    </button>
-                    <div className="topnav-dropdown">
-                      {item.items.map((sub) => (
-                        <Link
-                          key={sub.href}
-                          href={basePath + sub.href}
-                          className={"topnav-sublink" + (current === sub.href ? " active" : "")}
-                        >
-                          {sub.label}
-                        </Link>
-                      ))}
-                    </div>
-                  </div>
-                );
-              }
-              const active = item.href === "" ? current === "" : current === item.href;
-              return (
-                <Link
-                  key={item.href || "home"}
-                  href={basePath + item.href}
-                  className={"topnav-link" + (active ? " active" : "")}
-                  title={item.label}
-                >
-                  <span className="topnav-icon">{item.icon}</span>
-                  <span className="topnav-label">{item.label}</span>
-                </Link>
-              );
-            })}
-          </nav>
-
-          <div className="topbar-actions">
-            {/* Селектор проекта */}
-            <div className="topnav-group project-switcher">
-              <button className="topnav-link" title="Сменить проект">
-                <span className="brand-cab">{cab.display_name}</span>
-                <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 4 }}>▼</span>
-              </button>
-              <div className="topnav-dropdown">
-                {allProjects.map((p) => (
-                  <Link
-                    key={p.cabinet_id}
-                    href={`/cabinets/${p.cabinet_id}`}
-                    className={"topnav-sublink" + (p.cabinet_id === cabinetId ? " active" : "")}
-                  >
-                    {p.display_name || `Проект #${p.cabinet_id}`}
-                  </Link>
-                ))}
-                <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
-                <Link href="/onboarding" className="topnav-sublink">+ Новый проект</Link>
-              </div>
-            </div>
-
-            {/* Переключатель темы */}
-            <ThemeToggle />
-
-            {/* Аватар-профиль */}
+  const actions = (
+    <>
+      {/* Селектор проекта */}
+      <div className="topnav-group project-switcher">
+        <button className="topnav-link" title="Сменить проект">
+          <span className="brand-cab">{cab.display_name}</span>
+          <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 4 }}>▼</span>
+        </button>
+        <div className="topnav-dropdown">
+          {allProjects.map((p) => (
             <Link
-              href={`/settings?cabinet=${cabinetId}`}
-              className="avatar-btn"
-              title="Профиль и настройки"
+              key={p.cabinet_id}
+              href={`/cabinets/${p.cabinet_id}`}
+              className={"topnav-sublink" + (p.cabinet_id === cabinetId ? " active" : "")}
             >
-              {(session.email || "?")[0].toUpperCase()}
+              {p.display_name || `Проект #${p.cabinet_id}`}
             </Link>
-
-            <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
-              <button type="submit" className="topbar-action" title="Выйти">⏻</button>
-            </form>
-          </div>
+          ))}
+          <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
+          <Link href="/onboarding" className="topnav-sublink">+ Новый проект</Link>
         </div>
-      </header>
+      </div>
+      <Link href={`${basePath}/alerts`} className="topbar-action" title="Оповещения">🔔</Link>
+      <Link href={`${basePath}/whats-new`} className="topbar-action" title="Что нового">✨</Link>
+      <ThemeToggle />
+    </>
+  );
+
+  // Блок пользователя внизу левой панели: профиль, поддержка, подписка, выход.
+  const userBlock = (
+    <>
+      <Link href={`${basePath}/support`} className="cab-side-link" title="Поддержка">
+        <span className="cab-side-icon">💬</span><span className="cab-side-label">Поддержка</span>
+      </Link>
+      <Link href={`${basePath}/billing`} className="cab-side-link" title="Подписка">
+        <span className="cab-side-icon">💳</span><span className="cab-side-label">Подписка</span>
+      </Link>
+      <div className="cab-user">
+        <Link href={`/settings?cabinet=${cabinetId}`} className="avatar-btn" title="Профиль и настройки">
+          {(session.email || "?")[0].toUpperCase()}
+        </Link>
+        <Link href={`/settings?cabinet=${cabinetId}`} className="cab-user-email" title="Профиль и настройки">
+          {session.email}
+        </Link>
+        <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
+          <button type="submit" className="cab-logout" title="Выйти">⏻</button>
+        </form>
+      </div>
+    </>
+  );
+
+  const bannerNodes = (
+    <>
       {showLoading && <LoadingBanner cabinetId={cabinetId} />}
       {banners.map((b, i) => (
         <div key={i} style={{
@@ -387,7 +289,12 @@ export default async function CabinetLayout({ children, params }) {
           )}
         </div>
       ))}
-      <main className="main">{children}</main>
-    </div>
+    </>
+  );
+
+  return (
+    <CabinetFrame nav={nav} basePath={basePath} actions={actions} userBlock={userBlock} banners={bannerNodes}>
+      {children}
+    </CabinetFrame>
   );
 }

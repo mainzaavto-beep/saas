@@ -1,5 +1,4 @@
 "use client";
-import FinanceMoneyTabs from "../fin-calendar/FinanceMoneyTabs.jsx";
 import MoneyCalendar from "../fin-calendar/MoneyCalendar.jsx";
 
 // План поступлений (15.10.2026): та же сетка, что «Платёжный календарь», kind=income —
@@ -8,7 +7,6 @@ import MoneyCalendar from "../fin-calendar/MoneyCalendar.jsx";
 export default function IncomePage({ cabinetId }) {
   return (
     <div style={{ padding: "20px 28px" }}>
-      <FinanceMoneyTabs cabinetId={cabinetId} active="income" />
       <MoneyCalendar cabinetId={cabinetId} kind="income" />
     </div>
   );
