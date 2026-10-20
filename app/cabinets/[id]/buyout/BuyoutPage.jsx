@@ -145,6 +145,9 @@ export default function BuyoutPage({ cabinetId }) {
         Примерка — 2+ варианта одной модели (размеры и/или цвета) в одном заказе: покупатель
         меряет и оставляет один. «Одиночные» — честный выкуп модели. Видна только примерка внутри
         одного заказа: разные заказы одного человека маркетплейсы связать не дают.
+        Модель — карточка, как её склеил продавец: если в одну карточку объединены разные товары
+        (например, разные регистраторы), их совместный заказ тоже попадёт в примерки — смотрите
+        разрез с фильтром «Категория».
       </div>
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
@@ -153,7 +156,9 @@ export default function BuyoutPage({ cabinetId }) {
         <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
         <CategoryMultiSelect options={catOptions} selected={cats} setSelected={changeCats}
           buttonStyle={{ padding: "6px 26px 6px 10px", background: C.surface }} />
-        <Segmented value={fit} options={FITS} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
+        <span title="Смешанные (различаются и цвет, и размер) входят только в «Примерки»; «Цвета» — цвета и расцветки">
+          <Segmented value={fit} options={FITS} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
+        </span>
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ padding: "6px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.surface, color: C.ink, minWidth: 240 }} />
         {loading ? <span style={{ fontSize: 13, color: C.muted }}>загрузка…</span> : null}
