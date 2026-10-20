@@ -1,7 +1,7 @@
 """
 SaaS-сборщик ЗАКАЗОВ Ozon (FBO + FBS) → tenant.ozon_orders.
 
-/v3/posting/fbo/list за период + /v3/posting/fbs/list — обе схемы, колонка scheme.
+/v3/posting/fbo/list за период + /v4/posting/fbs/list — обе схемы, колонка scheme.
 Один posting → несколько строк (по product_id).
 sku (fbo_sku) маппится в product_id через tenant.ozon_products; для FBS,
 где sku может отсутствовать в fbo_sku, — fallback по offer_id (_resolve_pid).

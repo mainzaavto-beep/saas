@@ -399,34 +399,47 @@ class OzonClient:
     # --- ЗАКАЗЫ/ПРОДАЖИ: posting fbs ---
 
     def posting_fbs_list(self, since, to, status: str | None = None,
-                         limit: int = 1000, offset: int = 0) -> dict:
-        """FBS-отправления за период (фильтр по дате создания). limit/offset-пагинация."""
+                         limit: int = 100, cursor: str | None = None) -> dict:
+        """FBS-отправления за период (фильтр по дате создания). КУРСОРНАЯ пагинация.
+        Фикс 20.10.2026: /v3/posting/fbs/list Ozon фактически отключил — на ЛЮБОЙ запрос,
+        даже одиночный, отвечает 429 «rate limit per second» с ratelimit-remaining=0
+        (ретраи бесполезны; ozon_orders/ozon_sales падали с 19.10 ~12:00 МСК, заказы Ozon
+        за 19.10 остановились на утреннем тике). /v4 — тот же состав постинга, но без
+        created_at/last_change_date (у v3 FBS их тоже не было — проверено по БД) и с
+        cursor вместо offset, как у /v3/posting/fbo/list; limit у v4 — не больше 100."""
         body: dict[str, Any] = {
             "dir": "ASC",
             "filter": {"since": _iso(since), "to": _iso(to)},
             "limit": limit,
-            "offset": offset,
             "with": {"analytics_data": True},
         }
         if status:
             body["filter"]["status"] = status
-        return self._post(self.host, "/v3/posting/fbs/list", body)
+        if cursor:
+            body["cursor"] = cursor
+        return self._post(self.host, "/v4/posting/fbs/list", body)
 
     def iter_fbs_postings(self, since, to, status: str | None = None):
-        """Итератор FBS-постингов: limit/offset, выход по has_next=False."""
-        offset = 0
+        """Итератор FBS-постингов: курсор, выход по has_next=False / пустой странице /
+        повтору курсора (защита от зацикливания, как в iter_postings)."""
+        cursor = None
+        seen_cursors = set()
         first = True
         while True:
             if not first:
                 time.sleep(REQUEST_PAUSE_SEC)
             first = False
-            res = self.posting_fbs_list(since, to, status=status, offset=offset) or {}
+            res = self.posting_fbs_list(since, to, status=status, cursor=cursor) or {}
             postings = res.get("postings") or []
             for p in postings:
                 yield p
-            if not res.get("has_next") or not postings:
+            new_cursor = res.get("cursor")
+            if not res.get("has_next") or not postings or not new_cursor:
                 break
-            offset += len(postings)
+            if new_cursor in seen_cursors:
+                break
+            seen_cursors.add(new_cursor)
+            cursor = new_cursor
 
     # --- СПРАВОЧНИКИ: кластеры/склады ---
 
