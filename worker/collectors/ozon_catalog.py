@@ -33,6 +33,28 @@ import db_pg
 from ozon_client import OzonClient
 
 
+# Модель/цвет/размер варианта (20.10.2026, «Процент выкупа: одиночные / примерки»). Проба каб. #1:
+# все цвета и размеры комплекта — один model_info.model_id; 10097 «Название цвета» (одно значение),
+# 10096 «Цвет товара» (список оттенков, берём первый); 9533 — буквенный размер (M/L), 4295 —
+# российский (42; 44). 4508 — «размер модели на фото», НЕ размер варианта. У накидок размера нет.
+OZ_ATTR_COLOR_NAME = 10097
+OZ_ATTR_COLOR = 10096
+OZ_ATTR_SIZE = 9533
+OZ_ATTR_SIZE_RU = 4295
+
+
+def variant_attrs(a: dict) -> tuple:
+    vals = {}
+    for at in a.get("attributes") or []:
+        vs = [str(v.get("value")).strip() for v in at.get("values") or [] if str(v.get("value") or "").strip()]
+        if vs:
+            vals[at.get("id")] = vs
+    color = (vals.get(OZ_ATTR_COLOR_NAME) or vals.get(OZ_ATTR_COLOR) or [None])[0]
+    size = (vals.get(OZ_ATTR_SIZE) or [None])[0] or ("/".join(vals[OZ_ATTR_SIZE_RU]) if vals.get(OZ_ATTR_SIZE_RU) else None)
+    model_id = (a.get("model_info") or {}).get("model_id")
+    return (int(model_id) if model_id else None, color, size)
+
+
 def _fbo_commission(item):
     for c in (item.get("commissions") or []):
         if (c.get("sale_schema") or "").upper() == "FBO":
@@ -147,6 +169,7 @@ def collect(visibility="ALL"):
             # Fallback на type_name, если для description_category_id нет узла
             # в дереве (не должно случаться при живом id, но не роняем сборщик).
             category = cat_name or typ_name
+            model_id, color, size = variant_attrs(a)
 
             db_pg.upsert_product(
                 int(pid), item.get("name") or str(pid),
@@ -169,6 +192,7 @@ def collect(visibility="ALL"):
                 description_category_id=desc_cat_id,
                 type_name=typ_name,
                 category=category,
+                model_id=model_id, color=color, size=size,
             )
             n += 1
     print(f"[ozon_catalog] записано {n} товаров → tenant.ozon_products", flush=True)

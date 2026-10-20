@@ -75,6 +75,7 @@ def fetch_all_cards() -> list[dict]:
                 "brand": c.get("brand"),
                 "subject": c.get("subjectName"),
                 "im_url": im_url,
+                "imt_id": c.get("imtID"),
                 "barcodes": parse_card_barcodes(c),
             })
         cur = data.get("cursor", {})
@@ -91,7 +92,7 @@ def collect() -> int:
     cards = fetch_all_cards()
     count = 0
     for c in cards:
-        db_pg.upsert_article(c["nm_id"], c["name"], c.get("brand"), c.get("subject"), c.get("im_url"))
+        db_pg.upsert_article(c["nm_id"], c["name"], c.get("brand"), c.get("subject"), c.get("im_url"), imt_id=c.get("imt_id"))
         count += 1
     print(f"[wb_catalog] собрано {count} артикулов → tenant.wb_articles", flush=True)
     barcodes = [b for c in cards for b in c.get("barcodes") or []]

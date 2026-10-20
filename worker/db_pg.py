@@ -110,12 +110,12 @@ def _upsert_row(table: str, pk_cols: list[str], data_cols: list[str],
 # =====================================================================
 #  Articles (каталог)
 # =====================================================================
-def upsert_article(nm_id, name, brand=None, subject=None, im_url=None):
+def upsert_article(nm_id, name, brand=None, subject=None, im_url=None, imt_id=None):
     _upsert_row(
         "wb_articles", ["nm_id"],
-        ["nm_id", "name", "brand", "subject", "im_url"],
-        {"nm_id": nm_id, "name": name, "brand": brand, "subject": subject, "im_url": im_url},
-        coalesce_cols=["brand", "subject", "im_url"],
+        ["nm_id", "name", "brand", "subject", "im_url", "imt_id"],
+        {"nm_id": nm_id, "name": name, "brand": brand, "subject": subject, "im_url": im_url, "imt_id": imt_id},
+        coalesce_cols=["brand", "subject", "im_url", "imt_id"],
     )
 
 
@@ -899,7 +899,10 @@ def _upsert_raw_multi_pk(table, pk_cols, mapping, rows, bool_cols=None):
 _OZ_PRODUCT_COLS = ["product_id", "offer_id", "name", "barcode", "fbo_sku", "category",
                     "brand", "visibility", "commission_pct", "weight", "length", "width",
                     "height", "volume_weight", "logistics_fbo_tariff", "last_mile_pct",
-                    "vat", "price", "old_price", "im_url", "description_category_id", "type_name"]
+                    "vat", "price", "old_price", "im_url", "description_category_id", "type_name",
+                    "model_id", "color", "size"]
+# Пустой ответ атрибутов не затирает модель/цвет/размер (как name) — 20.10.2026.
+_OZ_COALESCE_COLS = {"name", "model_id", "color", "size"}
 
 
 def upsert_product(product_id, name, **fields):
@@ -913,7 +916,7 @@ def upsert_product(product_id, name, **fields):
     data_cols = list(row.keys())
     all_cols = ["cabinet_id"] + data_cols + ["updated_at"]
     placeholders = ", ".join(["%s"] * len(all_cols))
-    upd = ", ".join(f"{c}=COALESCE(EXCLUDED.{c}, tenant.ozon_products.{c})" if c == "name" else f"{c}=EXCLUDED.{c}"
+    upd = ", ".join(f"{c}=COALESCE(EXCLUDED.{c}, tenant.ozon_products.{c})" if c in _OZ_COALESCE_COLS else f"{c}=EXCLUDED.{c}"
                     for c in data_cols + ["updated_at"])
     vals = [cid] + [row.get(c) for c in data_cols] + [now]
     with get_connection() as conn:
