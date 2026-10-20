@@ -424,6 +424,11 @@ Anthropic отвечает 403 «Request not allowed».
   (разные товары в одной карточке — ложная примерка, встречалось в электронике); фильтр «только
   FBO» может расщепить корзину FBO+FBS. Спека `docs/superpowers/specs/2026-10-20-buyout-fitting-
   design.md`; смоук проверяет single+fitting=all.
+  Корзина Ozon с 20.10.2026 — покупатель (первая часть `posting_number`, наблюдение) + день;
+  «Перезаказ» (`&fit=reorder`, `fit_reorder` входит в «Примерки»): не выкупил → ≤ 7 дн другой
+  вариант той же модели; `assignOzonBaskets`/`tagReorders`/`reorderSummary` в `lib/buyout.js`, роут
+  грузит окно ±7 дн; аномальные префиксы (3+ регионов за день) не склеиваются; спека
+  `docs/superpowers/specs/2026-10-20-buyout-reorders-design.md`.
 - **Матрица заказов (с 2026-10-14)** — страница `/order-matrix` (меню «Сводка по товарам» → «Матрица
   заказов»), API `/api/cabinets/[id]/order-matrix?days=7|14|30|60&platform=all|wb|ozon&showHidden=1`:
   артикул площадки × день → заказы, шт, **все, включая отменённые** (решение владельца; отменено — в

@@ -133,19 +133,23 @@ for (const plat of ['all', 'wb', 'ozon']) {
 const ws = await get(`buyout?series=1&platform=wb&cat=__нет_такой__`);
 check('недели с несуществующей категорией: 13 пустых недель', ws.data.weeks?.length === 13 && ws.data.weeks.every((x) => x.ordered === 0));
 
-// Разрез «одиночные / примерки» (20.10.2026): single + fitting = all, size + color + mixed = fitting
-// по каждому счётчику KPI; дефолт fit=all совпадает с ответом без параметра.
+// Разрез «одиночные / примерки» (20.10.2026, доп. перезаказы 20.10.2026): single + fitting = all,
+// size + color + mixed + reorder = fitting по каждому счётчику KPI; дефолт fit=all совпадает с
+// ответом без параметра; у WB перезаказов нет (нет ID покупателя).
 for (const plat of ['all', 'wb', 'ozon']) {
   const g = async (fit) => (await get(`buyout?platform=${plat}&from=${from}&to=${to}&fit=${fit}`)).data;
-  const [a, s, f, sz, c, m] = await Promise.all(['all', 'single', 'fitting', 'size', 'color', 'mixed'].map(g));
+  const [a, s, f, sz, c, m, r] = await Promise.all(['all', 'single', 'fitting', 'size', 'color', 'mixed', 'reorder'].map(g));
   const base = (await get(`buyout?platform=${plat}&from=${from}&to=${to}`)).data;
   check(`примерки ${plat}: fit=all = без параметра`, K.every((k) => a.kpi[k] === base.kpi[k]));
   const bad1 = K.filter((k) => s.kpi[k] + f.kpi[k] !== a.kpi[k]);
   check(`примерки ${plat}: одиночные + примерки = все`, bad1.length === 0, bad1);
-  const bad2 = K.filter((k) => sz.kpi[k] + c.kpi[k] + m.kpi[k] !== f.kpi[k]);
-  check(`примерки ${plat}: размеры + цвета + смешанные = примерки`, bad2.length === 0, bad2);
+  const bad2 = K.filter((k) => sz.kpi[k] + c.kpi[k] + m.kpi[k] + r.kpi[k] !== f.kpi[k]);
+  check(`примерки ${plat}: размеры + цвета + смешанные + перезаказы = примерки`, bad2.length === 0, bad2);
   check(`примерки ${plat}: сводка есть`, a.fitting && Number.isFinite(a.fitting.baskets), a.fitting);
+  check(`перезаказы ${plat}: сводка есть`, a.reorders && Number.isFinite(a.reorders.pairs), a.reorders);
+  if (plat === 'wb') check('перезаказы wb: пусто (у WB нет покупателя)', a.reorders.pairs === 0 && a.reorders.dropped === 0, a.reorders);
   console.log(`      ${plat}: корзин-примерок ${a.fitting?.fittingBaskets} из ${a.fitting?.baskets} (${a.fitting?.basketShare} %), выкуп по заказу ${a.fitting?.basketBuyoutPct} %, ⚙ ${a.fitting?.estimated}`);
+  console.log(`      ${plat}: перезаказов ${a.reorders?.pairs} из ${a.reorders?.dropped} невыкупленных (${a.reorders?.reorderShare} %), второй выкуплен ${a.reorders?.bBuyoutPct} %`);
 }
 
 console.log(failed ? `\n${failed} FAIL` : '\nALL PASS');
