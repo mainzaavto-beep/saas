@@ -25,6 +25,7 @@ const defTo = () => iso(new Date(Date.now() - 864e5));
 const catQuery = (cats) => [...cats].map((c) => `&cat=${encodeURIComponent(c)}`).join("");
 
 const PLATFORMS = [{ v: "all", l: "Все" }, { v: "wb", l: "Wildberries" }, { v: "ozon", l: "Ozon" }];
+const FITS = [{ v: "all", l: "Все" }, { v: "single", l: "Одиночные" }, { v: "fitting", l: "Примерки" }, { v: "size", l: "Размеры" }, { v: "color", l: "Цвета" }];
 
 const COLS = [
   { key: "ordered", label: "Заказано", tip: "все заказы периода (по дате заказа)" },
@@ -67,6 +68,7 @@ export default function BuyoutPage({ cabinetId }) {
   const [q, setQ] = useState("");
   const [platform, setPlatform] = useState("all");
   const [cats, setCats] = useState(() => new Set());
+  const [fit, setFit] = useState("all");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -78,7 +80,7 @@ export default function BuyoutPage({ cabinetId }) {
     let alive = true;
     setLoading(true);
     setError(null);
-    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}&platform=${platform}${catQuery(cats)}`)
+    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}&platform=${platform}&fit=${fit}${catQuery(cats)}`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
@@ -88,7 +90,7 @@ export default function BuyoutPage({ cabinetId }) {
       .catch((e) => { console.error("buyout load:", e); if (alive) setError(String(e.message || e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [cabinetId, from, to, platform, cats]);
+  }, [cabinetId, from, to, platform, cats, fit]);
 
   // Выбранная, но отсутствующая на площадке/в периоде категория остаётся в списке с 0 —
   // иначе её нельзя было бы снять галочкой.
@@ -139,6 +141,10 @@ export default function BuyoutPage({ cabinetId }) {
         после заказа — свежие недели Ozon дозревают дольше.
         В юнит-экономике «% выкупа» — коэффициент модели логистики по событиям отчёта реализации
         за 30 дней, это другая величина (контракт метрик §18.4).
+        <br /><br />
+        Примерка — 2+ варианта одной модели (размеры и/или цвета) в одном заказе: покупатель
+        меряет и оставляет один. «Одиночные» — честный выкуп модели. Видна только примерка внутри
+        одного заказа: разные заказы одного человека маркетплейсы связать не дают.
       </div>
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
@@ -147,6 +153,7 @@ export default function BuyoutPage({ cabinetId }) {
         <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
         <CategoryMultiSelect options={catOptions} selected={cats} setSelected={changeCats}
           buttonStyle={{ padding: "6px 26px 6px 10px", background: C.surface }} />
+        <Segmented value={fit} options={FITS} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ padding: "6px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.surface, color: C.ink, minWidth: 240 }} />
         {loading ? <span style={{ fontSize: 13, color: C.muted }}>загрузка…</span> : null}
@@ -161,12 +168,21 @@ export default function BuyoutPage({ cabinetId }) {
           <Tile label="Невыкуп" value={num(kpi.refused)} />
           <Tile label="Возвраты" value={num(kpi.returned)} />
           <Tile label="В пути" value={num(kpi.pending)} sub={`${nf1.format(kpi.pendingShare * 100)} % открытых`} />
+          {data.fitting ? (
+            <div title={data.fitting.estimated ? "у части товаров нет модели из каталога — сгруппировано по названию" : ""}>
+              <Tile label={`Примерки${data.fitting.estimated ? " ⚙" : ""}`}
+                value={pct(data.fitting.basketShare)}
+                sub={`заказов-примерок · выкуп по заказу ${pct(data.fitting.basketBuyoutPct)}, оставляют ${data.fitting.avgKept ?? "—"} из ${data.fitting.avgVariants ?? "—"}`} />
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       <BuyoutChart cabinetId={cabinetId} platform={selected ? selected.platform : platform}
-        nmId={selected?.nmId ?? null} name={selected?.name ?? null} cats={cats}
+        nmId={selected?.nmId ?? null} name={selected?.name ?? null} cats={cats} fit={fit}
         onReset={() => setSelected(null)} />
+
+      {data?.fitting?.bySize?.length ? <FitSizeBlock list={data.fitting.bySize} /> : null}
 
       <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
@@ -219,6 +235,36 @@ export default function BuyoutPage({ cabinetId }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function FitSizeBlock({ list }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 14px", marginBottom: 16 }}>
+      <div style={{ cursor: "pointer", fontWeight: 600 }} onClick={() => setOpen(!open)}>
+        {open ? "▾" : "▸"} Что оставляют из примерок по размеру ({list.length})
+      </div>
+      {open ? (
+        <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left", cursor: "default" }}>Модель</th>
+            {["Примерок", "Оставили меньший", "Оставили больший", "Средний", "Несколько", "Ничего"].map((h) => <th key={h} style={{ ...th, cursor: "default" }}>{h}</th>)}
+            <th style={{ ...th, textAlign: "left", cursor: "default" }}>Комбинации</th>
+          </tr></thead>
+          <tbody>{list.map((m) => (
+            <tr key={`${m.platform}|${m.modelKey}`}>
+              <td style={{ ...td, textAlign: "left", whiteSpace: "normal" }}>
+                <span style={{ fontWeight: 600, color: C.accent }}>{m.platform === "ozon" ? "Ozon" : "WB"}</span> {m.name || m.modelKey}
+              </td>
+              <td style={td}>{num(m.baskets)}</td><td style={td}>{num(m.keptSmallest)}</td><td style={td}>{num(m.keptLargest)}</td>
+              <td style={td}>{num(m.keptMiddle)}</td><td style={td}>{num(m.keptSeveral)}</td><td style={td}>{num(m.keptNone)}</td>
+              <td style={{ ...td, textAlign: "left", whiteSpace: "normal", color: C.muted }}>{m.combos.slice(0, 4).map((c) => `${c.combo} ×${c.n}`).join(" · ")}</td>
+            </tr>))}</tbody>
+        </table>
+      ) : null}
+      {open ? <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Чаще оставляют больший — модель маломерит, меньший — большемерит. Только доехавшие заказы.</div> : null}
     </div>
   );
 }

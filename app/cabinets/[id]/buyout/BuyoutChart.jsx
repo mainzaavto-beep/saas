@@ -21,7 +21,7 @@ function splitSeries(points, key, st) {
   else points[key] = st.buyoutPct;
 }
 
-export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset, cats }) {
+export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset, cats, fit = "all" }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -30,7 +30,7 @@ export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset, 
     setError(null);
     const nm = nmId != null ? `&nm=${nmId}` : "";
     const cq = [...(cats || [])].map((c) => `&cat=${encodeURIComponent(c)}`).join("");
-    fetch(`/api/cabinets/${cabinetId}/buyout?series=1&platform=${platform}${nm}${cq}`)
+    fetch(`/api/cabinets/${cabinetId}/buyout?series=1&platform=${platform}${nm}${cq}&fit=${fit}`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
@@ -39,7 +39,7 @@ export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset, 
       .then((j) => { if (alive) setData(j); })
       .catch((e) => { console.error("buyout series:", e); if (alive) setError(String(e.message || e)); });
     return () => { alive = false; };
-  }, [cabinetId, platform, nmId, cats]);
+  }, [cabinetId, platform, nmId, cats, fit]);
 
   const { series, chart } = useMemo(() => {
     if (!data) return { series: [], chart: [] };
