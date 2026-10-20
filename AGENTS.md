@@ -410,6 +410,13 @@ Anthropic отвечает 403 «Request not allowed».
   KPI и график тоже по фильтру (`filterByCategory`/`categoryFacets` в `lib/buyout.js`); мультивыбор —
   общий `app/cabinets/[id]/CategoryMultiSelect.jsx` (вынесен из Сводки).
   Смоук `node scripts/smoke-buyout.mjs 1` (сверяет обе площадки и `platform=all`; Σ по категориям = итог).
+  Разрез «Одиночные / Примерки» (с 20.10.2026): `&fit=all|single|fitting|size|color|mixed`; примерка —
+  2+ варианта ОДНОЙ модели в одном заказе (корзина: Ozon номер заказа, WB `g_number`; модель: Ozon
+  `ozon_products.model_id`, WB `wb_articles.imt_id`, миграция 073; цвет/размер Ozon — атрибуты
+  10097/10096 и 9533/4295 из `ozon_catalog`, WB — `nm_id`/`tech_size`); типы `fit_size`/`fit_color`/
+  `fit_mixed`, сводка `fittingSummary` (доля, выкуп по заказу, «что оставляют» по размерам). Дефолт
+  «Все» — канон и Сводка не меняются. Видна только примерка в одном заказе. Спека
+  `docs/superpowers/specs/2026-10-20-buyout-fitting-design.md`; смоук проверяет single+fitting=all.
 - **Матрица заказов (с 2026-10-14)** — страница `/order-matrix` (меню «Сводка по товарам» → «Матрица
   заказов»), API `/api/cabinets/[id]/order-matrix?days=7|14|30|60&platform=all|wb|ozon&showHidden=1`:
   артикул площадки × день → заказы, шт, **все, включая отменённые** (решение владельца; отменено — в
