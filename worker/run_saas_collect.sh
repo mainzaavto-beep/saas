@@ -26,8 +26,9 @@ DAYS_TO_ARG="${3:-}"; DAYS_TO="${3:-0}"
 # (TimeoutStartSec=1h) → Ozon-сборщики в конце очереди НИКОГДА не запускались
 # → данные Ozon замёрзли на 22-23 июля. Файл wb_jem.py НЕ трогаем (из параллельной
 # сессии) — хозяин решает, чинить ли его. После фикса — вернуть wb_jem сюда.
-# ⚠️ ИНВАРИАНТ: wb_finance раньше wb_order_costs И wb_cabinet_costs, ozon_finance
+# ⚠️ ИНВАРИАНТ: wb_finance раньше wb_order_costs И wb_cabinet_costs, ozon_accruals
 # раньше ozon_order_costs (guard от затирания в orchestrator._run_one — GUARD_DEPS).
+# 2026-10-20: ozon_finance снят (метод Ozon → 404 с 30.09, таблицу панель не читает).
 # 2026-08-07: wb_cabinet_costs добавлен сюда. До этого он был только в WB_COLLECTORS
 # оркестратора, то есть отрабатывал лишь при онбординге и backfill, а регулярный
 # прогон его не звал — таблица wb_cabinet_costs застывала на дате онбординга, и
@@ -50,7 +51,7 @@ DAYS_TO_ARG="${3:-}"; DAYS_TO="${3:-0}"
 # активный отчёт кабинета одновременно — прогон занимает ~9 минут НА КАБИНЕТ
 # (опрос статуса до готовности отчёта), заметно дольше остальных Ozon-сборщиков
 # в этом списке — учтено в docs/metrics-contract.md (окно сбора/расписание).
-MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_finance,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad,wb_supplies,wb_fbs_tasks,ozon_supply_orders,wb_fbs_writeoff,ozon_fbs_writeoff,wb_incomes"
+MAIN_COLLECTORS="wb_catalog,wb_orders,wb_finance,wb_order_costs,wb_cabinet_costs,wb_metrics,wb_ads,wb_prices,ozon_catalog,ozon_orders,ozon_sales,ozon_accruals,ozon_order_costs,ozon_metrics,ozon_efficiency,ozon_sku_ad,wb_supplies,wb_fbs_tasks,ozon_supply_orders,wb_fbs_writeoff,ozon_fbs_writeoff,wb_incomes"
 STOCKS_COLLECTORS="wb_stocks,ozon_stocks,wb_fbs_stocks,ozon_fbs_stocks"
 METRICS30M_COLLECTORS="wb_metrics_30m,ozon_metrics_30m"
 # Справочники WB (склады + тарифы перевозок) — почти статичны, тащим раз в неделю

@@ -201,7 +201,9 @@ OZON_COLLECTORS = [
     "ozon_orders",
     "ozon_sales",
     "ozon_fbs_writeoff",  # авто-списание FBS → stock_moves (после ozon_orders/ozon_sales)
-    "ozon_finance",
+    # ozon_finance снят с расписания 20.10.2026: /v3/finance/transaction/list → 404 с 30.09,
+    # tenant.ozon_finance_report панель не читает (прибыль Ozon — из ozon_accruals). Файл
+    # сборщика оставлен на случай возврата метода; вернуть — сюда И в run_saas_collect.sh.
     "ozon_accruals",    # начисления /v1/finance/accrual/by-day — источник прибыли
                         # (задача 3 плана «переезд финансов Ozon на методы начислений»,
                         # 2026-08-11), ни от чего не зависит. С задачи 5 (2026-08-17)

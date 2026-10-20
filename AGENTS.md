@@ -131,7 +131,7 @@ analytics/data в память и только потом одной транз�
 (раньше обнулял `orders` за 3 дня ДО запроса и при 429 оставлял скорость Ozon
 на `/stocks` пустой до следующего тика). Селф-тесты без сети/БД:
 `worker/collectors/ozon_client_selftest.py`, `ozon_metrics_selftest.py`.
-**FBS-постинги Ozon — `/v4/posting/fbs/list` (с 20.10.2026):** `/v3/posting/fbs/list` Ozon фактически отключил — на любой запрос, даже одиночный, 429 с `ratelimit-remaining=0` (ретраи бесполезны); `ozon_orders`/`ozon_sales` падали с 19.10 ~12:00 МСК, заказы Ozon за 19.10 застряли на утреннем тике. v4 — курсор вместо offset, `limit` ≤ 100, без `created_at`/`last_change_date` (у v3 FBS их тоже не было). Мёртвый `ozon_finance` (`/v3/finance/transaction/list` → 404 с 30.09) панелью не читается — прибыль Ozon идёт из `ozon_accruals`.
+**FBS-постинги Ozon — `/v4/posting/fbs/list` (с 20.10.2026):** `/v3/posting/fbs/list` Ozon фактически отключил — на любой запрос, даже одиночный, 429 с `ratelimit-remaining=0` (ретраи бесполезны); `ozon_orders`/`ozon_sales` падали с 19.10 ~12:00 МСК, заказы Ozon за 19.10 застряли на утреннем тике. v4 — курсор вместо offset, `limit` ≤ 100, без `created_at`/`last_change_date` (у v3 FBS их тоже не было). Мёртвый `ozon_finance` (`/v3/finance/transaction/list` → 404 с 30.09) панелью не читается — прибыль Ozon идёт из `ozon_accruals`; 20.10 снят с расписания (`OZON_COLLECTORS` и `MAIN_COLLECTORS`), файл оставлен.
 **Склейка сиблингов в `ozon_order_costs` (фикс 12.10.2026):** разные отправления одного
 заказа НЕ склеиваются — вместе сливаются только 2-частная база (`…-0449`) и 3-частная форма
 (`…-0449-5`) одного отправления; два 3-частных (`…-0062-2` невыкуп и `…-0062-3` продажа) — разные
