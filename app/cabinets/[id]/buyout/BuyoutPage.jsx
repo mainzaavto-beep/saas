@@ -25,7 +25,7 @@ const defTo = () => iso(new Date(Date.now() - 864e5));
 const catQuery = (cats) => [...cats].map((c) => `&cat=${encodeURIComponent(c)}`).join("");
 
 const PLATFORMS = [{ v: "all", l: "Все" }, { v: "wb", l: "Wildberries" }, { v: "ozon", l: "Ozon" }];
-const FITS = [{ v: "all", l: "Все" }, { v: "single", l: "Одиночные" }, { v: "fitting", l: "Примерки" }, { v: "size", l: "Размеры" }, { v: "color", l: "Цвета" }];
+const FITS = [{ v: "all", l: "Все" }, { v: "single", l: "Одиночные" }, { v: "fitting", l: "Примерки" }, { v: "size", l: "Размеры" }, { v: "color", l: "Цвета" }, { v: "reorder", l: "Перезаказы" }];
 
 const COLS = [
   { key: "ordered", label: "Заказано", tip: "все заказы периода (по дате заказа)" },
@@ -148,6 +148,9 @@ export default function BuyoutPage({ cabinetId }) {
         Модель — карточка, как её склеил продавец: если в одну карточку объединены разные товары
         (например, разные регистраторы), их совместный заказ тоже попадёт в примерки — смотрите
         разрез с фильтром «Категория».
+        Ozon: корзина — покупатель за день (покупатель определяется по номеру заказа — это наблюдение,
+        а не официальное поле Ozon); «Перезаказ» — не выкупил и в течение 7 дней заказал другой размер
+        или цвет той же модели. У WB покупателя не видно — только корзина.
       </div>
 
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
@@ -156,7 +159,7 @@ export default function BuyoutPage({ cabinetId }) {
         <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
         <CategoryMultiSelect options={catOptions} selected={cats} setSelected={changeCats}
           buttonStyle={{ padding: "6px 26px 6px 10px", background: C.surface }} />
-        <span title="Смешанные (различаются и цвет, и размер) входят только в «Примерки»; «Цвета» — цвета и расцветки">
+        <span title="Смешанные (различаются и цвет, и размер) входят только в «Примерки»; «Цвета» — цвета и расцветки; «Перезаказы» — не выкупил и в течение 7 дней заказал другой вариант (только Ozon)">
           <Segmented value={fit} options={FITS} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
         </span>
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
@@ -177,7 +180,7 @@ export default function BuyoutPage({ cabinetId }) {
             <div title={data.fitting.estimated ? "у части товаров нет модели из каталога — сгруппировано по названию" : ""}>
               <Tile label={`Примерки${data.fitting.estimated ? " ⚙" : ""}`}
                 value={pct(data.fitting.basketShare)}
-                sub={`заказов-примерок · выкуп по заказу ${pct(data.fitting.basketBuyoutPct)}, оставляют ${data.fitting.avgKept ?? "—"} из ${data.fitting.avgVariants ?? "—"}`} />
+                sub={`заказов-примерок · выкуп по заказу ${pct(data.fitting.basketBuyoutPct)}, оставляют ${data.fitting.avgKept ?? "—"} из ${data.fitting.avgVariants ?? "—"} · перезаказов ${num(data.reorders?.pairs)}`} />
             </div>
           ) : null}
         </div>
@@ -188,6 +191,7 @@ export default function BuyoutPage({ cabinetId }) {
         onReset={() => setSelected(null)} />
 
       {data?.fitting?.bySize?.length ? <FitSizeBlock list={data.fitting.bySize} /> : null}
+      {data?.reorders?.pairs ? <ReorderBlock r={data.reorders} /> : null}
 
       <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
@@ -270,6 +274,38 @@ function FitSizeBlock({ list }) {
         </table>
       ) : null}
       {open ? <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Чаще оставляют больший — модель маломерит, меньший — большемерит. Только доехавшие заказы.</div> : null}
+    </div>
+  );
+}
+
+function ReorderBlock({ r }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 14px", marginBottom: 16 }}>
+      <div style={{ cursor: "pointer", fontWeight: 600 }} onClick={() => setOpen(!open)}>
+        {open ? "▾" : "▸"} Перезаказы (Ozon): {num(r.pairs)}
+      </div>
+      <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
+        После {pct(r.reorderShare)} невыкупленных заказов Ozon покупатель в течение 7 дней заказал другой вариант той же модели;
+        второй вариант выкупают в {pct(r.bBuyoutPct)} случаев.
+      </div>
+      {open ? (
+        <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left", cursor: "default" }}>Модель</th>
+            {["Перезаказов", "В больший", "В меньший", "Другой цвет", "Смешанные", "Второй выкуплен"].map((h) => <th key={h} style={{ ...th, cursor: "default" }}>{h}</th>)}
+            <th style={{ ...th, textAlign: "left", cursor: "default" }}>Что на что меняют</th>
+          </tr></thead>
+          <tbody>{r.byModel.map((m) => (
+            <tr key={m.modelKey}>
+              <td style={{ ...td, textAlign: "left", whiteSpace: "normal" }}>{m.name || m.modelKey}</td>
+              <td style={td}>{num(m.pairs)}</td><td style={td}>{num(m.sizeUp)}</td><td style={td}>{num(m.sizeDown)}</td>
+              <td style={td}>{num(m.color)}</td><td style={td}>{num(m.mixed)}</td><td style={td}>{pct(m.bBuyoutPct)}</td>
+              <td style={{ ...td, textAlign: "left", whiteSpace: "normal", color: C.muted }}>{m.combos.slice(0, 4).map((c) => `${c.combo} ×${c.n}`).join(" · ")}</td>
+            </tr>))}</tbody>
+        </table>
+      ) : null}
+      {open ? <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Чаще перезаказывают в больший — модель маломерит, в меньший — большемерит.</div> : null}
     </div>
   );
 }
