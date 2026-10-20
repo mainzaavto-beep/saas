@@ -107,5 +107,31 @@ const monday = weekStart(todayMsk());
 check('недели: 13, последняя — текущая', w.data.weeks?.length === 13 && w.data.weeks[12].week === monday,
   `${w.data.weeks?.length} ${w.data.weeks?.[12]?.week} ≠ ${monday}`);
 
+// Фильтр «Категория» (20.10.2026): категории разбивают товары без остатка — Σ по категориям =
+// итог без фильтра (по каждому счётчику), строки фильтра — только своей категории, KPI = Σ строк.
+for (const plat of ['all', 'wb', 'ozon']) {
+  const base = await get(`buyout?platform=${plat}`);
+  const cats = base.data.categories || [];
+  check(`категории ${plat}: есть список`, Array.isArray(base.data.categories) && cats.length > 0, base.data.categories);
+  check(`категории ${plat}: Σ товаров по категориям = товаров всего`,
+    cats.reduce((a, [, n]) => a + n, 0) === base.data.items.length, `${cats.reduce((a, [, n]) => a + n, 0)} ≠ ${base.data.items.length}`);
+  const sum = Object.fromEntries(K.map((k) => [k, 0]));
+  for (const [c] of cats) {
+    const f = await get(`buyout?platform=${plat}&cat=${encodeURIComponent(c)}`);
+    for (const k of K) sum[k] += f.data.kpi[k];
+    check(`  ${plat} «${c}»: строки только этой категории`, f.data.items.every((i) => i.category === c));
+    const viaItems = K.every((k) => f.data.items.reduce((a, i) => a + i[k], 0) === f.data.kpi[k]);
+    check(`  ${plat} «${c}»: KPI = Σ строк`, viaItems);
+  }
+  check(`категории ${plat}: Σ KPI по категориям = KPI без фильтра`, K.every((k) => sum[k] === base.data.kpi[k]),
+    { sum, kpi: base.data.kpi });
+  if (cats.length >= 2) {
+    const two = await get(`buyout?platform=${plat}&cat=${encodeURIComponent(cats[0][0])}&cat=${encodeURIComponent(cats[1][0])}`);
+    check(`категории ${plat}: две категории = Σ товаров двух`, two.data.items.length === cats[0][1] + cats[1][1]);
+  }
+}
+const ws = await get(`buyout?series=1&platform=wb&cat=__нет_такой__`);
+check('недели с несуществующей категорией: 13 пустых недель', ws.data.weeks?.length === 13 && ws.data.weeks.every((x) => x.ordered === 0));
+
 console.log(failed ? `\n${failed} FAIL` : '\nALL PASS');
 process.exit(failed ? 1 : 0);

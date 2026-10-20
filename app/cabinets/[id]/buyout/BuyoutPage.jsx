@@ -3,6 +3,7 @@ import { C, soft } from "@/lib/palette.js";
 import { useEffect, useMemo, useState } from "react";
 import { useSort } from "@/lib/useSort.js";
 import BuyoutChart from "./BuyoutChart";
+import CategoryMultiSelect from "../CategoryMultiSelect.jsx";
 
 // /cabinets/[id]/buyout — «Процент выкупа» (11.10.2026, Ozon добавлен 12.10.2026). WB и
 // Ozon, когортно по дате заказа: берём заказы периода и смотрим судьбу каждого
@@ -18,6 +19,10 @@ const pct = (v) => (v == null || !Number.isFinite(v) ? "—" : `${nf1.format(v)}
 const iso = (d) => d.toISOString().slice(0, 10);
 const defFrom = () => iso(new Date(Date.now() - 30 * 864e5));
 const defTo = () => iso(new Date(Date.now() - 864e5));
+
+// Фильтр «Категория» (20.10.2026) — на сервере: режет заказы до расчёта, поэтому плитки и
+// график тоже по выбранным категориям (поиск по товару — только таблица).
+const catQuery = (cats) => [...cats].map((c) => `&cat=${encodeURIComponent(c)}`).join("");
 
 const PLATFORMS = [{ v: "all", l: "Все" }, { v: "wb", l: "Wildberries" }, { v: "ozon", l: "Ozon" }];
 
@@ -61,6 +66,7 @@ export default function BuyoutPage({ cabinetId }) {
   const [to, setTo] = useState(defTo);
   const [q, setQ] = useState("");
   const [platform, setPlatform] = useState("all");
+  const [cats, setCats] = useState(() => new Set());
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -72,7 +78,7 @@ export default function BuyoutPage({ cabinetId }) {
     let alive = true;
     setLoading(true);
     setError(null);
-    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}&platform=${platform}`)
+    fetch(`/api/cabinets/${cabinetId}/buyout?from=${from}&to=${to}&platform=${platform}${catQuery(cats)}`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
@@ -82,7 +88,21 @@ export default function BuyoutPage({ cabinetId }) {
       .catch((e) => { console.error("buyout load:", e); if (alive) setError(String(e.message || e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [cabinetId, from, to, platform]);
+  }, [cabinetId, from, to, platform, cats]);
+
+  // Выбранная, но отсутствующая на площадке/в периоде категория остаётся в списке с 0 —
+  // иначе её нельзя было бы снять галочкой.
+  const catOptions = useMemo(() => {
+    const list = data?.categories || [];
+    const have = new Set(list.map(([c]) => c));
+    return [...list, ...[...cats].filter((c) => !have.has(c)).map((c) => [c, 0])];
+  }, [data, cats]);
+
+  const changeCats = (upd) => {
+    setCats(upd);
+    setSelected(null);
+    setOpen(new Set());
+  };
 
   const rows = useMemo(() => {
     const items = data?.items || [];
@@ -125,6 +145,8 @@ export default function BuyoutPage({ cabinetId }) {
         <label style={{ fontSize: 13 }}>Заказы с <input type="date" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} /></label>
         <label style={{ fontSize: 13 }}>по <input type="date" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} /></label>
         <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
+        <CategoryMultiSelect options={catOptions} selected={cats} setSelected={changeCats}
+          buttonStyle={{ padding: "6px 26px 6px 10px", background: C.surface }} />
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ padding: "6px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.surface, color: C.ink, minWidth: 240 }} />
         {loading ? <span style={{ fontSize: 13, color: C.muted }}>загрузка…</span> : null}
@@ -143,7 +165,7 @@ export default function BuyoutPage({ cabinetId }) {
       ) : null}
 
       <BuyoutChart cabinetId={cabinetId} platform={selected ? selected.platform : platform}
-        nmId={selected?.nmId ?? null} name={selected?.name ?? null}
+        nmId={selected?.nmId ?? null} name={selected?.name ?? null} cats={cats}
         onReset={() => setSelected(null)} />
 
       <div style={{ overflowX: "auto", background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12 }}>
@@ -174,7 +196,7 @@ export default function BuyoutPage({ cabinetId }) {
                     <b>{it.name || "—"}</b>
                     <div style={{ fontSize: 12, color: C.muted, marginLeft: 18 }}>
                       <span style={{ fontWeight: 600, color: C.accent }}>{it.platform === "ozon" ? "Ozon" : "WB"}</span>
-                      {" "}· {it.article || ""} · {it.nmId}
+                      {" "}· {it.article || ""} · {it.nmId}{it.category ? ` · ${it.category}` : ""}
                     </div>
                   </td>
                   {COLS.map((c) => (
@@ -192,7 +214,7 @@ export default function BuyoutPage({ cabinetId }) {
               ];
             })}
             {!rows.length && !loading ? (
-              <tr><td colSpan={COLS.length + 1} style={{ ...td, textAlign: "center", color: C.muted }}>Нет заказов за период</td></tr>
+              <tr><td colSpan={COLS.length + 1} style={{ ...td, textAlign: "center", color: C.muted }}>{cats.size ? "Нет заказов за период в выбранных категориях" : "Нет заказов за период"}</td></tr>
             ) : null}
           </tbody>
         </table>

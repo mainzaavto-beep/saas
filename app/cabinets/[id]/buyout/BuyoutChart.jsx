@@ -21,7 +21,7 @@ function splitSeries(points, key, st) {
   else points[key] = st.buyoutPct;
 }
 
-export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset }) {
+export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset, cats }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -29,7 +29,8 @@ export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset }
     let alive = true;
     setError(null);
     const nm = nmId != null ? `&nm=${nmId}` : "";
-    fetch(`/api/cabinets/${cabinetId}/buyout?series=1&platform=${platform}${nm}`)
+    const cq = [...(cats || [])].map((c) => `&cat=${encodeURIComponent(c)}`).join("");
+    fetch(`/api/cabinets/${cabinetId}/buyout?series=1&platform=${platform}${nm}${cq}`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
@@ -38,7 +39,7 @@ export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset }
       .then((j) => { if (alive) setData(j); })
       .catch((e) => { console.error("buyout series:", e); if (alive) setError(String(e.message || e)); });
     return () => { alive = false; };
-  }, [cabinetId, platform, nmId]);
+  }, [cabinetId, platform, nmId, cats]);
 
   const { series, chart } = useMemo(() => {
     if (!data) return { series: [], chart: [] };
@@ -66,7 +67,7 @@ export default function BuyoutChart({ cabinetId, platform, nmId, name, onReset }
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, marginBottom: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-        <b>% выкупа по неделям заказа{nmId != null ? ` — ${name || nmId}` : ` — весь кабинет (${platform === "wb" ? "WB" : platform === "ozon" ? "Ozon" : "WB+Ozon"})`}</b>
+        <b>% выкупа по неделям заказа{nmId != null ? ` — ${name || nmId}` : ` — весь кабинет (${platform === "wb" ? "WB" : platform === "ozon" ? "Ozon" : "WB+Ozon"}${cats?.size ? `, ${cats.size === 1 ? [...cats][0] : `категорий: ${cats.size}`}` : ""})`}</b>
         <span style={{ fontSize: 12, color: C.muted }}>
           пунктир — неделя не дозрела · бледная точка — доехало &lt; 20
           {nmId != null ? <> · <button type="button" onClick={onReset} style={{ cursor: "pointer", color: C.accent, background: "none", border: "none", padding: 0, font: "inherit" }}>весь кабинет</button></> : " · клик по товару в таблице — график по размерам"}

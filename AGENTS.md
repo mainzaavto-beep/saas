@@ -405,7 +405,11 @@ Anthropic отвечает 403 «Request not allowed».
   `cancel_initiator` (FBO и FBS) и после 45-дневного окна досбирает незавершённые
   отправления старше окна (≤180 дн, `refresh_stale`; `/v2/posting/fbo/get` причину не отдаёт —
   идём `/v3/posting/*/list` узкими окнами). Юнитка НЕ переведена (коэффициент модели логистики, §18.4).
-  Смоук `node scripts/smoke-buyout.mjs 1` (сверяет обе площадки и `platform=all`).
+  Фильтр «Категория» (с 20.10.2026): `&cat=` (повторяемый), категория товара — WB `wb_orders.category`,
+  Ozon `ozon_products.category` (как фильтр Сводки), пустая → «Без категории»; режет строки ДО расчёта —
+  KPI и график тоже по фильтру (`filterByCategory`/`categoryFacets` в `lib/buyout.js`); мультивыбор —
+  общий `app/cabinets/[id]/CategoryMultiSelect.jsx` (вынесен из Сводки).
+  Смоук `node scripts/smoke-buyout.mjs 1` (сверяет обе площадки и `platform=all`; Σ по категориям = итог).
 - **Матрица заказов (с 2026-10-14)** — страница `/order-matrix` (меню «Сводка по товарам» → «Матрица
   заказов»), API `/api/cabinets/[id]/order-matrix?days=7|14|30|60&platform=all|wb|ozon&showHidden=1`:
   артикул площадки × день → заказы, шт, **все, включая отменённые** (решение владельца; отменено — в
