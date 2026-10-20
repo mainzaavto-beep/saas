@@ -41,6 +41,12 @@ OZ_ATTR_COLOR_NAME = 10097
 OZ_ATTR_COLOR = 10096
 OZ_ATTR_SIZE = 9533
 OZ_ATTR_SIZE_RU = 4295
+# Габариты — fallback размера, когда у товара вообще нет атрибута размера (найдено 20.10.2026,
+# «Процент выкупа: одиночные/примерки»): пледы/накидки («Белый иероглиф 90*160») кодируют размер
+# в offer_id, но в API это ширина (8416) и длина (8415) — size = "90*160" (ширина×длина, как в
+# названии товара). Нужны ОБА атрибута; если есть только один — size остаётся None (не угадываем).
+OZ_ATTR_WIDTH = 8416
+OZ_ATTR_LENGTH = 8415
 
 
 def variant_attrs(a: dict) -> tuple:
@@ -51,6 +57,8 @@ def variant_attrs(a: dict) -> tuple:
             vals[at.get("id")] = vs
     color = (vals.get(OZ_ATTR_COLOR_NAME) or vals.get(OZ_ATTR_COLOR) or [None])[0]
     size = (vals.get(OZ_ATTR_SIZE) or [None])[0] or ("/".join(vals[OZ_ATTR_SIZE_RU]) if vals.get(OZ_ATTR_SIZE_RU) else None)
+    if not size and vals.get(OZ_ATTR_WIDTH) and vals.get(OZ_ATTR_LENGTH):
+        size = f"{vals[OZ_ATTR_WIDTH][0]}*{vals[OZ_ATTR_LENGTH][0]}"
     model_id = (a.get("model_info") or {}).get("model_id")
     return (int(model_id) if model_id else None, color, size)
 

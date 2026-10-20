@@ -22,8 +22,11 @@ assert m.variant_attrs(bra) == (6175686419, "баклажановый", "M"), m.
 no_letter = {"model_info": {"model_id": 1}, "attributes": [attr(10096, "коричневый", "шоколадный"), attr(4295, "42", "44")]}
 assert m.variant_attrs(no_letter) == (1, "коричневый", "42/44"), m.variant_attrs(no_letter)
 
-cover = {"model_info": {"model_id": 5315790675}, "attributes": [attr(8415, "160"), attr(10097, "коричневый")]}
-assert m.variant_attrs(cover) == (5315790675, "коричневый", None), m.variant_attrs(cover)
+cover = {"model_info": {"model_id": 5315790675}, "attributes": [attr(8415, "160"), attr(8416, "90"), attr(10097, "коричневый")]}
+assert m.variant_attrs(cover) == (5315790675, "коричневый", "90*160"), m.variant_attrs(cover)
+
+cover_no_width = {"model_info": {"model_id": 1}, "attributes": [attr(8415, "160"), attr(10097, "коричневый")]}
+assert m.variant_attrs(cover_no_width) == (1, "коричневый", None), m.variant_attrs(cover_no_width)
 
 assert m.variant_attrs({}) == (None, None, None)
 assert m.variant_attrs({"model_info": {"model_id": 0}, "attributes": [attr(10097, "  ")]}) == (None, None, None)
