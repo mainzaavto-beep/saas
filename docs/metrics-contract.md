@@ -3024,7 +3024,8 @@ WB `wb_orders.warehouse_type = 'Склад WB'`, Ozon `ozon_orders.scheme = 'fbo
 Проба (каб. #1, FBO, 90 дн до 20.10.2026, ДО фикса размера Ozon из габаритов): WB — fit_size
 93 / fit_color 58 / fit_mixed 40 строк; Ozon — fit_size 70 / fit_color 99 / fit_mixed 41. После
 фикса часть пледов/накидок переехала из `fit_size` в `fit_color` (размер из габаритов совпал,
-различие оказалось только в узоре) — актуальные цифры в отчёте финальной ревью-волны этой задачи.
+различие оказалось только в узоре): Ozon — fit_size 50 / fit_color 119 / fit_mixed 41 строк
+(«Пледы и покрывала»: 0 / 60 / —).
 Смоук `scripts/smoke-buyout.mjs` проверяет `single + fitting = all` и `size + color + mixed =
 fitting` по каждому счётчику KPI для обеих площадок и `platform=all`.
 
