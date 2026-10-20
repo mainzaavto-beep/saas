@@ -24,15 +24,17 @@
 - **Корзина**: Ozon — номер заказа = первые две части `posting_number` (`0107344381-0022-1` →
   `0107344381-0022`); WB — `wb_orders.g_number`.
 - **Модель**: Ozon — `ozon_products.model_id`; WB — `wb_articles.imt_id`. Fallback (поле пусто) —
-  название товара (`ozon_products.name` / `wb_articles.name`), результат помечается ⚙.
+  Ozon: название товара; WB: сам `nm_id` (без склейки цветов); такие строки помечаются ⚙.
 - **Вариант**: Ozon — `product_id`; WB — пара (`nm_id`, `tech_size`).
-- **Цвет / размер варианта**: Ozon — `ozon_products.color` / `size` (атрибуты каталога); fallback —
-  разбор `offer_id` (последний токен после `-` или пробела — размер, остальное — цвет), ⚙.
-  WB — цвет = `wb_articles.color` (fallback `nm_id`), размер = `tech_size`.
+- **Цвет / размер варианта**: Ozon — `ozon_products.color` / `size` (атрибуты каталога, см. ниже);
+  WB — цвет = `nm_id` (у WB карточка nm = цвет внутри `imt_id`), размер = `tech_size`.
+  Пустой цвет/размер сравнивается как одинаковое значение (накидки без атрибута размера,
+  но одного цвета → различаются только размером → `fit_size`). Разбор `offer_id` не нужен.
 - **Тип строки когорты** (`fit`), по составу её корзины в пределах модели, самовыкупы не считаются:
   - `single` — в корзине один вариант модели (несколько штук одного варианта — тоже `single`);
-  - `fit_size` — 2+ варианта, цвет один, размеры разные;
-  - `fit_color` — 2+ варианта, размер один, цвета разные;
+  - `fit_size` — 2+ варианта, цвет один (в т.ч. варианты, различимые только по id, — накидки
+    одного цвета без атрибута размера);
+  - `fit_color` — 2+ варианта, цвета разные, размер один;
   - `fit_mixed` — различаются и цвет, и размер.
 - Ограничение (пишется на странице): видна только примерка внутри одного заказа; разные заказы
   одного человека не связываются — ID покупателя маркетплейсы не отдают. Оценка — нижняя граница.
@@ -40,22 +42,23 @@
 ## Данные (миграция 073)
 
 - `tenant.ozon_products`: `model_id bigint`, `color text`, `size text`. Сборщик `ozon_catalog` уже
-  вызывает `/v4/product/info/attributes`: `model_info.model_id`, цвет — атрибут «Цвет товара»
-  (id 10096, при наличии «Название цвета» 10097 — оно), размер — атрибут размера категории
-  (по имени атрибута, содержащему «размер»; ids фиксируются пробой `SAAS_PROBE=1` перед
-  реализацией). Новых запросов к Ozon нет.
-- `tenant.wb_articles`: `imt_id bigint`, `color text` — из карточек Content API в `wb_catalog`
-  (`imtID`, характеристика «Цвет»).
+  вызывает `/v4/product/info/attributes` (проба 20.10.2026, каб. #1): `model_info.model_id`
+  (все цвета и размеры комплекта — один `model_id`, count 30); цвет — атрибут 10097 «Название
+  цвета» (`коричневый`), fallback — первое значение 10096 «Цвет товара»; размер — 9533 (`M`,
+  `L`), fallback 4295 (российский, `44`; несколько значений → через `/`). 4508 — «размер на
+  фото», НЕ размер варианта. У накидок атрибутов размера нет → `size` NULL. Новых запросов нет.
+- `tenant.wb_articles`: `imt_id bigint` — из карточек Content API в `wb_catalog` (`imtID`; проба:
+  три цвета комплекта — один `imtID`). Колонки цвета у WB не нужно.
 - Сборщики пишут поля через COALESCE (пустой ответ не затирает). Регистрация сборщиков не
   меняется. `lib/buyoutData.js` добавляет к строкам когорты `basket`, `modelKey`, `variantKey`,
-  `color`, `size`, `fitEstimated`.
+  `colorKey`, `sizeKey`, `sizeLabel`, `fitEstimated`.
 
 ## Расчёт (`lib/buyout.js`, чистые функции)
 
 - `tagFitting(rows)` → строки с полем `fit` и `basketKey` (корзина × модель). Группировка по
   (площадка, корзина, модель).
-- `filterByFitting(rows, kind)`, `kind ∈ all|single|fitting|size|color` (`fitting` = все три
-  `fit_*`; `size` = `fit_size`; `color` = `fit_color`). Отсекает строки ДО `aggregateBuyout` /
+- `filterByFitting(rows, kind)`, `kind ∈ all|single|fitting|size|color|mixed` (`fitting` = все три
+  `fit_*`; `size`/`color`/`mixed` = `fit_size`/`fit_color`/`fit_mixed`). Отсекает строки ДО `aggregateBuyout` /
   `weeklyBuyout` — как `filterByCategory`; вёдра и формула % не меняются.
 - `fittingSummary(rows, asOf)`:
   - `share` — доля корзин-примерок среди корзин модели и доля строк (штук) в примерках;
@@ -69,8 +72,8 @@
 
 ## API и UI
 
-- `GET /api/cabinets/[id]/buyout?...&fit=all|single|fitting|size|color` (дефолт `all`, неизвестное →
-  `all`). Ответ дополняется `fitting` (результат `fittingSummary` по строкам после фильтра
+- `GET /api/cabinets/[id]/buyout?...&fit=all|single|fitting|size|color|mixed` (дефолт `all`,
+  неизвестное → `all`; `mixed` в UI не выводится — для смоука). То же для `series=1`. Ответ дополняется `fitting` (результат `fittingSummary` по строкам после фильтра
   категорий, до фильтра `fit`) и `fit` (применённое значение). Комбинируется с `cat`.
 - `/buyout`: переключатель «Все · Одиночные · Примерки · Размеры · Цвета» рядом с «Категория»;
   плитка «Примерки» (доля, выкуп по заказу) под KPI; сворачиваемый блок «Что оставляют из примерок
@@ -80,8 +83,7 @@
 ## Проверки
 
 - Тесты `lib/__tests__/buyout.test.mjs`: разметка типов (size/color/mixed/single, несколько штук
-  одного варианта, разные модели в корзине, самовыкуп), fallback-разбор `offer_id`,
-  `filterByFitting` (single + fitting = all по всем вёдрам), `fittingSummary` (выкуп по корзине,
+  одного варианта, разные модели в корзине, самовыкуп), fallback-`filterByFitting` (single + fitting = all по всем вёдрам), `fittingSummary` (выкуп по корзине,
   `pending` исключён, `keptBySize`).
 - Смоук `scripts/smoke-buyout.mjs 1`: для обеих площадок и `platform=all` — Σ вёдер `single` +
   `fitting` = `all`; `size` + `color` + mixed = `fitting`.
