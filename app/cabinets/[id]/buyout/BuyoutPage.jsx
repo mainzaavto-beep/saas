@@ -123,9 +123,13 @@ export default function BuyoutPage({ cabinetId }) {
 
   const changePlatform = (v) => {
     setPlatform(v);
+    if (v === "wb" && fit === "reorder") setFit("all");
     setSelected(null);
     setOpen(new Set());
   };
+
+  // WB не отдаёт ID покупателя — перезаказы считаются только для Ozon (§18.6).
+  const fitOptions = useMemo(() => (platform === "wb" ? FITS.filter((o) => o.v !== "reorder") : FITS), [platform]);
 
   const kpi = data?.kpi;
   return (
@@ -159,8 +163,8 @@ export default function BuyoutPage({ cabinetId }) {
         <Segmented value={platform} options={PLATFORMS} onChange={changePlatform} />
         <CategoryMultiSelect options={catOptions} selected={cats} setSelected={changeCats}
           buttonStyle={{ padding: "6px 26px 6px 10px", background: C.surface }} />
-        <span title="Смешанные (различаются и цвет, и размер) входят только в «Примерки»; «Цвета» — цвета и расцветки; «Перезаказы» — не выкупил и в течение 7 дней заказал другой вариант (только Ozon)">
-          <Segmented value={fit} options={FITS} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
+        <span title="Смешанные (различаются и цвет, и размер) входят только в «Примерки»; «Цвета» — цвета и расцветки; «Перезаказы» — не выкупил и в течение 7 дней заказал другой вариант (только Ozon). Фильтр «Перезаказы» показывает строки обоих заказов цепочки (включая звенья, чей первый заказ раньше периода); блок «Перезаказы» считает пары — числа могут различаться.">
+          <Segmented value={fit} options={fitOptions} onChange={(v) => { setFit(v); setSelected(null); setOpen(new Set()); }} />
         </span>
         <input placeholder="Поиск: название, артикул, nm" value={q} onChange={(e) => setQ(e.target.value)}
           style={{ padding: "6px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.surface, color: C.ink, minWidth: 240 }} />
@@ -180,7 +184,7 @@ export default function BuyoutPage({ cabinetId }) {
             <div title={data.fitting.estimated ? "у части товаров нет модели из каталога — сгруппировано по названию" : ""}>
               <Tile label={`Примерки${data.fitting.estimated ? " ⚙" : ""}`}
                 value={pct(data.fitting.basketShare)}
-                sub={`заказов-примерок · выкуп по заказу ${pct(data.fitting.basketBuyoutPct)}, оставляют ${data.fitting.avgKept ?? "—"} из ${data.fitting.avgVariants ?? "—"} · перезаказов ${num(data.reorders?.pairs)}`} />
+                sub={`заказов-примерок · выкуп по заказу ${pct(data.fitting.basketBuyoutPct)}, оставляют ${data.fitting.avgKept ?? "—"} из ${data.fitting.avgVariants ?? "—"}${platform === "wb" ? "" : ` · перезаказов ${num(data.reorders?.pairs)}`}`} />
             </div>
           ) : null}
         </div>
@@ -286,8 +290,8 @@ function ReorderBlock({ r }) {
         {open ? "▾" : "▸"} Перезаказы (Ozon): {num(r.pairs)}
       </div>
       <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
-        После {pct(r.reorderShare)} невыкупленных заказов Ozon покупатель в течение 7 дней заказал другой вариант той же модели;
-        второй вариант выкупают в {pct(r.bBuyoutPct)} случаев.
+        Из {num(r.dropped)} заказов Ozon, отменённых покупателем или невыкупленных, после {pct(r.reorderShare)} покупатель
+        в течение 7 дней заказал другой вариант той же модели; второй вариант выкупают в {pct(r.bBuyoutPct)} случаев.
       </div>
       {open ? (
         <table style={{ borderCollapse: "collapse", width: "100%", marginTop: 8 }}>
