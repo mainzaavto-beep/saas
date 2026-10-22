@@ -36,6 +36,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
 | Платёжный календарь / план поступлений | `lib/paymentCalendar.js`, `lib/paymentCalendarData.js`, `/fin-calendar`, `/fin-income`, миграция 070 |
 | ДДС (журнал факта, отчёт по видам деятельности, счета, статьи) | `lib/dds.js`, `lib/ddsData.js`, `/fin-dds`, миграция 072 |
+| Калькулятор себестоимости (Китай → ФФ: ¥, карго $/кг, курсы; сохранённые расчёты, прикидка — не учёт) | `lib/costCalc.js`, `/cost-calc`, миграция 074, смоук `node scripts/smoke-cost-calc.mjs 1` |
 | Сборщики (тянут данные из API МП) | `worker/collectors/*.py` |
 | Оркестратор воркера | `worker/orchestrator.py` |
 | Запуск воркера (systemd) | `/etc/systemd/system/saas-*.service` + `worker/run_saas_*.sh` |
