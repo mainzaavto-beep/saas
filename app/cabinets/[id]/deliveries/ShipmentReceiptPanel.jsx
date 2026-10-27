@@ -74,7 +74,12 @@ export default function ShipmentReceiptPanel({ cabinetId, item, role, onChanged 
                 <td style={{ padding: "4px 8px", textAlign: "right" }}>
                   {done ? <span style={{ color: acc !== l.qty_shipped ? C.neg : C.ink }}>{nf0.format(acc)}</span> : (
                     <input type="number" min={0} defaultValue={acc} disabled={busy} style={{ ...inp, width: 80, textAlign: "right" }}
-                      onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(acc)) post({ action: "ship_accept_line", id: l.id, qty_accepted: v }); }} />
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        // Пустое поле — не «0 принято»: возвращаем показанное значение, на сервер не шлём.
+                        if (v === "") { e.target.value = String(acc); return; }
+                        if (v !== String(acc)) post({ action: "ship_accept_line", id: l.id, qty_accepted: v });
+                      }} />
                   )}
                 </td>
                 <td style={{ padding: "4px 8px" }}>

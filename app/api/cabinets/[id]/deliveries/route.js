@@ -87,12 +87,14 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     // обычным SELECT (без блокировки), берём заказ FOR UPDATE, и только потом — отправку.
     // Иначе два запроса, один из которых идёт через /purchase-orders, могут взять эти же
     // две блокировки в разном порядке и словить deadlock.
+    const shipmentId = Number(b.shipment_id);
+    if (!Number.isInteger(shipmentId) || shipmentId <= 0) return bad("shipment_id required");
     const row = (await tenantQuery(
-      `SELECT order_id FROM tenant.purchase_shipments WHERE id = $1 AND deleted_at IS NULL`, [Number(b.shipment_id)]))[0];
+      `SELECT order_id FROM tenant.purchase_shipments WHERE id = $1 AND deleted_at IS NULL`, [shipmentId]))[0];
     if (!row) return bad("отправка не найдена", 404);
     const bundle = await loadOrder(row.order_id, { lock: true });
     if (!bundle) return bad("заказ не найден", 404);
-    const ship = await lockShipment(b.shipment_id);
+    const ship = await lockShipment(shipmentId);
     if (!ship) return bad("отправка не найдена", 404);
     if (action === "ship_undone") {
       if (cabinet.role !== "owner") return bad("снять отметку может только владелец", 403);
@@ -113,6 +115,8 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
       `SELECT id, line_id FROM tenant.purchase_shipment_lines WHERE id = $1 AND shipment_id = $2 FOR UPDATE`, [Number(b.id), ship.id]))[0];
     if (!sl) return bad("строка отправки не найдена", 404);
     if (action === "ship_accept_line") {
+      // Пустое «Принято» — не ноль (Number("") === 0 молча записал бы недостачу всей строки).
+      if (b.qty_accepted == null || String(b.qty_accepted).trim() === "") return bad("укажите, сколько принято");
       const q = Number(b.qty_accepted);
       if (!Number.isInteger(q) || q < 0) return bad("принято — целое число ≥ 0");
       await tenantQuery(`UPDATE tenant.purchase_shipment_lines SET qty_accepted = $2 WHERE id = $1`, [sl.id, q]);
