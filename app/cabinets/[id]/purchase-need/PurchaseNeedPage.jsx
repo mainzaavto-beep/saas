@@ -64,10 +64,12 @@ export default function PurchaseNeedPage({ cabinetId }) {
       mpQty: (r) => r.mpQty,
       ownQty: (r) => r.ownQty,
       transitQty: (r) => r.transitQty,
+      orderedQty: (r) => r.orderedQty,
       velocity: (r) => r.velocity,
       coverageDays: (r) => r.coverageDays,
       needQty: (r) => r.needQty,
       needCost: (r) => r.needCost,
+      needQtyOrdered: (r) => r.needQtyOrdered,
     });
   }, [data, q, onlyBuy, apply]);
 
@@ -130,6 +132,7 @@ export default function PurchaseNeedPage({ cabinetId }) {
         <Kpi label="Нужно закупить" value={`${num(t.toBuyItems)} поз.`} accent />
         <Kpi label="Штук к закупке" value={num(t.needQty)} accent />
         <Kpi label="Сумма по себестоимости" value={money(t.needCost)} hint="Себестоимость позиции склада, иначе — со страницы «Себестоимость». Товары без себестоимости в сумму не входят." />
+        <Kpi label="С учётом заказанного" value={`${num(t.needQtyOrdered)} шт · ${money(t.needCostOrdered)}`} hint="То же «Закупить», но заказанное у поставщика и ещё не принятое на ФФ (заказы на странице «Закупки») считается как уже едущее." />
       </div>
 
       <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, overflowX: "auto" }}>
@@ -140,15 +143,17 @@ export default function PurchaseNeedPage({ cabinetId }) {
               <SortTh colKey="mpQty" sort={sort} toggle={toggle} baseStyle={thR} title="Доступно на складах WB и Ozon (без резерва)">На МП, шт</SortTh>
               <SortTh colKey="ownQty" sort={sort} toggle={toggle} baseStyle={thR} title="Остаток позиций на «Остатки склад/ФФ»">Свой склад, шт</SortTh>
               <SortTh colKey="transitQty" sort={sort} toggle={toggle} baseStyle={thR} title="Возвраты от клиентов WB в пути + отгрузки на МП, ещё не принятые площадкой">В пути, шт</SortTh>
+              <SortTh colKey="orderedQty" sort={sort} toggle={toggle} baseStyle={thR} title="Заказано у поставщика («Закупки») и ещё не принято на «Доставлено на склад»: не отправлено + едет. Только позиции заказа с артикулом; черновики не считаются">Заказано, шт</SortTh>
               <SortTh colKey="velocity" sort={sort} toggle={toggle} baseStyle={thR} title={`Заказы WB + Ozon за ${data.windowDays} полных дней ÷ ${data.windowDays}`}>Продаж/день</SortTh>
               <SortTh colKey="coverageDays" sort={sort} toggle={toggle} baseStyle={thR} title="(на МП + свой склад + в пути) ÷ продаж в день">Хватит на, дн</SortTh>
               <SortTh colKey="needQty" sort={sort} toggle={toggle} baseStyle={thR} title={`⌈продаж/день × ${horizon} − (на МП + свой склад + в пути)⌉, не меньше 0`}>Закупить, шт</SortTh>
               <SortTh colKey="needCost" sort={sort} toggle={toggle} baseStyle={thR}>Сумма, ₽</SortTh>
+              <SortTh colKey="needQtyOrdered" sort={sort} toggle={toggle} baseStyle={thR} title={`⌈продаж/день × ${horizon} − (на МП + свой склад + в пути + заказано)⌉, не меньше 0`}>С учётом заказанного, шт</SortTh>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 24, textAlign: "center", color: C.muted }}>Нет товаров</td></tr>
+              <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.muted }}>Нет товаров</td></tr>
             )}
             {rows.map((r) => (
               <tr key={r.key} style={{ borderTop: `1px solid ${soft("line", 60)}` }}>
@@ -171,12 +176,14 @@ export default function PurchaseNeedPage({ cabinetId }) {
                 <td style={tdRight}>{num(r.mpQty)}</td>
                 <td style={{ ...tdRight, color: r.ownQty ? C.ink : C.faint }}>{num(r.ownQty)}</td>
                 <td style={{ ...tdRight, color: r.transitQty ? C.ink : C.faint }}>{num(r.transitQty)}</td>
+                <td style={{ ...tdRight, color: r.orderedQty ? C.ink : C.faint }}>{num(r.orderedQty)}</td>
                 <td style={tdRight}>{r.velocity > 0 ? nf1.format(r.velocity) : <span style={{ color: C.faint }}>нет продаж</span>}</td>
                 <td style={{ ...tdRight, fontWeight: 700, color: coverageColor(r.coverageDays, horizon) }}>
                   {r.coverageDays == null ? "—" : nf0.format(Math.floor(r.coverageDays))}
                 </td>
                 <td style={{ ...tdRight, fontWeight: 800, color: r.needQty > 0 ? C.accent : C.faint }}>{r.needQty > 0 ? num(r.needQty) : "—"}</td>
                 <td style={{ ...tdRight, color: r.needQty > 0 ? C.ink : C.faint }}>{r.needQty > 0 ? money(r.needCost) : "—"}</td>
+                <td style={{ ...tdRight, fontWeight: 800, color: r.needQtyOrdered > 0 ? C.accent : C.faint }}>{r.needQtyOrdered > 0 ? num(r.needQtyOrdered) : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -187,6 +194,8 @@ export default function PurchaseNeedPage({ cabinetId }) {
         WB и Ozon одного товара сводятся в одну строку, когда их артикулы привязаны к позиции на странице
         {" "}<a href={`/cabinets/${cabinetId}/inventory`} style={{ color: C.accent }}>«Остатки склад/ФФ»</a>;
         {" "}непривязанные артикулы считаются отдельно, без остатка своего склада.
+        {" "}«Заказано» берётся из заказов на странице{" "}<a href={`/cabinets/${cabinetId}/fin-purchases`} style={{ color: C.accent }}>«Закупки»</a>:
+        {" "}позиции заказа без артикула WB/Ozon не к чему привязать — привяжите артикул в заказе, чтобы учесть.
       </p>
 
       {data.unlinked?.length > 0 && (
