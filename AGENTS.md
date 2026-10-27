@@ -34,6 +34,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Дашборд показателей (KPI-плитки) | `lib/kpiDashboard.js`, `lib/kpiDashboardData.js`, `/kpi` |
 | Адаптер БД (PG + RLS) | `lib/db.js` (DatabaseSync, withTenant, query, tenantQuery) |
 | Доставлено на склад (приёмка партий закупки по артикулам) | `lib/deliveries.js`, `/deliveries`, миграция 069 |
+| Закупки заказами (заказ → позиции → оплаты → отправки, себестоимость позиции с логистикой по весу) | `lib/purchaseOrders.js` (`calcOrder`), `lib/purchaseOrdersData.js`, `/fin-purchases`, `/fin-purchases/[orderId]`, API `purchase-orders`, миграция 075, смоук `PGPASSFILE=/root/.pgpass-admin node scripts/smoke-purchase-orders.mjs 1` |
 | Платёжный календарь / план поступлений | `lib/paymentCalendar.js`, `lib/paymentCalendarData.js`, `/fin-calendar`, `/fin-income`, миграция 070 |
 | ДДС (журнал факта, отчёт по видам деятельности, счета, статьи) | `lib/dds.js`, `lib/ddsData.js`, `/fin-dds`, миграция 072 |
 | Калькулятор себестоимости (Китай → ФФ: ¥, карго $/кг, курсы; сохранённые расчёты, прикидка — не учёт) | `lib/costCalc.js`, `/cost-calc`, миграция 074, смоук `node scripts/smoke-cost-calc.mjs 1` |
@@ -474,6 +475,14 @@ Anthropic отвечает 403 «Request not allowed».
   `auth.cabinets.settings.dds`. `postToDds` в «Балансе»/OPEX удалён. Отчёт: строка «Изменение остатков вне статей» = конец −
   начало − поток (старт счёта внутри периода). Тесты `lib/__tests__/dds{,Guard}.test.mjs`, смоук `node scripts/smoke-dds.mjs 1`.
   Спека `docs/superpowers/specs/2026-10-17-dds-design.md`.
+- **Закупки заказами (с 2026-10-27)** — `/fin-purchases`: заказ (поставщик, план. курс ¥) → позиции (артикул WB/Ozon или текст,
+  вариант, кол-во, цена ¥, вес) → оплаты (0..N, ¥ по своему курсу; «прочее» — ¥ или ₽) → отправки (часть позиций/штук, логистика
+  до МСК + МСК→ФФ в ₽). Себестоимость позиции = цена ¥ × эфф. курс (оплаты по своим курсам, остаток — по плановому) + прочее заказа
+  (по весу всего заказа) + логистика отправок (по весу строк отправки; вес не у всех — по штукам), на ОТПРАВЛЕННЫЕ штуки; недостача
+  приёмки — только показ. Ядро `lib/purchaseOrders.js` (тесты `lib/__tests__/purchaseOrders.test.mjs`), ДДС — `syncOrderPayments`
+  (`source_ref='order:<id>:pay:<pid>'`/`order:<id>:ship:<sid>:cargo|ff`). Приёмка — по отправке на `/deliveries` (`ship_*`).
+  В `cost_overrides`/`ff_inventory` не пишет. Старые `tenant.purchases` — архив «до 16.10», POST/DELETE → 410. Спека
+  `docs/superpowers/specs/2026-10-27-purchase-orders-design.md`.
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.
