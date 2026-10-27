@@ -7,8 +7,9 @@ import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { tenantQuery } from "@/lib/db.js";
 import { validateOrderInput, validateLineInput, validatePaymentInput, validateShipmentInput,
-  checkShipQty, defaultShipmentLines } from "@/lib/purchaseOrders.js";
-import { loadOrder, loadOrderView, listOrders, refreshOrderStatus } from "@/lib/purchaseOrdersData.js";
+  checkShipQty, defaultShipmentLines, PAID_LOCK_MSG, payRef, paymentAmountChanged, shipmentMoneyLockError,
+  shipmentHasPaid } from "@/lib/purchaseOrders.js";
+import { loadOrder, loadOrderView, listOrders, refreshOrderStatus, paidRefs } from "@/lib/purchaseOrdersData.js";
 import { syncOrderPayments, archiveOrderPayments } from "@/lib/paymentCalendarData.js";
 import { searchCatalog, catalogLabel, catalogPhoto } from "@/lib/catalogSearch.js";
 
@@ -18,6 +19,8 @@ export const dynamic = "force-dynamic";
 const bad = (error, status = 400) => NextResponse.json({ error }, { status });
 const ok = (extra = {}) => NextResponse.json({ ok: true, ...extra });
 const posId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+// «Сегодня» по Москве (сервер может жить в UTC — у полуночи дата съезжала бы на вчера).
+const todayMsk = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
 
 export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
@@ -63,6 +66,8 @@ export const POST = withCabinet(async (req, { session }) => {
     const v = validateOrderInput(b);
     if (!v.ok) return bad(v.error);
     const o = v.value;
+    // «Закрыт» выставляет только refreshOrderStatus — и при создании тоже.
+    if (o.status === "closed") return bad("статус «Закрыт» ставится автоматически, когда всё принято");
     const r = await tenantQuery(
       `INSERT INTO tenant.purchase_orders (cabinet_id, order_no, supplier, supplier_contact, source_country, category,
          note, order_dt, rate_cny, status, created_by)
@@ -76,6 +81,8 @@ export const POST = withCabinet(async (req, { session }) => {
   const bundle = await loadOrder(orderId, { lock: true });
   if (!bundle) return bad("заказ не найден", 404);
   const { order, lines, shipments, shipmentLines } = bundle;
+  // Оплаченные строки ДДС заказа — читаем под блокировкой заказа (Ruling 9).
+  const paid = await paidRefs(orderId);
 
   if (action === "update") {
     const v = validateOrderInput({ ...order, ...b });
@@ -95,6 +102,7 @@ export const POST = withCabinet(async (req, { session }) => {
 
   if (action === "delete") {
     if (shipments.some((s) => s.status === "accepted")) return bad("у заказа есть принятые отправки — удалить нельзя");
+    if (paid.size > 0) return bad(PAID_LOCK_MSG);
     await tenantQuery(`UPDATE tenant.purchase_orders SET deleted_at = now(), updated_at = now() WHERE id = $1`, [orderId]);
     await tenantQuery(`UPDATE tenant.purchase_order_payments SET deleted_at = now() WHERE order_id = $1 AND deleted_at IS NULL`, [orderId]);
     await tenantQuery(`UPDATE tenant.purchase_shipments SET deleted_at = now() WHERE order_id = $1 AND deleted_at IS NULL`, [orderId]);
@@ -168,6 +176,8 @@ export const POST = withCabinet(async (req, { session }) => {
     const v = validatePaymentInput({ ...(cur || {}), ...b });
     if (!v.ok) return bad(v.error);
     const p = v.value;
+    // Оплаченная строка ДДС: можно менять только дату и примечание.
+    if (cur && paid.has(payRef(orderId, cur.id)) && paymentAmountChanged(cur, p)) return bad(PAID_LOCK_MSG);
     let id = cur?.id;
     if (cur) {
       await tenantQuery(
@@ -187,6 +197,7 @@ export const POST = withCabinet(async (req, { session }) => {
   if (action === "pay_delete") {
     const cur = bundle.payments.find((p) => Number(p.id) === Number(b.id));
     if (!cur) return bad("оплата не найдена", 404);
+    if (paid.has(payRef(orderId, cur.id))) return bad(PAID_LOCK_MSG);
     await tenantQuery(`UPDATE tenant.purchase_order_payments SET deleted_at = now(), updated_at = now() WHERE id = $1`, [cur.id]);
     await afterChange(orderId); // плановая строка ДДС → архив, оплаченная — остаётся (правило syncRefs)
     return ok();
@@ -224,8 +235,12 @@ export const POST = withCabinet(async (req, { session }) => {
     const v = validateShipmentInput({ ...cur, ...b });
     if (!v.ok) return bad(v.error);
     const s = v.value;
+    const lockErr = shipmentMoneyLockError(paid, orderId, cur, s);
+    if (lockErr) return bad(lockErr);
     if (s.lines !== undefined) {
       if (cur.status === "accepted") return bad("отправка принята — состав менять нельзя (деньги — можно)");
+      // Прибывшая отправка уже на приёмке в «Доставлено на склад» — состав там фиксируется по строкам.
+      if (cur.status !== "transit") return bad("отправка уже прибыла — состав меняется до прибытия (верните «в пути»)");
       if (!s.lines.length) return bad("в отправке должна быть хотя бы одна позиция");
       const err = checkShipQty(lines, shipmentLines, s.lines, cur.id);
       if (err) return bad(err);
@@ -248,6 +263,7 @@ export const POST = withCabinet(async (req, { session }) => {
     const cur = findShip(b.id);
     if (!cur) return bad("отправка не найдена", 404);
     if (cur.status === "accepted") return bad("отправка уже принята — удалить нельзя");
+    if (shipmentHasPaid(paid, orderId, cur.id)) return bad(PAID_LOCK_MSG);
     await tenantQuery(`DELETE FROM tenant.purchase_shipment_lines WHERE shipment_id = $1`, [cur.id]);
     await tenantQuery(`UPDATE tenant.purchase_shipments SET deleted_at = now(), updated_at = now() WHERE id = $1`, [cur.id]);
     await afterChange(orderId);
@@ -259,7 +275,7 @@ export const POST = withCabinet(async (req, { session }) => {
     if (!cur) return bad("отправка не найдена", 404);
     if (action === "ship_arrived") {
       if (cur.status !== "transit") return bad("отправка уже прибыла");
-      const d = String(b.arrived_dt || cur.arrived_dt || new Date().toISOString().slice(0, 10)).slice(0, 10);
+      const d = String(b.arrived_dt || cur.arrived_dt || todayMsk()).slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return bad("дата прибытия — ГГГГ-ММ-ДД");
       await tenantQuery(`UPDATE tenant.purchase_shipments SET status = 'arrived', arrived_dt = $2, updated_at = now() WHERE id = $1`, [cur.id, d]);
     } else {

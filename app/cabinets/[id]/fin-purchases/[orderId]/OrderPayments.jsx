@@ -1,7 +1,7 @@
 "use client";
 import { C, soft } from "@/lib/palette.js";
 import { useState } from "react";
-import { PAY_KIND_LABELS } from "@/lib/purchaseOrders.js";
+import { PAY_KIND_LABELS, PAID_LOCK_MSG } from "@/lib/purchaseOrders.js";
 import { inp, btn } from "./styles";
 
 const nf2 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
@@ -12,8 +12,10 @@ export default function OrderPayments({ d, post, busy, canEdit }) {
   const [add, setAdd] = useState(EMPTY);
   const ddsBy = new Map(d.dds.map((x) => [x.source_ref, x]));
   const set = (k) => (e) => setAdd({ ...add, [k]: e.target.value, ...(k === "kind" && e.target.value !== "other" ? { currency: "cny" } : {}) });
-  const field = (p, k, w, type = "text") => (
-    <input key={`${k}:${p[k] ?? ""}`} type={type} defaultValue={p[k] ?? ""} disabled={!canEdit || busy} style={{ ...inp, width: w }}
+  // locked — строка уже оплачена в ДДС: сумму/курс не правим (сервер всё равно ответит 400).
+  const field = (p, k, w, type = "text", locked = false) => (
+    <input key={`${k}:${p[k] ?? ""}`} type={type} defaultValue={p[k] ?? ""} disabled={!canEdit || busy || locked} style={{ ...inp, width: w }}
+      title={locked ? PAID_LOCK_MSG : undefined}
       onBlur={(e) => { if (e.target.value !== String(p[k] ?? "")) post("pay_update", { id: p.id, [k]: e.target.value }); }} />
   );
   return (
@@ -27,15 +29,16 @@ export default function OrderPayments({ d, post, busy, canEdit }) {
         <tbody>
           {d.payments.map((p) => {
             const m = ddsBy.get(`order:${d.order.id}:pay:${p.id}`);
+            const locked = m?.status === "paid";
             return (
               <tr key={p.id} style={{ borderTop: `1px solid ${soft("line", 50)}` }}>
                 <td style={{ padding: 6 }}>{PAY_KIND_LABELS[p.kind]}</td>
-                <td style={{ padding: 6 }}>{field(p, "amount", 90)}</td>
+                <td style={{ padding: 6 }} title={locked ? PAID_LOCK_MSG : undefined}>{field(p, "amount", 90, "text", locked)}</td>
                 <td style={{ padding: 6 }}>{p.currency === "rub" ? "₽" : "¥"}</td>
-                <td style={{ padding: 6 }}>{p.currency === "cny" ? field(p, "rate", 70) : "—"}</td>
+                <td style={{ padding: 6 }} title={locked ? PAID_LOCK_MSG : undefined}>{p.currency === "cny" ? field(p, "rate", 70, "text", locked) : "—"}</td>
                 <td style={{ padding: 6 }}>{field(p, "plan_date", 140, "date")}</td>
                 <td style={{ padding: 6, color: m?.status === "paid" ? C.pos : C.muted }}>{m ? (m.status === "paid" ? `✓ оплачено ${m.paid_at ? m.paid_at.slice(0, 10) : ""}` : "запланировано") : "—"}</td>
-                <td style={{ padding: 6 }}>{canEdit && <button style={btn} disabled={busy} onClick={() => confirm("Удалить оплату?") && post("pay_delete", { id: p.id })}>✕</button>}</td>
+                <td style={{ padding: 6 }} title={locked ? PAID_LOCK_MSG : undefined}>{canEdit && <button style={btn} disabled={busy || locked} title={locked ? PAID_LOCK_MSG : undefined} onClick={() => confirm("Удалить оплату?") && post("pay_delete", { id: p.id })}>✕</button>}</td>
               </tr>
             );
           })}
