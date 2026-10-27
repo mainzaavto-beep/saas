@@ -223,9 +223,11 @@ export default function PurchasesPage({ cabinetId, readOnly = false }) {
           архивные
         </label>
         <button onClick={() => { setFrom(""); setTo(""); setSupplier(""); setVendor(""); setStatus(""); setCategory(""); setQ(""); setArchived(false); }} style={resetBtnStyle}>Сбросить</button>
-        <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}>
-          {showAdd ? "✕ Закрыть" : "+ Добавить партию"}
-        </button>
+        {!readOnly && (
+          <button onClick={() => setShowAdd((v) => !v)} style={{ ...addBtnStyle, background: showAdd ? C.surface : C.accent, color: showAdd ? C.ink : "var(--accentInk)" }}>
+            {showAdd ? "✕ Закрыть" : "+ Добавить партию"}
+          </button>
+        )}
       </div>
 
 

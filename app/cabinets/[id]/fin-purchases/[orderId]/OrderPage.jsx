@@ -88,7 +88,7 @@ export default function OrderPage({ cabinetId, orderId }) {
           <div>Оплачено: {nf2.format(calc.paidCny)} ¥ · осталось {nf2.format(calc.remainingCny)} ¥</div>
           <div>Прочие расходы: {nf0.format(calc.otherRub)} ₽</div>
           <div>Логистика: {nf0.format(calc.logisticsRub)} ₽</div>
-          <div>Себестоимость всего: <b>{nf0.format(calc.totalRub)} ₽</b>{calc.qty > 0 ? ` · ср. ${nf0.format(calc.totalRub / calc.qty)} ₽/шт` : ""}</div>
+          <div>Себестоимость всего: <b>{nf0.format(calc.totalRub)} ₽</b>{calc.qty > 0 ? ` · ср. ${nf0.format(calc.totalRub / calc.qty)} ₽/шт` : ""}{calc.shippedQty < calc.qty ? " (оценка — отправлено не всё)" : ""}</div>
           <div>Отправлено {nf0.format(calc.shippedQty)} из {nf0.format(calc.qty)} · принято {nf0.format(calc.acceptedQty)}</div>
           {calc.shortageQty > 0 && <div style={{ color: C.neg }}>Недостача: {nf0.format(calc.shortageQty)} шт · {nf0.format(calc.shortageRub)} ₽</div>}
           {canEdit && <button style={{ ...btn, marginTop: 8, color: C.neg, borderColor: C.neg }} disabled={busy}

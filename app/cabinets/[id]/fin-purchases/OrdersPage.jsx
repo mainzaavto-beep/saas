@@ -37,7 +37,7 @@ export default function OrdersPage({ cabinetId }) {
     try {
       const r = await fetch(`/api/cabinets/${cabinetId}/purchase-orders`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create", supplier, order_dt: new Date().toISOString().slice(0, 10) }),
+        body: JSON.stringify({ action: "create", supplier, order_dt: new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" }) }),
       });
       const d = await r.json();
       if (!r.ok || d.error) { alert(d.error || `Ошибка ${r.status}`); return; }
@@ -98,7 +98,7 @@ export default function OrdersPage({ cabinetId }) {
                       <td style={{ padding: 8 }}><b>{o.supplier}</b>{o.order_no && <span style={{ color: C.muted }}> · {o.order_no}</span>}{o.category && <div style={{ color: C.muted, fontSize: 12 }}>{o.category}</div>}</td>
                       <td style={{ padding: 8 }}>{ddmm(o.order_dt)}</td>
                       <td style={{ padding: 8, textAlign: "right" }}>{o.lines} / {nf0.format(o.qty)}</td>
-                      <td style={{ padding: 8, textAlign: "right" }}>{nf2.format(o.totalCny)} ¥<div style={{ color: C.muted, fontSize: 12 }}>{nf0.format(o.totalRub)} ₽</div></td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{nf2.format(o.totalCny)} ¥<div style={{ color: C.muted, fontSize: 12 }}>{nf0.format(o.goodsRub)} ₽</div></td>
                       <td style={{ padding: 8, minWidth: 140 }}>
                         <div style={{ fontSize: 12 }}>{nf0.format(o.paidCny)} из {nf0.format(o.totalCny)} ¥</div>
                         <div style={{ height: 4, background: soft("line", 60), borderRadius: 2 }}><div style={{ width: `${pct}%`, height: 4, background: C.pos, borderRadius: 2 }} /></div>
