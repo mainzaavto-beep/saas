@@ -81,6 +81,10 @@ export const POST = withCabinet(async (req, { session }) => {
     const v = validateOrderInput({ ...order, ...b });
     if (!v.ok) return bad(v.error);
     const o = v.value;
+    // Статус «Закрыт» выставляет только refreshOrderStatus (и ставит archived_at) — руками нельзя.
+    if (o.status === "closed" && order.status !== "closed") {
+      return bad("статус «Закрыт» ставится автоматически, когда всё принято");
+    }
     await tenantQuery(
       `UPDATE tenant.purchase_orders SET order_no = $2, supplier = $3, supplier_contact = $4, source_country = $5,
          category = $6, note = $7, order_dt = $8, rate_cny = $9, status = $10, updated_at = now() WHERE id = $1`,
@@ -126,7 +130,15 @@ export const POST = withCabinet(async (req, { session }) => {
   if (action === "line_update") {
     const cur = findLine(b.id);
     if (!cur) return bad("позиция не найдена", 404);
-    const merged = { ...cur, photo_url: null, ...b };
+    // Фото хранится в l.photo_url (LINE_COLS отдаёт его рядом с вычисленным "photo"). Частичная
+    // правка не должна стирать сохранённое фото — сбрасываем его в null, только если артикул
+    // реально сменился (тогда подставится фото карточки через fillFromCatalog); b.photo_url,
+    // если пришёл явно, имеет приоритет (ручная замена фото).
+    const normId = (v) => (v == null || v === "" ? null : String(Number(v)));
+    const articleChanged = (b.platform !== undefined && (b.platform || null) !== (cur.platform || null))
+      || (b.nm_id !== undefined && normId(b.nm_id) !== normId(cur.nm_id))
+      || (b.product_id !== undefined && normId(b.product_id) !== normId(cur.product_id));
+    const merged = { ...cur, photo_url: articleChanged ? null : cur.photo_url, ...b };
     if (b.platform !== undefined && b.label === undefined) merged.label = ""; // сменили артикул — имя из каталога
     const v = validateLineInput(await fillFromCatalog(merged));
     if (!v.ok) return bad(v.error);
@@ -252,7 +264,9 @@ export const POST = withCabinet(async (req, { session }) => {
       await tenantQuery(`UPDATE tenant.purchase_shipments SET status = 'arrived', arrived_dt = $2, updated_at = now() WHERE id = $1`, [cur.id, d]);
     } else {
       if (cur.status !== "arrived") return bad("вернуть «в пути» можно только прибывшую, ещё не принятую отправку");
-      await tenantQuery(`UPDATE tenant.purchase_shipments SET status = 'transit', updated_at = now() WHERE id = $1`, [cur.id]);
+      // Сбрасываем arrived_dt — иначе цепочка дат ДДС (arrived_dt → eta → ship_dt) хранит
+      // устаревшую дату прибытия у отправки, которая снова «в пути».
+      await tenantQuery(`UPDATE tenant.purchase_shipments SET status = 'transit', arrived_dt = NULL, updated_at = now() WHERE id = $1`, [cur.id]);
     }
     await afterChange(orderId);
     return ok();
