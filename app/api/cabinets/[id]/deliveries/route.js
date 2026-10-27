@@ -11,30 +11,17 @@ import { NextResponse } from "next/server";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { tenantQuery } from "@/lib/db.js";
 import { buildDeliveries, filterDeliveries, validateLine } from "@/lib/deliveries.js";
+import { searchCatalog, catalogLabel } from "@/lib/catalogSearch.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bad = (error, status = 400) => NextResponse.json({ error }, { status });
 
-async function loadCatalog(q) {
-  const needle = `%${String(q || "").trim()}%`;
-  const out = [];
-  const wb = await tenantQuery(
-    `SELECT nm_id, name, im_url FROM tenant.wb_articles
-     WHERE name ILIKE $1 OR nm_id::text LIKE $1 ORDER BY name LIMIT 20`, [needle]);
-  for (const r of wb) out.push({ platform: "wb", nm_id: Number(r.nm_id), label: r.name || `WB ${r.nm_id}`, im_url: r.im_url || null, article: null });
-  const oz = await tenantQuery(
-    `SELECT product_id, offer_id, name, im_url FROM tenant.ozon_products
-     WHERE name ILIKE $1 OR offer_id ILIKE $1 OR product_id::text LIKE $1 ORDER BY name LIMIT 20`, [needle]);
-  for (const r of oz) out.push({ platform: "ozon", product_id: Number(r.product_id), label: r.name || `Ozon ${r.product_id}`, im_url: r.im_url || null, article: r.offer_id || null });
-  return out.slice(0, 20);
-}
-
 export const GET = withCabinet(async (req, { cabinet }) => {
   const url = new URL(req.url);
   if (url.searchParams.get("catalog") === "1") {
-    return NextResponse.json({ catalog: await loadCatalog(url.searchParams.get("q")) });
+    return NextResponse.json({ catalog: await searchCatalog(url.searchParams.get("q")) });
   }
   const purchases = await tenantQuery(
     `SELECT p.id, p.supplier_name, p.category, p.qty, p.photo_url, a.im_url,
@@ -65,18 +52,6 @@ async function lockPurchase(id) {
 }
 
 const LEGACY_ERROR = "партия в архиве (до 16.10), правка недоступна";
-
-async function catalogLabel(line) {
-  if (line.platform === "wb") {
-    const r = (await tenantQuery(`SELECT name FROM tenant.wb_articles WHERE nm_id = $1`, [Number(line.nm_id)]))[0];
-    return r?.name || null;
-  }
-  if (line.platform === "ozon") {
-    const r = (await tenantQuery(`SELECT name FROM tenant.ozon_products WHERE product_id = $1`, [Number(line.product_id)]))[0];
-    return r?.name || null;
-  }
-  return null;
-}
 
 const LINE_COLS = `id, purchase_id, platform, nm_id, product_id, label, qty_accepted, note`;
 
