@@ -31,7 +31,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 import db_pg
-from ozon_client import OzonClient, map_metric_values
+from ozon_client import OzonClient, OzonError, map_metric_values
 
 PERF_HOST = "https://api-performance.ozon.ru"
 ANALYTICS_METRICS = ["hits_view", "hits_view_search", "hits_view_pdp",
@@ -113,6 +113,11 @@ def parse_perf_daily(csv_text):
     return out
 
 
+def is_rate_limited(err):
+    """OzonError от исчерпания ретраев на 429 (а не 4xx-ошибка запроса и не 5xx)."""
+    return isinstance(err, OzonError) and "429 too many requests" in str(err)
+
+
 def _perf_token():
     perf_id = os.environ.get("OZON_PERF_CLIENT_ID")
     perf_secret = os.environ.get("OZON_PERF_CLIENT_SECRET")
@@ -157,7 +162,16 @@ def collect():
         return 0
 
     cli = OzonClient()
-    rows = list(cli.iter_analytics(day_str, day_str, ["day", "sku"], ANALYTICS_METRICS))
+    try:
+        rows = list(cli.iter_analytics(day_str, day_str, ["day", "sku"], ANALYTICS_METRICS))
+    except OzonError as e:
+        if not is_rate_limited(e):
+            raise
+        # Лимит Ozon не отпустил за все ретраи — слот пропущен, следующий тик снимет
+        # тот же нарастающий итог дня. Exit 3 (partial): оркестратор не роняет юнит
+        # (SOFT_PARTIAL_COLLECTORS), в журнале остаётся "partial" с причиной.
+        print(f"[ozon_metrics_30m] слот {ts} пропущен: {e}", file=sys.stderr, flush=True)
+        sys.exit(3)
     per_pid, orphans = parse_analytics(rows, ANALYTICS_METRICS, sku2pid)
     written = db_pg.upsert_ozon_metrics_30m_many([
         {"product_id": pid, "date": day_str, "ts": ts, **vals} for pid, vals in per_pid.items()

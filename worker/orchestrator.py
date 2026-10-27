@@ -231,6 +231,13 @@ OZON_COLLECTORS = [
 # отказ сессии — exit 5 → cabinet_state.expired (не auth_state ключей).
 CABINET_COLLECTORS = ["ozon_cabinet_search", "ozon_cabinet_traffic", "ozon_cabinet_prices"]
 
+# Снимочные сборщики, у которых partial (exit 3) — не сбой прогона, а пропущенный
+# слот: следующий тик через 30 мин снимает тот же нарастающий итог дня заново.
+# ozon_metrics_30m выходит с 3, когда Ozon держит 429 на /v1/analytics/data дольше
+# ретраев (~77 с; 15–22.10.2026 — 1–3 раза в сутки, юнит saas-metrics30m краснел).
+# Partial таких сборщиков — жёлтый (blocked), как у кабинета; в журнале — "partial".
+SOFT_PARTIAL_COLLECTORS = {"ozon_metrics_30m"}
+
 # Для --collectors (явный список, любой набор). По умолчанию — все WB (как раньше).
 DEFAULT_COLLECTORS = WB_COLLECTORS
 
@@ -611,7 +618,8 @@ def _run_one(shop, cabinet, collectors, verbose, date_from, date_to):
                 _record_run(cid, coll, "partial", error=(err[-1] if err else None),
                             date_from=date_from, date_to=date_to, started_at=started,
                             rows_written=obs_rows, eff_date_from=obs_from, eff_date_to=obs_to)
-                if coll in CABINET_COLLECTORS:
+                if coll in CABINET_COLLECTORS or coll in SOFT_PARTIAL_COLLECTORS:
+                    # SOFT_PARTIAL_COLLECTORS — см. комментарий у константы.
                     # Ревью задачи 6, находка №3 / спека §4.3: partial у кабинета —
                     # это busy/day_not_ready (профиль занят, отчёт кабинета ещё не
                     # готов), а не сбой сборки. Прогон остаётся жёлтым (blocked),

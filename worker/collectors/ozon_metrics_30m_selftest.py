@@ -78,5 +78,14 @@ check("perf: имя кампании", camps[123]["campaign_name"] == "Камп�
 check("слот 11:45 → 11:30", m.round_ts_to_30m(datetime(2026, 9, 10, 11, 45, 7)) == "2026-09-10 11:30:00")
 check("слот 11:29 → 11:00", m.round_ts_to_30m(datetime(2026, 9, 10, 11, 29, 59)) == "2026-09-10 11:00:00")
 
+# ── 429 после всех ретраев → partial, прочие ошибки Ozon — нет ──
+from ozon_client import OzonError  # noqa: E402
+check("429 исчерпан → rate limited", m.is_rate_limited(OzonError(
+    "Исчерпаны попытки запроса /v1/analytics/data: 429 too many requests [ratelimit-remaining=9] "
+    "body='{\"code\":8}' после 5 попыток за 77с")))
+check("5xx исчерпан → не rate limited", not m.is_rate_limited(OzonError(
+    "Исчерпаны попытки запроса /v1/analytics/data: 502 server error: bad gateway")))
+check("не OzonError → не rate limited", not m.is_rate_limited(RuntimeError("429 too many requests")))
+
 print("ALL PASS" if failed == 0 else f"FAILED: {failed}")
 sys.exit(1 if failed else 0)
