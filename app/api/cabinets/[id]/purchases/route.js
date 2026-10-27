@@ -5,7 +5,6 @@ import { NextResponse } from "next/server";
 import { tenantQuery, DatabaseSync } from "@/lib/db.js";
 import { withCabinet } from "@/lib/withCabinet.js";
 import { computeExcel, balanceDueRub, numOr, round2 } from "@/lib/purchaseCalc.js";
-import { syncPurchasePayments, archivePurchasePayments } from "@/lib/paymentCalendarData.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -162,107 +161,8 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   return NextResponse.json({ items: enriched, totals, facets: { suppliers, vendors, statuses, categories } });
 });
 
-export const POST = withCabinet(async (req, { cabinet, session }) => {
-  const b = await req.json();
-  // Автор движения остатка (stock_moves.created_by).
-  const userId = session?.user_id ?? null;
-
-  // «✓ Доставлено» (с 15.10.2026, спека 2026-10-15-delivered-to-stock-design.md): партия
-  // уходит из активных закупок на страницу «Доставлено на склад» и ждёт приёмки ФФ по
-  // артикулам. Конечная точка: в ff_inventory / журнал движений / себестоимость НЕ пишем
-  // (до 15.10 здесь создавалась позиция «Остатков склад/ФФ» и движение «in»).
-  if (b.action === "complete_to_stock") {
-    if (!b.id) return NextResponse.json({ error: "id required" }, { status: 400 });
-    const cur = (await tenantQuery(
-      `SELECT id, archived FROM tenant.purchases
-       WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [Number(b.id)]
-    ))[0];
-    if (!cur) return NextResponse.json({ error: `партия id=${b.id} не найдена` }, { status: 404 });
-    if (cur.archived) return NextResponse.json({ error: "партия уже доставлена" }, { status: 400 });
-
-    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
-    const upd = await tenantQuery(
-      `UPDATE tenant.purchases
-          SET archived = true,
-              delivered_at = COALESCE(CASE WHEN delivery_dt ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substr(delivery_dt,1,10)::date END, $2::date)
-        WHERE id = $1 RETURNING delivered_at::text AS delivered_at`, [Number(b.id), today]
-    );
-    return NextResponse.json({ ok: true, delivered_at: upd[0]?.delivered_at || today });
-  }
-
-  if (b.id) {
-    // UPDATE — PATCH-семантика (merge поверх текущей строки).
-    const cur = (await tenantQuery(`SELECT * FROM tenant.purchases WHERE id = $1 AND deleted_at IS NULL`, [Number(b.id)]))[0];
-    if (!cur) return NextResponse.json({ error: `партия id=${b.id} не найдена` }, { status: 404 });
-
-    const M = (field) => (b[field] !== undefined ? b[field] : cur[field]);
-    // Пересчёт AA из merged-значений по формулам Excel.
-    const calcM = computeExcel({
-      prepay_yuan: M("prepay_yuan"), prepay_rate: M("prepay_rate"), qty: M("qty"),
-      unit_cost_yuan: M("unit_cost_yuan"), exchange_rate: M("exchange_rate"),
-      logistics_rub_per_unit: M("logistics_rub_per_unit"), logistics_rub: M("logistics_rub"),
-    });
-    const unitCost = calcM.unitCost;
-
-    // Подхват даты доставки при переводе на этап «arrived»:
-    // если frontend явно не прислал delivery_dt и в строке его ещё нет —
-    // ставим сегодняшнюю дату. (Решение 2026-07-15; arrived → delivery_dt = сегодня.)
-    if (b.lifecycle_status === "arrived" && b.delivery_dt === undefined && !cur.delivery_dt) {
-      b.delivery_dt = new Date().toISOString().slice(0, 10);
-    }
-
-    const sets = [];
-    const vals = [];
-    for (const k of ["nm_id","supplier_name","date","supplier","order_dt","delivery_dt",
-      "status","order_no","unit_cost_est","total_amount","plan_order_dt","plan_ship_dt",
-      "plan_arrival_dt","lifecycle_status","photo_url","source_country","ship_dt",
-      "prepay_yuan","prepay_rate","unit_cost_yuan","logistics_yuan","exchange_rate",
-      "logistics_rub_per_unit","logistics_rub","pay_status","note","category"]) {
-      if (b[k] !== undefined) { sets.push(`${k} = $${sets.length + 1}`); vals.push(b[k] === "" ? null : b[k]); }
-    }
-    // qty + unit_cost (формульный) всегда пересчитываем.
-    if (b.qty !== undefined) { sets.push(`qty = $${sets.length + 1}`); vals.push(b.qty); }
-    sets.push(`unit_cost = $${sets.length + 1}`); vals.push(unitCost);
-
-    if (sets.length === 0) return NextResponse.json({ error: "No fields to update" }, { status: 400 });
-    vals.push(Number(b.id));
-    await tenantQuery(`UPDATE tenant.purchases SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
-    await syncPurchasePayments(Number(b.id));
-    return NextResponse.json({ ok: true, id: Number(b.id), unit_cost: unitCost });
-  }
-
-  // INSERT
-  const calc = computeExcel(b);
-  const cols = ["cabinet_id"];
-  const ph = ["current_setting('app.cabinet_id')::bigint"];
-  const vals = [];
-  for (const k of ["nm_id","supplier_name","qty","date","supplier","order_dt","delivery_dt",
-    "status","order_no","unit_cost_est","total_amount","plan_order_dt","plan_ship_dt",
-    "plan_arrival_dt","lifecycle_status","photo_url","source_country","ship_dt",
-    "prepay_yuan","prepay_rate","unit_cost_yuan","logistics_yuan","exchange_rate",
-    "logistics_rub_per_unit","logistics_rub","pay_status","note","category"]) {
-    if (b[k] !== undefined) {
-      cols.push(k);
-      vals.push(b[k] === "" ? null : b[k]);
-      ph.push(`$${ph.length}`);
-    }
-  }
-  // unit_cost — формульный.
-  cols.push("unit_cost"); ph.push(`$${ph.length}`); vals.push(calc.unitCost);
-
-  const rows = await tenantQuery(
-    `INSERT INTO tenant.purchases (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING id`,
-    vals
-  );
-  await syncPurchasePayments(Number(rows[0].id));
-  return NextResponse.json({ ok: true, id: rows[0]?.id, unit_cost: calc.unitCost });
-}, { requireRole: 'manager' });
-
-export const DELETE = withCabinet(async (req, { cabinet }) => {
-  const url = new URL(req.url);
-  const id = url.searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
-  await tenantQuery(`UPDATE tenant.purchases SET deleted_at = now() WHERE id = $1`, [Number(id)]);
-  await archivePurchasePayments(Number(id));
-  return NextResponse.json({ ok: true });
-}, { requireRole: 'manager' });
+// С 27.10.2026 закупки ведутся заказами (/api/cabinets/[id]/purchase-orders, спека
+// docs/superpowers/specs/2026-10-27-purchase-orders-design.md). Старые партии — архив, только чтение.
+const ARCHIVE_ERROR = "Старые партии — архив, только чтение. Закупки ведутся заказами на странице «Закупки».";
+export const POST = withCabinet(async () => NextResponse.json({ error: ARCHIVE_ERROR }, { status: 410 }), { requireRole: "manager" });
+export const DELETE = withCabinet(async () => NextResponse.json({ error: ARCHIVE_ERROR }, { status: 410 }), { requireRole: "manager" });

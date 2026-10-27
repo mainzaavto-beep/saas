@@ -48,7 +48,7 @@ const INPUT_FIELDS = [
   "order_dt", "ship_dt", "delivery_dt", "supplier_name", "supplier", "pay_status",
 ];
 
-export default function PurchasesPage({ cabinetId }) {
+export default function PurchasesPage({ cabinetId, readOnly = false }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -109,6 +109,7 @@ export default function PurchasesPage({ cabinetId }) {
   // --- Сохранение одного поля строки → POST (id=UPDATE). ---
   // Передаём ВСЕ вводные поля, чтобы сервер пересчитал формулы при любом изменении.
   async function saveField(it, field, rawValue) {
+    if (readOnly) return;
     const next = { ...it, [field]: rawValue };
     const body = { id: it.id };
     for (const f of INPUT_FIELDS) body[f] = next[f];
@@ -124,6 +125,7 @@ export default function PurchasesPage({ cabinetId }) {
   }
 
   async function delRow(id) {
+    if (readOnly) return;
     if (!confirm("Удалить партию? (мягкое удаление, Sheets = backup для аудита)")) return;
     const r = await fetch(`/api/cabinets/${cabinetId}/purchases?id=${id}`, { method: "DELETE" });
     const d = await r.json();
@@ -133,6 +135,7 @@ export default function PurchasesPage({ cabinetId }) {
 
   // «✓ Доставлено» → партия уходит на страницу «Доставлено на склад» (ждёт приёмки ФФ).
   async function completeToStock(it) {
+    if (readOnly) return;
     if (!confirm(`Партия «${it.supplier_name || "#" + it.id}» доставлена на склад?\n` +
       `Она скроется из активных закупок и появится в «Доставлено на склад» — там отметите приёмку по артикулам.`)) return;
     const r = await fetch(`/api/cabinets/${cabinetId}/purchases`, {
@@ -226,10 +229,15 @@ export default function PurchasesPage({ cabinetId }) {
       </div>
 
 
-      {showAdd && (
+      {showAdd && !readOnly && (
         <AddForm form={addForm} setForm={setAddForm} onAdd={addRecord} busy={adding} />
       )}
 
+      {readOnly && (
+        <div style={{ color: C.muted, fontSize: 13, margin: "4px 0 12px" }}>
+          Архив партий до 16.10 — только чтение. Новые закупки заводятся заказами.
+        </div>
+      )}
 
       {/* Таблица */}
       <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 10 }}>
@@ -265,7 +273,7 @@ export default function PurchasesPage({ cabinetId }) {
           <tbody>
             {slice.map((it) => (
               <Row key={it.id} it={it} cabinetId={cabinetId} onSave={saveField} onDel={delRow}
-                onComplete={completeToStock}
+                onComplete={completeToStock} readOnly={readOnly}
                 isOpen={expanded === it.id} onToggle={() => setExpanded(expanded === it.id ? null : it.id)} reload={reload} />
             ))}
             {slice.length === 0 && !loading && (
@@ -304,7 +312,7 @@ export default function PurchasesPage({ cabinetId }) {
 
 // ---------------- Строка таблицы (inline-редактирование вводных) ----------------
 
-function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reload }) {
+function Row({ it, cabinetId, onSave, onDel, onComplete, readOnly, isOpen, onToggle, reload }) {
   const [text, setText] = useState("");
   const [edit, setEdit] = useState(null);
 
@@ -405,10 +413,12 @@ function Row({ it, cabinetId, onSave, onDel, onComplete, isOpen, onToggle, reloa
       <td style={{ padding: "6px 8px", verticalAlign: "middle" }}><LifecycleBadge status={it.lifecycle_effective} /></td>
       <td style={{ padding: "6px 8px", verticalAlign: "middle" }}>{renderPayStatus(it)}</td>
       <td style={tdRight}>
-        {!it.archived && (
+        {!readOnly && !it.archived && (
           <button onClick={() => onComplete(it)} style={{ ...miniBtn, color: C.pos, marginRight: 4 }} title="Доставлено на склад → ждёт приёмки ФФ">✓ Доставлено</button>
         )}
-        <button onClick={() => onDel(it.id)} style={{ ...miniBtn, color: C.neg }} title="Удалить (мягкое)">🗑</button>
+        {!readOnly && (
+          <button onClick={() => onDel(it.id)} style={{ ...miniBtn, color: C.neg }} title="Удалить (мягкое)">🗑</button>
+        )}
       </td>
     </tr>
     {isOpen && (
