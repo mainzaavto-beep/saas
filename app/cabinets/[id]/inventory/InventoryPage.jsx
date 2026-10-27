@@ -17,7 +17,7 @@ import { C, soft } from "@/lib/palette.js";
 // поставок округляет «нужно везти» вверх до неё (lib/supplyPlan.js needQty). Пусто = 1.
 //
 // Источник: GET /api/cabinets/[id]/inventory → { items(…skus[]), totals }.
-// Запись: POST link_sku / unlink_sku / update_qty / update_field (в т.ч. pack_qty).
+// Запись: POST link_sku / unlink_sku / update_qty / update_field (в т.ч. pack_qty) / delete.
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { ShipmentFormModal } from "../shipments/ShipmentFormModal.jsx";
 import { TransferFormModal } from "./TransferFormModal.jsx";
@@ -321,6 +321,26 @@ function Row({ it, cabinetId, locations, reload, onShipFromRow }) {
     } catch (e) { alert("Не сохранилось: " + e.message); }
   }
 
+  // Удаление позиции: мягкое (сервер обнуляет остаток движением adjust и архивирует
+  // строку), история отгрузок/движений сохраняется.
+  async function removeRow() {
+    const msg = it.qty > 0
+      ? `Удалить позицию «${it.internal_name || it.sku_name || it.id}»?\nОстаток ${it.qty} шт будет списан в журнале. Причина:`
+      : `Удалить позицию «${it.internal_name || it.sku_name || it.id}»? Причина (необязательно):`;
+    const note = prompt(msg, "");
+    if (note == null) return;
+    if (it.qty > 0 && !note.trim()) { alert("Укажите причину — остаток будет списан."); return; }
+    try {
+      const r = await fetch(`/api/cabinets/${cabinetId}/inventory`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", id: it.id, note: note.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || "delete failed");
+      reload();
+    } catch (e) { alert("Не удалилось: " + e.message); }
+  }
+
   const hasSku = (it.skus?.length || 0) > 0;  // хоть одна привязка → фото/имя с МП
 
   return (
@@ -430,6 +450,9 @@ function Row({ it, cabinetId, locations, reload, onShipFromRow }) {
           style={{ ...miniBtn, color: it.qty > 0 ? C.pink : C.faint, cursor: it.qty > 0 ? "pointer" : "not-allowed" }}
         >
           📦
+        </button>
+        <button onClick={removeRow} title="Удалить позицию" style={{ ...miniBtn, color: C.neg, marginLeft: 4 }}>
+          🗑
         </button>
       </td>
       {linking && (

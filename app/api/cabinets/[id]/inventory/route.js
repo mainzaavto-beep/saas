@@ -13,7 +13,8 @@
 //          для обратной совместимости с любым кодом, читающим it.platform.
 //          Имя/фото тянется из wb.articles/ozon.products (богаче кэша) одним bulk-запросом.
 //   shipments: последние 50 отгрузок (журнал списаний на МП) — дата/товар/qty/МП/примечание.
-// POST { action } → add | locations | link_sku | unlink_sku | update_qty | update_field
+// POST { action } → add | locations | link_sku | unlink_sku | update_qty | update_field | delete
+//   delete — мягкое: остаток в 0 (adjust), archived_at = now(); история не трогается.
 //   Остаток (qty) меняется ТОЛЬКО через lib/stockLedger.js applyMove (журнал stock_moves).
 //   update_qty требует note (причина правки) — движение kind="adjust".
 //
@@ -382,6 +383,38 @@ export const POST = withCabinet(async (req, { cabinet, session }) => {
     // учтено, остаток не меняем и отдаём актуальное значение (строка под блокировкой).
     if (!r.applied) return NextResponse.json({ ok: true, duplicate: true, new_qty: Number(cur.qty) });
     return NextResponse.json({ ok: true, new_qty: r.newQty });
+  }
+
+  // Удаление позиции (мягкое): остаток → 0 движением adjust (журнал помнит, сколько
+  // было и почему), затем archived_at = now(). Строку физически НЕ удаляем: на неё
+  // ссылаются stock_moves, строки отгрузок и перемещений (логические FK). Все читатели
+  // ff_inventory (панель и воркер) фильтруют archived_at IS NULL — позиция исчезает
+  // везде, авто-списание FBS её больше не трогает.
+  if (b.action === "delete") {
+    const note = String(b.note ?? "").trim() || "удаление позиции";
+    const cur = (await tenantQuery(
+      `SELECT qty FROM tenant.ff_inventory WHERE id = $1 AND archived_at IS NULL FOR UPDATE`, [id]
+    ))[0];
+    if (!cur) return NextResponse.json({ error: `строка id=${id} не найдена` }, { status: 404 });
+    // Черновик отгрузки с этой позицией при «Отгрузить» упал бы с «not found» —
+    // просим сначала убрать её из черновика.
+    const draft = (await tenantQuery(
+      `SELECT d.id FROM tenant.ff_shipment_lines l
+       JOIN tenant.ff_shipment_docs d ON d.id = l.doc_id AND d.cabinet_id = l.cabinet_id
+       WHERE l.ff_inventory_id = $1 AND d.status = 'draft' LIMIT 1`, [id]
+    ))[0];
+    if (draft) {
+      return NextResponse.json({ error: `позиция есть в черновике отгрузки №${draft.id} — сначала уберите её оттуда или удалите черновик` }, { status: 400 });
+    }
+    const qty = Number(cur.qty);
+    if (qty !== 0) {
+      await applyMove({ ffInventoryId: id, kind: "adjust", qty: -qty, srcKind: "manual",
+        srcRef: `del:${id}`, note: `удаление позиции: ${note}`, userId });
+    }
+    await tenantQuery(
+      `UPDATE tenant.ff_inventory SET archived_at = now(), updated_at = now() WHERE id = $1`, [id]
+    );
+    return NextResponse.json({ ok: true });
   }
 
   // Inline-правка поля строки: internal_name | category | unit_cost | im_url.
