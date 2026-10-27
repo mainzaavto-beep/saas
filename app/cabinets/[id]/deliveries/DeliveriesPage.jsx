@@ -2,10 +2,13 @@
 import { C, soft } from "@/lib/palette.js";
 import { useCallback, useEffect, useState } from "react";
 import ReceiptPanel from "./ReceiptPanel";
+import ShipmentReceiptPanel from "./ShipmentReceiptPanel";
 
 // /cabinets/[id]/deliveries — «Доставлено на склад» (15.10.2026, спека
 // docs/superpowers/specs/2026-10-15-delivered-to-stock-design.md): партии из «Закупок» после
 // «✓ Доставлено» → приёмка ФФ по артикулам → «✓ Учтено по артикулам». Конечная точка.
+// Отправки заказов из «Закупок» после «✓ Прибыла» и старые партии (архив) приходят в одном списке
+// (спека docs/superpowers/specs/2026-10-27-purchase-orders-design.md §5): kind различает панель.
 
 const FONT = "system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
 const nf0 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
@@ -42,8 +45,9 @@ export default function DeliveriesPage({ cabinetId }) {
     <div style={{ fontFamily: FONT, color: C.ink, padding: "20px 28px" }}>
       <h1 style={{ fontSize: 22, margin: "0 0 4px" }}>Доставлено на склад</h1>
       <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>
-        Партии из «Закупок», доставленные на фулфилмент. После приёмки ФФ внесите, сколько принято по каждому
-        артикулу, и отметьте «Учтено по артикулам». Эти цифры никуда дальше не передаются.
+        Отправки заказов из «Закупок» после «✓ Прибыла» и старые партии закупки, доставленные на фулфилмент.
+        После приёмки ФФ внесите, сколько принято по каждой позиции, и отметьте «Учтено». Эти цифры никуда
+        дальше не передаются.
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         {FILTERS.map((f) => (
@@ -66,10 +70,10 @@ export default function DeliveriesPage({ cabinetId }) {
           <thead>
             <tr style={{ color: C.muted, textAlign: "left", borderBottom: `1px solid ${C.line}` }}>
               <th style={{ padding: 8, width: 48 }} />
-              <th style={{ padding: 8 }}>Партия</th>
+              <th style={{ padding: 8 }}>Партия / отправка</th>
               <th style={{ padding: 8 }}>Категория</th>
               <th style={{ padding: 8 }}>Доставлено</th>
-              <th style={{ padding: 8, textAlign: "right" }}>Заказано</th>
+              <th style={{ padding: 8, textAlign: "right" }}>Ожидали</th>
               <th style={{ padding: 8, textAlign: "right" }}>Принято</th>
               <th style={{ padding: 8, textAlign: "right" }}>Расхождение</th>
               <th style={{ padding: 8 }}>Статус</th>
@@ -77,7 +81,7 @@ export default function DeliveriesPage({ cabinetId }) {
           </thead>
           <tbody>
             {items.map((it) => (
-              <Row key={it.id} it={it} open={open === it.id} onToggle={() => setOpen(open === it.id ? null : it.id)}
+              <Row key={it.key} it={it} open={open === it.key} onToggle={() => setOpen(open === it.key ? null : it.key)}
                 cabinetId={cabinetId} role={data.role} onChanged={reload} />
             ))}
           </tbody>
@@ -121,7 +125,9 @@ function Row({ it, open, onToggle, cabinetId, role, onChanged }) {
       </tr>
       {open && (
         <tr><td colSpan={8} style={{ padding: "8px 8px 16px 56px", background: soft("accent", 4) }}>
-          <ReceiptPanel cabinetId={cabinetId} item={it} role={role} onChanged={onChanged} />
+          {it.kind === "shipment"
+            ? <ShipmentReceiptPanel cabinetId={cabinetId} item={it} role={role} onChanged={onChanged} />
+            : <ReceiptPanel cabinetId={cabinetId} item={it} role={role} onChanged={onChanged} />}
         </td></tr>
       )}
     </>
