@@ -67,12 +67,17 @@ export const GET = withCabinet(async (req, { cabinet }) => {
 
   // Авто-остатки считаем на дату среза (сегодня в живом режиме), а не на дату
   // снапшота — иначе при старом снапшоте остатки были бы устаревшими.
-  const [stk, ff, transit, mpBal] = await Promise.all([
-    stockBreakdown(liveDate),
-    ffStockBreakdown(liveDate),
-    purchasesInTransit(),
-    mpBalanceBreakdown({ cabinetId: cabinet.cabinet_id }).catch(() => ({ wb: 0, ozon: 0, total: 0 })),
-  ]);
+  // stockBreakdown / ffStockBreakdown / purchasesInTransit ходят через ОДИН клиент транзакции
+  // (withTenant) — только последовательно (AGENTS: «запросы последовательно»). mpBalanceBreakdown
+  // берёт отдельное соединение пула (query), его запускаем заранее и ждём в конце.
+  const mpBalP = mpBalanceBreakdown({ cabinetId: cabinet.cabinet_id }).catch((e) => {
+    console.error("balance: mpBalanceBreakdown", e);
+    return { wb: 0, ozon: 0, total: 0 };
+  });
+  const stk = await stockBreakdown(liveDate);
+  const ff = await ffStockBreakdown(liveDate);
+  const transit = await purchasesInTransit();
+  const mpBal = await mpBalP;
 
   // Каталог счетов (постоянный список названий, cross-snapshot).
   const catalog = await tenantQuery(
