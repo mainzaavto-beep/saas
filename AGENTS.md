@@ -487,6 +487,13 @@ Anthropic отвечает 403 «Request not allowed».
   (`source_ref='order:<id>:pay:<pid>'`/`order:<id>:ship:<sid>:cargo|ff`). Приёмка — по отправке на `/deliveries` (`ship_*`).
   В `cost_overrides`/`ff_inventory` не пишет. Старые `tenant.purchases` — архив «до 16.10», POST/DELETE → 410. Спека
   `docs/superpowers/specs/2026-10-27-purchase-orders-design.md`.
+  **Документы заказа (с 02.11.2026, миграция 076)** — накладные карго/фабрик (PDF, фото, Excel, Word, ≤ 10 МБ; тип по
+  расширению, HTML/SVG нельзя), байты в `tenant.purchase_order_files.data` (bytea, в ночном дампе). **Видит только
+  owner** (решение владельца: менеджеры не должны увести контакты): роут `purchase-orders/files` — `requireRole 'owner'`
+  на каждом методе, в `loadOrder`/`listOrders` файлов нет; `panel_local_ro` и `saas_triage` таблицу не читают. Поле
+  `supplier_contact` не-владельцу не отдаётся (`stripOwnerOnly`), из POST не-владельца вырезается — его правка шапки
+  контакт не затирает. Правила — `lib/purchaseOrderFiles.js`, гарды `lib/__tests__/purchaseOrderFiles.test.mjs`, смоук
+  `PGPASSFILE=/root/.pgpass-admin node scripts/smoke-purchase-order-files.mjs 1` (временный менеджер → 403).
 - **Роли (с 2026-10-10)**: `manager` пишет и в финансы (ДДС, закупки, план, расходы,
   самовыкупы, план закупок); «Баланс» (включая чтение), настройки/ключи, команда, подписка,
   запись премии — только `owner`. Гард `lib/__tests__/roleGuards.test.mjs`.

@@ -12,6 +12,7 @@ import { validateOrderInput, validateLineInput, validatePaymentInput, validateSh
 import { loadOrder, loadOrderView, listOrders, refreshOrderStatus, paidRefs } from "@/lib/purchaseOrdersData.js";
 import { syncOrderPayments, archiveOrderPayments } from "@/lib/paymentCalendarData.js";
 import { searchCatalog, catalogLabel, catalogPhoto } from "@/lib/catalogSearch.js";
+import { stripOwnerOnly } from "@/lib/purchaseOrderFiles.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,9 @@ export const GET = withCabinet(async (req, { cabinet }) => {
   if (id) {
     const v = await loadOrderView(id);
     if (!v) return bad("заказ не найден", 404);
-    return NextResponse.json({ ...v, role: cabinet.role });
+    // Контакт поставщика — только владельцу (решение владельца 30.10.2026); документы заказа — отдельный
+    // owner-only роут purchase-orders/files, сюда не попадают.
+    return NextResponse.json({ ...v, order: stripOwnerOnly(v.order, cabinet.role), role: cabinet.role });
   }
   const items = await listOrders({
     status: url.searchParams.get("status") || "",
@@ -57,9 +60,12 @@ async function afterChange(orderId) {
   await refreshOrderStatus(orderId);
 }
 
-export const POST = withCabinet(async (req, { session }) => {
+export const POST = withCabinet(async (req, { session, cabinet }) => {
   const b = await req.json();
   const action = b?.action;
+  // Контакт поставщика пишет только владелец: менеджер поля не видит, и его правка шапки не должна
+  // ни затирать контакт, ни подменять его (update ниже берёт прежнее значение из order).
+  if (cabinet.role !== "owner" && b) delete b.supplier_contact;
 
   // Действие без order_id — до проверки order_id (грабля D10).
   if (action === "create") {

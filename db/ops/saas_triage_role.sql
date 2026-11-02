@@ -28,6 +28,12 @@ GRANT USAGE ON SCHEMA auth, billing, jobs, tenant, shared TO saas_triage;
 GRANT SELECT ON ALL TABLES IN SCHEMA jobs, tenant, shared TO saas_triage;
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA jobs, tenant, shared
   GRANT SELECT ON TABLES TO saas_triage;
+-- Накладные заказов закупки (контакты поставщиков) — только владельцу в панели, не разбору (миграция 076).
+DO $$ BEGIN
+  IF to_regclass('tenant.purchase_order_files') IS NOT NULL THEN
+    REVOKE ALL ON tenant.purchase_order_files FROM saas_triage;
+  END IF;
+END $$;
 
 -- auth: без api_creds/api_creds_enc/external_keys, без email/телефонов/ФИО/хэшей,
 -- без auth.invitations (token) и auth.user_tokens целиком.

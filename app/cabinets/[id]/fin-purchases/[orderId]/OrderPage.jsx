@@ -6,6 +6,7 @@ import { inp, btn } from "./styles";
 import OrderLines from "./OrderLines";
 import OrderPayments from "./OrderPayments";
 import OrderShipments from "./OrderShipments";
+import OrderFiles from "./OrderFiles";
 
 // Карточка заказа закупки (спека 2026-10-27-purchase-orders-design.md §4). Все цифры — calc из API
 // (lib/purchaseOrders.js calcOrder), клиент ничего не пересчитывает.
@@ -52,6 +53,9 @@ export default function OrderPage({ cabinetId, orderId }) {
   if (!d) return <div style={{ fontFamily: FONT, padding: 28, color: C.muted }}>Загрузка…</div>;
   const { order, calc } = d;
   const canEdit = d.role !== "viewer";
+  const isOwner = d.role === "owner";
+  // «Контакт» и документы — только владельцу (API не-владельцу контакт и не отдаёт).
+  const headFields = HEAD_FIELDS.filter(([k]) => k !== "supplier_contact" || isOwner);
   // «Закрыт» выставляет только сервер (refreshOrderStatus) — пункт в селекте не предлагаем,
   // кроме случая, когда заказ уже закрыт (тогда показываем как текущее значение, без возможности выбрать).
   const statusOptions = Object.entries(ORDER_STATUS_LABELS).filter(([k]) => k !== "closed" || order.status === "closed");
@@ -63,7 +67,7 @@ export default function OrderPage({ cabinetId, orderId }) {
         <div style={{ flex: "1 1 520px" }}>
           <h1 style={{ fontSize: 22, margin: "0 0 10px" }}>{order.supplier}{order.order_no ? ` · ${order.order_no}` : ""}</h1>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
-            {HEAD_FIELDS.map(([k, l, type]) => (
+            {headFields.map(([k, l, type]) => (
               <label key={k} style={{ fontSize: 12, color: C.muted }}>{l}
                 <input key={`${k}:${order[k] ?? ""}`} type={type || "text"} defaultValue={order[k] ?? ""} disabled={!canEdit || busy}
                   style={{ ...inp, width: "100%", display: "block" }}
@@ -103,6 +107,7 @@ export default function OrderPage({ cabinetId, orderId }) {
       <OrderLines cabinetId={cabinetId} d={d} post={post} busy={busy} canEdit={canEdit} />
       <OrderPayments d={d} post={post} busy={busy} canEdit={canEdit} />
       <OrderShipments d={d} post={post} busy={busy} canEdit={canEdit} />
+      {isOwner && <OrderFiles cabinetId={cabinetId} orderId={orderId} />}
     </div>
   );
 }
