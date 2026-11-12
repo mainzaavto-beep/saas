@@ -26,6 +26,7 @@ SaaS-аналитика для продавцов WB/Ozon. **Next.js 14** (App R
 | Здоровье данных | /health (доступ: SAAS_OPS_USER_IDS в .env.local) + OnFailure=saas-failure@%n во всех юнитах |
 | Авторазбор падений сборщиков | jobs.failure_triage + worker/failure_triage.py (таймер saas-triage, claude -p только чтение) |
 | systemd-юниты | deploy/systemd/ (источник истины) + deploy/install-systemd.sh |
+| Резервные копии / восстановление | `docs/backup-restore.md`: дамп 03:00 + restic → Yandex Object Storage (`saas-backup1`), код → GitHub `mainzaavto-beep/saas`; `deploy/backup/offsite_backup.sh` |
 | Слой расчёта метрик WB | `lib/wbMetrics.js` (единый источник правды по заказам/выручке/прибыли) |
 | Слой расчёта метрик Ozon | `lib/ozonMetrics.js` |
 | Юнит-экономику | `lib/unit.js` (calcWB / calcOzon, налоги в отдельных колонках) |
@@ -230,7 +231,7 @@ Anthropic отвечает 403 «Request not allowed».
 | `saas-metrics30m` | каждые 30 мин | 30-мин снапшоты воронки WB |
 | `saas-backfill` | 07:00, 10:30, 14:00, 19:00 | прогон очереди onboarding-jobs (75 дней) |
 | `saas-cabinet` | 06:00, 20:00 | кабинет Ozon: позиции по запросам + трафик по SKU (Playwright, профиль владельца, только чтение) |
-| `saas-backup` | 03:00 | дамп PG |
+| `saas-backup` | 03:00 | дамп PG + копия вне сервера (restic → Yandex, дамп+код+секреты) |
 | `saas-triage` | каждые 15 мин | авторазбор падений: 2 failed подряд → `claude -p` (Sonnet, только чтение) → письмо + `/health` (≤3 запуска claude/сутки, включая повторы) |
 
 Логи: `/opt/agentsDB/logs/saas_worker.log`. Веб: `saas.service` (`next start -p 3200`).

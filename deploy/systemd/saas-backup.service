@@ -1,5 +1,5 @@
 [Unit]
-Description=SAAS PostgreSQL backup (daily pg_dump + retention 14d)
+Description=SAAS backup (daily pg_dump + offsite restic → Yandex Object Storage)
 After=network.target postgresql.service
 Requires=postgresql.service
 OnFailure=saas-failure@%n.service
@@ -11,12 +11,16 @@ Group=root
 # Креды: .env.local (хост/порт/имя базы) + /etc/saas-worker.env (POSTGRES_PASSWORD для полного дампа)
 EnvironmentFile=/opt/agents/saas/.env.local
 EnvironmentFile=/etc/saas-worker.env
+# Креды Yandex Object Storage + пароль restic (root, 600, вне git)
+EnvironmentFile=/etc/saas-backup.env
 ExecStart=/opt/agentsDB/backup_saas.sh
+# Шаг 2: копия вне сервера (дамп + код + секреты). Падение → OnFailure, как и у дампа.
+ExecStart=/opt/agents/saas/deploy/backup/offsite_backup.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=saas-backup
-# Бэкап не должен висеть вечно; 10 минут хватит для базы нашего размера
-TimeoutStartSec=10min
+# Дамп ~1 мин + отправка ~1 мин (+ воскресный check); 30 минут с запасом
+TimeoutStartSec=30min
 
 [Install]
 WantedBy=multi-user.target
